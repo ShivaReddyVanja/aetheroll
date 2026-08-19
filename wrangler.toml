@@ -1,0 +1,22 @@
+name = "telegram-gallery"
+main = "src/server/app.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+# Cloudflare D1 Database Binding
+[[d1_databases]]
+binding = "DB"
+database_name = "telegram-gallery-db"
+database_id = "local-d1-id" # Replace with your Cloudflare D1 UUID when deploying to production
+
+# Cloudflare R2 Storage Bucket Binding
+[[r2_buckets]]
+binding = "R2_BUCKET"
+bucket_name = "telegram-gallery-cache"
+preview_bucket_name = "telegram-gallery-cache-preview"
+
+# Environment Variables
+[vars]
+TELEGRAM_API_ID = "2496"
+TELEGRAM_API_HASH = "8da85b0d5b165218c3a5585098d5786d"
+TELEGRAM_TEST_MODE = "false"
