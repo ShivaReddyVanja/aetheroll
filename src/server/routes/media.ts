@@ -159,8 +159,7 @@ mediaRouter.post("/upload", async (c) => {
       return c.json({ error: "Channel not found or unauthorized" }, 404);
     }
 
-    const client = createTelegramClient(decryptSession(session.session_string));
-    if (!client.connected) await client.connect();
+    const client = await getConnectedClient(decryptSession(session.session_string));
 
     const arrayBuffer = await file.arrayBuffer();
     const fileBuffer = Buffer.from(arrayBuffer);
@@ -190,7 +189,7 @@ mediaRouter.post("/upload", async (c) => {
     try {
       sentMsg = await client.sendFile(targetPeer, {
         file: customFile,
-        workers: 4,
+        workers: 1,
         forceDocument: false,
       });
     } catch (sendErr: any) {
@@ -210,11 +209,12 @@ mediaRouter.post("/upload", async (c) => {
 
     const customWidth = formData.get("width") ? parseInt(formData.get("width") as string, 10) : undefined;
     const customHeight = formData.get("height") ? parseInt(formData.get("height") as string, 10) : undefined;
+    const customDuration = formData.get("duration") ? parseFloat(formData.get("duration") as string) : undefined;
 
-    // Extract dimensions
+    // Extract dimensions & duration
     let width = customWidth || 1920;
     let height = customHeight || 1080;
-    let duration: number | null = isVideo ? 30 : null;
+    let duration: number | null = customDuration || (isVideo ? 0 : null);
 
     if (sentMsg.photo) {
       const sizes = (sentMsg.photo as any).sizes;
@@ -229,9 +229,9 @@ mediaRouter.post("/upload", async (c) => {
       const doc = sentMsg.document as any;
       const videoAttr = doc.attributes?.find((a: any) => a.w && a.h);
       if (videoAttr) {
-        width = videoAttr.w;
-        height = videoAttr.h;
-        if (videoAttr.duration) duration = videoAttr.duration;
+        if (!customWidth) width = videoAttr.w;
+        if (!customHeight) height = videoAttr.h;
+        if (!customDuration && videoAttr.duration) duration = videoAttr.duration;
       }
     }
 

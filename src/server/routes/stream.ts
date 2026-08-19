@@ -14,6 +14,11 @@ const CHUNK_SIZE = 512 * 1024;
 // Short-term in-memory cache for resolved Telegram message media objects (TTL: 10 minutes)
 const mediaObjectCache = new Map<string, { media: any; peer: any; expires: number }>();
 
+function toBigInt(val: number | string) {
+  const fn: any = typeof bigInt === "function" ? bigInt : (bigInt as any).default;
+  return fn(val);
+}
+
 /**
  * Downloads a precise slice of a Telegram document/photo using upload.GetFile
  */
@@ -52,7 +57,7 @@ async function fetchTelegramChunk(
 
   const req = new Api.upload.GetFile({
     location: fileLocation,
-    offset: bigInt(offsetBytes),
+    offset: toBigInt(offsetBytes),
     limit: limitBytes,
   });
 
