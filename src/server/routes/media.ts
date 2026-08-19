@@ -208,9 +208,12 @@ mediaRouter.post("/upload", async (c) => {
     const realMessageId = sentMsg.id;
     console.log(`[MTProto] Uploaded successfully! Message ID: ${realMessageId}`);
 
+    const customWidth = formData.get("width") ? parseInt(formData.get("width") as string, 10) : undefined;
+    const customHeight = formData.get("height") ? parseInt(formData.get("height") as string, 10) : undefined;
+
     // Extract dimensions
-    let width = 1920;
-    let height = 1080;
+    let width = customWidth || 1920;
+    let height = customHeight || 1080;
     let duration: number | null = isVideo ? 30 : null;
 
     if (sentMsg.photo) {
