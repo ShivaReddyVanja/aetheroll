@@ -95,7 +95,7 @@ export function UploaderModal({
         let blurHash = "LEHV6nWB2yk8pyo0adR*.7kCMdnj";
         let thumbnailBase64 = "";
 
-        // 1. Client-Side BlurHash & Thumbnail Generation
+        // 1. Client-Side Dimension & BlurHash / Thumbnail Generation
         if (!isVideo) {
           try {
             const bhResult = await generateBlurHashAndThumbnail(file);
@@ -105,6 +105,28 @@ export function UploaderModal({
             thumbnailBase64 = bhResult.thumbnailBase64;
           } catch (e) {
             console.warn("BlurHash skipped for", file.name, e);
+          }
+        } else {
+          // Precise video dimension extraction
+          try {
+            const meta = await new Promise<{ width: number; height: number; duration: number }>((resolve) => {
+              const video = document.createElement("video");
+              video.preload = "metadata";
+              video.onloadedmetadata = () => {
+                URL.revokeObjectURL(video.src);
+                resolve({
+                  width: video.videoWidth || 1920,
+                  height: video.videoHeight || 1080,
+                  duration: Math.round(video.duration) || 0,
+                });
+              };
+              video.onerror = () => resolve({ width: 1920, height: 1080, duration: 0 });
+              video.src = URL.createObjectURL(file);
+            });
+            width = meta.width;
+            height = meta.height;
+          } catch (e) {
+            console.warn("Video dimension extraction failed:", e);
           }
         }
 
@@ -120,6 +142,8 @@ export function UploaderModal({
         formData.append("file", file);
         formData.append("channel_id", channelId);
         formData.append("blur_hash", blurHash);
+        formData.append("width", width.toString());
+        formData.append("height", height.toString());
         formData.append("captured_at", exif.capturedAt || new Date().toISOString());
         if (thumbnailBase64) {
           formData.append("thumbnail_base64", thumbnailBase64);
