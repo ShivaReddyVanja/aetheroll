@@ -383,8 +383,7 @@ mediaRouter.get("/:id/thumbnail", async (c) => {
 
     if (!userRow) return c.text("Unauthorized", 401);
 
-    const client = createTelegramClient(decryptSession(userRow.session_string));
-    if (!client.connected) await client.connect();
+    const client = await getConnectedClient(decryptSession(userRow.session_string));
 
     let targetPeer: any = item.telegram_channel_id;
     if (item.telegram_channel_id === "me") {

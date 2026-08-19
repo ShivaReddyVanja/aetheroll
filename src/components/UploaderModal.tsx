@@ -15,7 +15,7 @@ import {
   Calendar,
   Cloud,
 } from "lucide-react";
-import { generateBlurHashAndThumbnail } from "@/lib/blurhash";
+import { generateBlurHashAndThumbnail, generateVideoThumbnailAndMetadata } from "@/lib/blurhash";
 import { extractExifMetadata } from "@/lib/exif";
 
 interface UploaderModalProps {
@@ -104,29 +104,17 @@ export function UploaderModal({
             blurHash = bhResult.blurHash;
             thumbnailBase64 = bhResult.thumbnailBase64;
           } catch (e) {
-            console.warn("BlurHash skipped for", file.name, e);
+            console.warn("BlurHash skipped for image", file.name, e);
           }
         } else {
-          // Precise video dimension extraction
           try {
-            const meta = await new Promise<{ width: number; height: number; duration: number }>((resolve) => {
-              const video = document.createElement("video");
-              video.preload = "metadata";
-              video.onloadedmetadata = () => {
-                URL.revokeObjectURL(video.src);
-                resolve({
-                  width: video.videoWidth || 1920,
-                  height: video.videoHeight || 1080,
-                  duration: Math.round(video.duration) || 0,
-                });
-              };
-              video.onerror = () => resolve({ width: 1920, height: 1080, duration: 0 });
-              video.src = URL.createObjectURL(file);
-            });
-            width = meta.width;
-            height = meta.height;
+            const vResult = await generateVideoThumbnailAndMetadata(file);
+            width = vResult.width;
+            height = vResult.height;
+            blurHash = vResult.blurHash;
+            thumbnailBase64 = vResult.thumbnailBase64;
           } catch (e) {
-            console.warn("Video dimension extraction failed:", e);
+            console.warn("Video thumbnail generation skipped for", file.name, e);
           }
         }
 
