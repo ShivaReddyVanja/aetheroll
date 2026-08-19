@@ -4,7 +4,8 @@ import crypto from "crypto";
 import { getDb } from "../lib/db";
 import { decryptSession } from "../lib/crypto";
 import { getR2Storage } from "../lib/r2";
-import { createTelegramClient } from "../lib/telegram";
+import { createTelegramClient, getConnectedClient } from "../lib/telegram";
+import { emitGalleryEvent } from "../lib/ledger";
 
 export const mediaRouter = new Hono();
 
@@ -260,6 +261,12 @@ mediaRouter.post("/upload", async (c) => {
       ]
     );
 
+    // Emit Telegram WAL Event
+    await emitGalleryEvent(client, targetPeer, realMessageId, "CREATE", {
+      blur_hash: blurHash,
+      captured_at: capturedAt,
+    });
+
     return c.json({ success: true, mediaId, telegramMessageId: realMessageId });
   } catch (error: any) {
     console.error("[MTProto] Upload error:", error);
@@ -278,7 +285,7 @@ mediaRouter.post("/:id/favorite", async (c) => {
 
     const db = getDb((c.env as any)?.DB);
     const session = await db.get(
-      `SELECT u.id FROM user_sessions s
+      `SELECT u.id, u.session_string FROM user_sessions s
        JOIN users u ON u.id = s.user_id
        WHERE s.id = ? AND s.expires_at > CURRENT_TIMESTAMP`,
       [token]
@@ -291,13 +298,38 @@ mediaRouter.post("/:id/favorite", async (c) => {
       [session.id, mediaId]
     );
 
+    const isFavorited = !existing;
     if (existing) {
       await db.run("DELETE FROM media_favorites WHERE user_id = ? AND media_item_id = ?", [session.id, mediaId]);
-      return c.json({ favorited: false });
     } else {
       await db.run("INSERT INTO media_favorites (user_id, media_item_id) VALUES (?, ?)", [session.id, mediaId]);
-      return c.json({ favorited: true });
     }
+
+    // Emit WAL Event to Telegram channel in background
+    try {
+      const item = await db.get(
+        `SELECT m.telegram_message_id, c.telegram_channel_id FROM media_items m
+         JOIN channels c ON c.id = m.channel_id
+         WHERE m.id = ?`,
+        [mediaId]
+      );
+      if (item) {
+        const client = await getConnectedClient(decryptSession(session.session_string));
+        let targetPeer: any = item.telegram_channel_id;
+        if (targetPeer !== "me") {
+          try {
+            targetPeer = await client.getInputEntity(targetPeer);
+          } catch {}
+        }
+        await emitGalleryEvent(client, targetPeer, item.telegram_message_id, "FAVORITE", {
+          fav: isFavorited,
+        });
+      }
+    } catch (eventErr) {
+      console.warn("[EventLedger] Failed emitting favorite event:", eventErr);
+    }
+
+    return c.json({ favorited: isFavorited });
   } catch (error: any) {
     return c.json({ error: error.message || "Failed to toggle favorite" }, 500);
   }
