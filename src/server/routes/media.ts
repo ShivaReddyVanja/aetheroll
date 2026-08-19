@@ -1,6 +1,8 @@
 import { Hono } from "hono";
 import { getCookie } from "hono/cookie";
 import crypto from "crypto";
+import fs from "fs";
+import path from "path";
 import { getDb } from "../lib/db";
 import { decryptSession } from "../lib/crypto";
 import { getR2Storage } from "../lib/r2";
@@ -167,7 +169,12 @@ mediaRouter.post("/upload", async (c) => {
 
     console.log(`[MTProto] Uploading ${file.name} (${(file.size / (1024 * 1024)).toFixed(2)} MB) to TG channel ${channel.telegram_channel_id}...`);
 
-    const customFile = new CustomFile(file.name, file.size, "", fileBuffer);
+    const tempDir = path.resolve(process.cwd(), ".data/temp");
+    if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+    const tempFilePath = path.join(tempDir, `${crypto.randomUUID()}_${file.name}`);
+    await fs.promises.writeFile(tempFilePath, fileBuffer);
+
+    const customFile = new CustomFile(file.name, file.size, tempFilePath, fileBuffer);
     
     // Resolve peer entity for Telegram
     let targetPeer: any = channel.telegram_channel_id;
@@ -202,6 +209,10 @@ mediaRouter.post("/upload", async (c) => {
         );
       }
       throw sendErr;
+    } finally {
+      try {
+        if (fs.existsSync(tempFilePath)) await fs.promises.unlink(tempFilePath);
+      } catch {}
     }
 
     const realMessageId = sentMsg.id;
