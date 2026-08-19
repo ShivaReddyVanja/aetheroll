@@ -1,5 +1,4 @@
 import { TelegramClient, Api, sessions } from "telegram";
-import { ConnectionTCPObfuscated } from "telegram/network/connection";
 
 export interface TelegramConfig {
   apiId: number;
@@ -43,7 +42,6 @@ export function createTelegramClient(sessionString: string = "", config?: Telegr
   const session = new sessions.StringSession(sessionString || "");
 
   const client = new TelegramClient(session, cfg.apiId, cfg.apiHash, {
-    connection: ConnectionTCPObfuscated,
     connectionRetries: 5,
     useWSS: false, // In Node.js / worker TCP
     testServers: cfg.testMode,
