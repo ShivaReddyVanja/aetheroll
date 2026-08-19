@@ -3,7 +3,8 @@ import { getCookie } from "hono/cookie";
 import crypto from "crypto";
 import { getDb } from "../lib/db";
 import { decryptSession } from "../lib/crypto";
-import { createTelegramClient, getUserChannels } from "../lib/telegram";
+import { createTelegramClient, getUserChannels, getConnectedClient } from "../lib/telegram";
+import { parseGalleryEvent, applyGalleryEventsToDb, GalleryEvent } from "../lib/ledger";
 
 export const channelsRouter = new Hono();
 
@@ -181,10 +182,19 @@ channelsRouter.post("/:id/sync", async (c) => {
       }
     }
 
-    const messages = await client.getMessages(targetPeer, { limit: 100 });
+    const messages = await client.getMessages(targetPeer, { limit: 200 });
     let indexedCount = 0;
+    const eventsToReplay: GalleryEvent[] = [];
 
+    // Pass 1: Index raw media messages
     for (const msg of messages) {
+      // Check if this message is a WAL event
+      const event = parseGalleryEvent(msg.message);
+      if (event) {
+        eventsToReplay.push(event);
+        continue;
+      }
+
       if (!msg.media) continue;
 
       const isPhoto = !!msg.photo;
@@ -227,9 +237,16 @@ channelsRouter.post("/:id/sync", async (c) => {
       indexedCount++;
     }
 
+    // Pass 2: Replay Event Sourcing Ledger (restores tags, favorites, GPS, custom dates)
+    let appliedEventsCount = 0;
+    if (eventsToReplay.length > 0) {
+      appliedEventsCount = await applyGalleryEventsToDb(db, channel.id, user.id, eventsToReplay);
+      console.log(`[EventLedger] Replayed ${appliedEventsCount} events for channel ${channel.name}`);
+    }
+
     await db.run("UPDATE channels SET last_synced_at = CURRENT_TIMESTAMP WHERE id = ?", [channelId]);
 
-    return c.json({ success: true, indexedCount });
+    return c.json({ success: true, indexedCount, appliedEventsCount });
   } catch (error: any) {
     console.error("Sync Error:", error);
     return c.json({ error: error.message || "Failed to sync channel" }, 500);
