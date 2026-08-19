@@ -1,0 +1,40 @@
+{
+  "name": "telegram-gallery",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build --webpack",
+    "start": "next start",
+    "lint": "next lint",
+    "d1:local": "wrangler d1 execute telegram-gallery-db --local --file=./migrations/0001_initial_schema.sql",
+    "d1:remote": "wrangler d1 execute telegram-gallery-db --remote --file=./migrations/0001_initial_schema.sql"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.8",
+    "better-sqlite3": "^11.8.1",
+    "blurhash": "^2.0.5",
+    "clsx": "^2.1.1",
+    "exifreader": "^4.26.0",
+    "hono": "^4.7.2",
+    "lucide-react": "^1.16.0",
+    "next": "^15.2.0",
+    "qrcode": "^1.5.4",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tailwind-merge": "^3.0.2",
+    "telegram": "^2.26.22"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.13.9",
+    "@types/qrcode": "^1.5.5",
+    "@types/react": "^19.0.10",
+    "@types/react-dom": "^19.0.4",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.5.3",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.8.2",
+    "wrangler": "^3.111.0"
+  }
+}
