@@ -1,5 +1,5 @@
 import { TelegramClient } from "telegram";
-import { DatabaseInterface } from "./db";
+import type { DatabaseInterface } from "./db";
 
 export interface GalleryEventPayload {
   blur_hash?: string;
