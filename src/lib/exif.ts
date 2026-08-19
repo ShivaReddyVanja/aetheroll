@@ -8,12 +8,21 @@ export interface ExtractedMetadata {
 }
 
 /**
- * Extracts EXIF date, GPS, and camera metadata from an image File
+ * Extracts EXIF date, GPS, and camera metadata from an image/video File
  */
 export async function extractExifMetadata(file: File): Promise<ExtractedMetadata> {
+  const result: ExtractedMetadata = {};
+
+  // For video files, default to file's last modified timestamp
+  if (file.type.startsWith("video/")) {
+    if (file.lastModified) {
+      result.capturedAt = new Date(file.lastModified).toISOString();
+    }
+    return result;
+  }
+
   try {
     const tags = await ExifReader.load(file, { expanded: true });
-    const result: ExtractedMetadata = {};
 
     // 1. Captured Date
     const dateTag = tags.exif?.DateTimeOriginal?.description || tags.exif?.DateTimeDigitized?.description;
@@ -29,6 +38,10 @@ export async function extractExifMetadata(file: File): Promise<ExtractedMetadata
       }
     }
 
+    if (!result.capturedAt && file.lastModified) {
+      result.capturedAt = new Date(file.lastModified).toISOString();
+    }
+
     // 2. GPS Coordinates
     if (tags.gps?.Latitude && tags.gps?.Longitude) {
       result.latitude = tags.gps.Latitude;
@@ -42,7 +55,10 @@ export async function extractExifMetadata(file: File): Promise<ExtractedMetadata
 
     return result;
   } catch (error) {
-    console.warn("Could not read EXIF data:", error);
-    return {};
+    // Fallback gracefully without console error
+    if (file.lastModified) {
+      result.capturedAt = new Date(file.lastModified).toISOString();
+    }
+    return result;
   }
 }
