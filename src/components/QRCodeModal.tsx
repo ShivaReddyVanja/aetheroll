@@ -8,62 +8,140 @@ interface QRCodeModalProps {
 }
 
 export function QRCodeModal({ onLoginSuccess }: QRCodeModalProps) {
-  const [qrId, setQrId] = useState<string | null>(null);
   const [qrImage, setQrImage] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchQRCode = async () => {
+  const startConnection = () => {
     setLoading(true);
     setError(null);
-    try {
-      const res = await fetch("/api/auth/qr");
-      const data = await res.json();
+    setQrImage(null);
 
-      if (data.error) {
-        throw new Error(data.error);
+    let activeSocket: WebSocket | null = null;
+    let pollInterval: any = null;
+    let isCancelled = false;
+
+    // Helper: Stateful HTTP Polling fallback
+    const startHttpPolling = async () => {
+      try {
+        const res = await fetch("/api/auth/qr");
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+
+        if (isCancelled) return;
+        setQrImage(data.qrImage);
+        setLoading(false);
+
+        pollInterval = setInterval(async () => {
+          if (isCancelled) return;
+          try {
+            const checkRes = await fetch("/api/auth/qr/check", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ qrId: data.qrId }),
+            });
+            const checkData = await checkRes.json();
+            if (checkData.success && checkData.user) {
+              clearInterval(pollInterval);
+              if (checkData.sessionToken) {
+                try {
+                  await fetch("/api/auth/session", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ sessionToken: checkData.sessionToken }),
+                  });
+                  // Also persist for cross-origin upload headers (uploads go direct to worker)
+                  localStorage.setItem("tg_session_token", checkData.sessionToken);
+                } catch {}
+              }
+              onLoginSuccess(checkData.user);
+            }
+          } catch {}
+        }, 2000);
+      } catch (err: any) {
+        if (!isCancelled) {
+          setError(err.message || "Failed to load QR code");
+          setLoading(false);
+        }
+      }
+    };
+
+    // 1. Try Real-Time WebSocket first (Durable Object)
+    try {
+      const isHttps = window.location.protocol === "https:";
+      const defaultWsProtocol = isHttps ? "wss:" : "ws:";
+      const remoteUrl = process.env.NEXT_PUBLIC_REMOTE_API_URL;
+      
+      let wsUrl = `${defaultWsProtocol}//${window.location.host}/api/auth/ws`;
+      if (remoteUrl && remoteUrl.startsWith("http")) {
+        const parsed = new URL(remoteUrl);
+        const remoteWsProto = parsed.protocol === "https:" ? "wss:" : "ws:";
+        wsUrl = `${remoteWsProto}//${parsed.host}/api/auth/ws`;
       }
 
-      setQrId(data.qrId);
-      setQrImage(data.qrImage);
-    } catch (err: any) {
-      setError(err.message || "Failed to generate QR code");
-    } finally {
-      setLoading(false);
+      console.log("[Auth] Connecting to WebSocket:", wsUrl);
+      const ws = new WebSocket(wsUrl);
+      activeSocket = ws;
+
+      ws.onmessage = async (event) => {
+        if (isCancelled) return;
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === "qr" && data.qrImage) {
+            setQrImage(data.qrImage);
+            setLoading(false);
+          } else if (data.type === "authenticated" && data.user) {
+            ws.close();
+            // Establish HttpOnly session cookie
+            if (data.sessionToken) {
+              await fetch("/api/auth/session", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ sessionToken: data.sessionToken }),
+              });
+              // Also persist for cross-origin upload headers (uploads go direct to worker)
+              localStorage.setItem("tg_session_token", data.sessionToken);
+            }
+            onLoginSuccess(data.user);
+          } else if (data.type === "expired") {
+            ws.close();
+            if (!isCancelled) startConnection();
+          } else if (data.type === "error") {
+            setError(data.error || "Authentication error");
+            setLoading(false);
+          }
+        } catch (parseErr) {
+          console.error("WS Parse Error:", parseErr);
+        }
+      };
+
+      ws.onerror = () => {
+        // Fallback to HTTP polling if WebSocket is blocked
+        if (!qrImage && !isCancelled) {
+          console.warn("[Auth] WebSocket connection unavailable, falling back to DO HTTP polling...");
+          try { ws.close(); } catch {}
+          startHttpPolling();
+        }
+      };
+    } catch {
+      startHttpPolling();
     }
+
+    return () => {
+      isCancelled = true;
+      if (activeSocket) {
+        try { activeSocket.close(); } catch {}
+      }
+      if (pollInterval) clearInterval(pollInterval);
+    };
   };
 
   useEffect(() => {
-    fetchQRCode();
+    const cleanup = startConnection();
+    return () => {
+      cleanup();
+    };
   }, []);
-
-  // Poll for authentication status
-  useEffect(() => {
-    if (!qrId) return;
-
-    const interval = setInterval(async () => {
-      try {
-        const res = await fetch("/api/auth/qr/check", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ qrId }),
-        });
-
-        const data = await res.json();
-        if (data.success && data.user) {
-          clearInterval(interval);
-          onLoginSuccess(data.user);
-        } else if (data.error) {
-          // Token expired, refresh QR code
-          fetchQRCode();
-        }
-      } catch (err) {
-        console.error("QR polling error:", err);
-      }
-    }, 2000);
-
-    return () => clearInterval(interval);
-  }, [qrId, onLoginSuccess]);
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-4">
@@ -92,7 +170,7 @@ export function QRCodeModal({ onLoginSuccess }: QRCodeModalProps) {
               <AlertCircle className="w-8 h-8" />
               <p className="text-xs">{error}</p>
               <button
-                onClick={fetchQRCode}
+                onClick={startConnection}
                 className="mt-2 text-xs px-3 py-1 bg-slate-100 text-slate-900 rounded-md font-medium"
               >
                 Retry

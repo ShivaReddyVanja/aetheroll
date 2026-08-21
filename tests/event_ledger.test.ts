@@ -64,21 +64,24 @@ describe("📜 Telegram Event Sourcing & Disaster Recovery Ledger", () => {
     const locationTags = new Map<string, any>();
 
     const mockDb: DatabaseInterface = {
-      async get(sql, params = []) {
+      async get<T = any>(sql: string, params: any[] = []): Promise<T | null> {
         if (sql.includes("FROM media_items WHERE channel_id = ? AND telegram_message_id = ?")) {
           const [cId, msgId] = params;
           for (const item of mediaTable.values()) {
             if (item.channel_id === cId && item.telegram_message_id === msgId) {
-              return { id: item.id };
+              return { id: item.id } as any;
             }
           }
           return null;
         }
         if (sql.includes("SELECT id FROM people WHERE name = ?")) {
-          return { id: `person-${params[0]}` };
+          return { id: `person-${params[0]}` } as any;
         }
         if (sql.includes("SELECT id FROM locations WHERE name = ?")) {
-          return { id: `loc-${params[0]}` };
+          return { id: `loc-${params[0]}` } as any;
+        }
+        if (sql.includes("SELECT id FROM events WHERE name = ?")) {
+          return { id: `event-${params[0]}` } as any;
         }
         return null;
       },

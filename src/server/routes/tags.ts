@@ -3,7 +3,7 @@ import { getCookie } from "hono/cookie";
 import crypto from "crypto";
 import { getDb } from "../lib/db";
 import { decryptSession } from "../lib/crypto";
-import { getConnectedClient } from "../lib/telegram";
+import { getConnectedClient, getDefaultTelegramConfig } from "../lib/telegram";
 import { emitGalleryEvent } from "../lib/ledger";
 
 export const tagsRouter = new Hono();
@@ -20,7 +20,7 @@ async function getAuthContext(c: any) {
     [token]
   );
   if (!session) throw new Error("Unauthorized");
-  return { user: session, db };
+  return { user: session, db, env: c.env };
 }
 
 // -------------------------------------------------------------
@@ -113,7 +113,10 @@ tagsRouter.post("/media-person", async (c) => {
       );
 
       if (mediaItem) {
-        const client = await getConnectedClient(decryptSession(user.session_string));
+        const client = await getConnectedClient(
+          await decryptSession(user.session_string, (c.env as any)?.SESSION_ENCRYPTION_KEY),
+          getDefaultTelegramConfig(c.env)
+        );
         let targetPeer: any = mediaItem.telegram_channel_id;
         if (targetPeer !== "me") {
           try { targetPeer = await client.getInputEntity(targetPeer); } catch {}
@@ -203,7 +206,10 @@ tagsRouter.post("/media-location", async (c) => {
         [media_item_id]
       );
       if (mediaItem && latitude && longitude) {
-        const client = await getConnectedClient(decryptSession(user.session_string));
+        const client = await getConnectedClient(
+          await decryptSession(user.session_string, (c.env as any)?.SESSION_ENCRYPTION_KEY),
+          getDefaultTelegramConfig(c.env)
+        );
         let targetPeer: any = mediaItem.telegram_channel_id;
         if (targetPeer !== "me") {
           try { targetPeer = await client.getInputEntity(targetPeer); } catch {}
@@ -302,7 +308,10 @@ tagsRouter.post("/media-event", async (c) => {
       );
       const ev = await db.get("SELECT name FROM events WHERE id = ?", [event_id]);
       if (mediaItem && ev) {
-        const client = await getConnectedClient(decryptSession(user.session_string));
+        const client = await getConnectedClient(
+          await decryptSession(user.session_string, (c.env as any)?.SESSION_ENCRYPTION_KEY),
+          getDefaultTelegramConfig(c.env)
+        );
         let targetPeer: any = mediaItem.telegram_channel_id;
         if (targetPeer !== "me") {
           try { targetPeer = await client.getInputEntity(targetPeer); } catch {}

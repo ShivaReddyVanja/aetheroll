@@ -2,7 +2,7 @@
 
 import React, { useMemo } from "react";
 import { MediaCard, MediaItem } from "./MediaCard";
-import { Check, Image as ImageIcon } from "lucide-react";
+import { Check, Image as ImageIcon, RefreshCw, Upload } from "lucide-react";
 
 interface MasonryGridProps {
   items: MediaItem[];
@@ -14,6 +14,9 @@ interface MasonryGridProps {
   loading: boolean;
   onLoadMore?: () => void;
   hasMore?: boolean;
+  onSync?: () => void;
+  isSyncing?: boolean;
+  onOpenUploader?: () => void;
 }
 
 export function MasonryGrid({
@@ -26,6 +29,9 @@ export function MasonryGrid({
   loading,
   onLoadMore,
   hasMore,
+  onSync,
+  isSyncing = false,
+  onOpenUploader,
 }: MasonryGridProps) {
   // Group items by date string (Google Photos format: "Mon, Oct 2, 2023")
   const dateGroups = useMemo(() => {
@@ -76,12 +82,35 @@ export function MasonryGrid({
 
   if (items.length === 0 && !loading) {
     return (
-      <div className="flex flex-col items-center justify-center h-96 text-[var(--text-tertiary)]">
-        <div className="w-16 h-16 rounded-full bg-[var(--bg-secondary)] flex items-center justify-center mb-4 text-[var(--text-secondary)]">
+      <div className="flex flex-col items-center justify-center h-96 text-[var(--text-tertiary)] space-y-4">
+        <div className="w-16 h-16 rounded-full bg-[var(--bg-secondary)] flex items-center justify-center text-[var(--text-secondary)] shadow-sm">
           <ImageIcon className="w-8 h-8 stroke-[1.5]" />
         </div>
-        <p className="text-base font-medium text-[var(--text-primary)]">No photos or videos yet</p>
-        <p className="text-xs text-[var(--text-secondary)] mt-1">Upload media or sync your Telegram channel to get started.</p>
+        <div className="text-center">
+          <p className="text-base font-medium text-[var(--text-primary)]">No photos or videos yet</p>
+          <p className="text-xs text-[var(--text-secondary)] mt-1">Upload media or sync from your Telegram channel.</p>
+        </div>
+        <div className="flex items-center gap-3 pt-2">
+          {onSync && (
+            <button
+              onClick={onSync}
+              disabled={isSyncing}
+              className="flex items-center gap-2 px-4 py-2 rounded-full bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow-sm transition-all disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? "animate-spin" : ""}`} />
+              <span>{isSyncing ? "Syncing..." : "Sync from Telegram"}</span>
+            </button>
+          )}
+          {onOpenUploader && (
+            <button
+              onClick={onOpenUploader}
+              className="flex items-center gap-2 px-4 py-2 rounded-full bg-[var(--bg-secondary)] hover:bg-[var(--bg-hover)] text-[var(--text-primary)] text-xs font-semibold border border-[var(--border-color)] transition-all"
+            >
+              <Upload className="w-3.5 h-3.5" />
+              <span>Upload Media</span>
+            </button>
+          )}
+        </div>
       </div>
     );
   }

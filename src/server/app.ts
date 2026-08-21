@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
+import { env } from "hono/adapter";
 import { authRouter } from "./routes/auth";
 import { channelsRouter } from "./routes/channels";
 import { mediaRouter } from "./routes/media";
@@ -9,6 +10,24 @@ import { streamRouter } from "./routes/stream";
 
 export const app = new Hono().basePath("/api");
 
+// Sync Cloudflare Worker environment variables & secrets into process.env
+app.use("*", async (c, next) => {
+  try {
+    const workerEnv = env(c) || (c.env as any) || {};
+    if (!globalThis.process) {
+      (globalThis as any).process = { env: {} };
+    } else if (!globalThis.process.env) {
+      (globalThis.process as any).env = {};
+    }
+    for (const [key, value] of Object.entries(workerEnv)) {
+      if (typeof value === "string") {
+        process.env[key] = value;
+      }
+    }
+  } catch {}
+  await next();
+});
+
 // Middleware
 app.use("*", logger());
 app.use(
@@ -16,6 +35,10 @@ app.use(
   cors({
     origin: (origin) => origin || "*",
     credentials: true,
+    allowHeaders: ["Content-Type", "x-tg-session", "Authorization", "Cookie", "Upgrade", "x-tg-api-id", "x-tg-api-hash", "x-tg-test-mode", "x-tg-enc-key"],
+    allowMethods: ["GET", "HEAD", "PUT", "POST", "DELETE", "PATCH", "OPTIONS"],
+    exposeHeaders: ["Content-Length", "Content-Range", "Set-Cookie"],
+    maxAge: 86400,
   })
 );
 
@@ -31,4 +54,5 @@ app.get("/health", (c) => {
   return c.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
+export { TelegramAuthDO } from "./durable_objects/TelegramAuthDO";
 export default app;
