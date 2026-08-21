@@ -75,6 +75,9 @@ export default function GalleryPage() {
       const data = await res.json();
       if (data.authenticated && data.user) {
         setUser(data.user);
+        if (data.sessionToken) {
+          localStorage.setItem("tg_session_token", data.sessionToken);
+        }
       } else {
         setUser(null);
       }

@@ -5,7 +5,7 @@
 export const AETHEROLL_WORKER_URL = (
   process.env.NEXT_PUBLIC_REMOTE_API_URL ||
   process.env.REMOTE_API_URL ||
-  "https://aetheroll.shivareddyvanja.workers.dev"
+  "https://aetheroll-api.builtbyshiva.com"
 ).replace(/\/$/, "");
 
 /**
@@ -24,6 +24,26 @@ export function getApiBaseUrl(isRemoteOnly: boolean = false): string {
   }
 
   return AETHEROLL_WORKER_URL;
+}
+
+/**
+ * Returns the direct, authenticated video streaming URL
+ */
+export function getMediaStreamUrl(mediaId: string): string {
+  const base = getApiBaseUrl();
+  const token = typeof window !== "undefined" ? localStorage.getItem("tg_session_token") : null;
+  const prefix = base ? `${base}/api/stream?media_id=${encodeURIComponent(mediaId)}` : `/api/stream?media_id=${encodeURIComponent(mediaId)}`;
+  return token ? `${prefix}&session_token=${encodeURIComponent(token)}` : prefix;
+}
+
+/**
+ * Returns the direct, authenticated media thumbnail URL
+ */
+export function getMediaThumbnailUrl(mediaId: string): string {
+  const base = getApiBaseUrl();
+  const token = typeof window !== "undefined" ? localStorage.getItem("tg_session_token") : null;
+  const prefix = base ? `${base}/api/media/${encodeURIComponent(mediaId)}/thumbnail` : `/api/media/${encodeURIComponent(mediaId)}/thumbnail`;
+  return token ? `${prefix}?session_token=${encodeURIComponent(token)}` : prefix;
 }
 
 /**
