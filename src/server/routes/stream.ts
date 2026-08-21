@@ -220,6 +220,9 @@ streamRouter.get("/", async (c) => {
 
     const outHeaders = new Headers(response.headers);
     outHeaders.set("x-edge-cache", "MISS");
+    outHeaders.set("Accept-Ranges", "bytes");
+    outHeaders.set("Access-Control-Allow-Origin", "*");
+    outHeaders.set("Access-Control-Expose-Headers", "Content-Range, Content-Length, Accept-Ranges, x-edge-cache");
     return new Response(response.body, {
       status: response.status,
       headers: outHeaders,
