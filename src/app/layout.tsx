@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Telegram Media Gallery",
-  description: "Self-hosted Google Photos clone backed by Telegram and Cloudflare",
+  title: "Aetheroll | Infinite Cloud Photo & Video Gallery",
+  description: "Unlimited, private, zero-knowledge cloud camera roll and media gallery",
 };
 
 export default function RootLayout({

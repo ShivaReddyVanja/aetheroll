@@ -5,6 +5,7 @@ import fs from "fs";
 import path from "path";
 import { getDb } from "../lib/db";
 import { decryptSession } from "../lib/crypto";
+import { resolveUserAuth, extractSessionToken } from "../lib/auth";
 import { getR2Storage } from "../lib/r2";
 import { createTelegramClient, getConnectedClient, getDefaultTelegramConfig } from "../lib/telegram";
 import { emitGalleryEvent } from "../lib/ledger";
@@ -26,18 +27,10 @@ export const mediaRouter = new Hono();
  */
 mediaRouter.get("/", async (c) => {
   try {
-    const token = getCookie(c, "tg_session");
-    if (!token) return c.json({ error: "Unauthorized" }, 401);
+    const auth = await resolveUserAuth(c);
+    if (!auth.authenticated || !auth.userId) return c.json({ error: "Unauthorized" }, 401);
 
     const db = getDb((c.env as any)?.DB);
-    const session = await db.get(
-      `SELECT u.id FROM user_sessions s
-       JOIN users u ON u.id = s.user_id
-       WHERE s.id = ? AND s.expires_at > CURRENT_TIMESTAMP`,
-      [token]
-    );
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
-
     const channelId = c.req.query("channel_id");
     if (!channelId) return c.json({ error: "channel_id is required" }, 400);
 
@@ -57,7 +50,7 @@ mediaRouter.get("/", async (c) => {
       LEFT JOIN media_favorites f ON f.media_item_id = m.id AND f.user_id = ?
       WHERE m.channel_id = ? AND m.deleted_at IS NULL
     `;
-    const params: any[] = [session.id, channelId];
+    const params: any[] = [auth.userId, channelId];
 
     if (cursor) {
       query += ` AND m.captured_at < ?`;
@@ -267,18 +260,10 @@ mediaRouter.post("/upload/complete", async (c) => {
  */
 mediaRouter.post("/register", async (c) => {
   try {
-    const token = getCookie(c, "tg_session");
-    if (!token) return c.json({ error: "Unauthorized" }, 401);
+    const auth = await resolveUserAuth(c);
+    if (!auth.authenticated || !auth.userId) return c.json({ error: "Unauthorized" }, 401);
 
     const db = getDb((c.env as any)?.DB);
-    const session = await db.get(
-      `SELECT u.id, u.session_string FROM user_sessions s
-       JOIN users u ON u.id = s.user_id
-       WHERE s.id = ? AND s.expires_at > CURRENT_TIMESTAMP`,
-      [token]
-    );
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
-
     const body = await c.req.json();
     const {
       channel_id,
@@ -302,7 +287,7 @@ mediaRouter.post("/register", async (c) => {
       `SELECT c.* FROM channels c
        JOIN gallery_channels gc ON gc.channel_id = c.id
        WHERE c.id = ? AND gc.user_id = ?`,
-      [channel_id, session.id]
+      [channel_id, auth.userId]
     );
     if (!channel) return c.json({ error: "Channel not found or unauthorized" }, 404);
 
@@ -330,7 +315,7 @@ mediaRouter.post("/register", async (c) => {
       [
         mediaId,
         channel_id,
-        session.id,
+        auth.userId,
         Number(telegram_message_id),
         file_type || "photo",
         mime_type || "image/jpeg",
@@ -357,29 +342,21 @@ mediaRouter.post("/register", async (c) => {
  */
 mediaRouter.post("/:id/favorite", async (c) => {
   try {
-    const token = getCookie(c, "tg_session");
-    if (!token) return c.json({ error: "Unauthorized" }, 401);
+    const auth = await resolveUserAuth(c);
+    if (!auth.authenticated || !auth.userId) return c.json({ error: "Unauthorized" }, 401);
 
     const db = getDb((c.env as any)?.DB);
-    const session = await db.get(
-      `SELECT u.id, u.session_string FROM user_sessions s
-       JOIN users u ON u.id = s.user_id
-       WHERE s.id = ? AND s.expires_at > CURRENT_TIMESTAMP`,
-      [token]
-    );
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
-
     const mediaId = c.req.param("id");
     const existing = await db.get(
       "SELECT 1 FROM media_favorites WHERE user_id = ? AND media_item_id = ?",
-      [session.id, mediaId]
+      [auth.userId, mediaId]
     );
 
     const isFavorited = !existing;
     if (existing) {
-      await db.run("DELETE FROM media_favorites WHERE user_id = ? AND media_item_id = ?", [session.id, mediaId]);
+      await db.run("DELETE FROM media_favorites WHERE user_id = ? AND media_item_id = ?", [auth.userId, mediaId]);
     } else {
-      await db.run("INSERT INTO media_favorites (user_id, media_item_id) VALUES (?, ?)", [session.id, mediaId]);
+      await db.run("INSERT INTO media_favorites (user_id, media_item_id) VALUES (?, ?)", [auth.userId, mediaId]);
     }
 
     // Emit WAL Event to Telegram channel in background
@@ -390,11 +367,8 @@ mediaRouter.post("/:id/favorite", async (c) => {
          WHERE m.id = ?`,
         [mediaId]
       );
-      if (item) {
-        const client = await getConnectedClient(
-          await decryptSession(session.session_string, (c.env as any)?.SESSION_ENCRYPTION_KEY),
-          getDefaultTelegramConfig(c.env)
-        );
+      if (item && auth.sessionString) {
+        const client = await getConnectedClient(auth.sessionString, auth.telegramConfig);
         let targetPeer: any = item.telegram_channel_id;
         if (targetPeer !== "me") {
           try {
@@ -421,18 +395,10 @@ mediaRouter.post("/:id/favorite", async (c) => {
  */
 mediaRouter.post("/delete", async (c) => {
   try {
-    const token = getCookie(c, "tg_session");
-    if (!token) return c.json({ error: "Unauthorized" }, 401);
+    const auth = await resolveUserAuth(c);
+    if (!auth.authenticated || !auth.userId) return c.json({ error: "Unauthorized" }, 401);
 
     const db = getDb((c.env as any)?.DB);
-    const session = await db.get(
-      `SELECT u.id, u.session_string FROM user_sessions s
-       JOIN users u ON u.id = s.user_id
-       WHERE s.id = ? AND s.expires_at > CURRENT_TIMESTAMP`,
-      [token]
-    );
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
-
     const body = await c.req.json();
     const media_ids: string[] = Array.isArray(body.media_ids)
       ? body.media_ids
@@ -446,13 +412,12 @@ mediaRouter.post("/delete", async (c) => {
 
     const r2 = getR2Storage((c.env as any)?.R2_BUCKET);
     let client: any = null;
-    try {
-      client = await getConnectedClient(
-        await decryptSession(session.session_string, (c.env as any)?.SESSION_ENCRYPTION_KEY),
-        getDefaultTelegramConfig(c.env)
-      );
-    } catch (clientErr) {
-      console.warn("[MediaDelete] Telegram client connect error:", clientErr);
+    if (auth.sessionString) {
+      try {
+        client = await getConnectedClient(auth.sessionString, auth.telegramConfig);
+      } catch (clientErr) {
+        console.warn("[MediaDelete] Telegram client connect error:", clientErr);
+      }
     }
 
     let deletedCount = 0;
@@ -604,22 +569,10 @@ mediaRouter.get("/:id/thumbnail", async (c) => {
 
     // 3. Fallback: Fetch from Telegram on cache miss
     if (!response) {
-      const token = getCookie(c, "tg_session");
-      if (!token) return c.text("Unauthorized", 401);
+      const auth = await resolveUserAuth(c);
+      if (!auth.authenticated || !auth.sessionString) return c.text("Unauthorized", 401);
 
-      const userRow = await db.get(
-        `SELECT u.session_string FROM user_sessions s
-         JOIN users u ON u.id = s.user_id
-         WHERE s.id = ?`,
-        [token]
-      );
-
-      if (!userRow) return c.text("Unauthorized", 401);
-
-      const client = await getConnectedClient(
-        await decryptSession(userRow.session_string, (c.env as any)?.SESSION_ENCRYPTION_KEY),
-        getDefaultTelegramConfig(c.env)
-      );
+      const client = await getConnectedClient(auth.sessionString, auth.telegramConfig);
 
       let targetPeer: any = item.telegram_channel_id;
       if (item.telegram_channel_id === "me") {

@@ -99,8 +99,8 @@ export function Sidebar({
               />
             </svg>
           </div>
-          <span className="text-lg font-medium text-[var(--text-primary)] tracking-tight">
-            Telegram <span className="text-[var(--text-secondary)] font-normal">Photos</span>
+          <span className="text-xl font-bold bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-600 bg-clip-text text-transparent tracking-tight">
+            Aetheroll
           </span>
         </div>
       </div>

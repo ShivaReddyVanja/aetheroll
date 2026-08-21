@@ -1,0 +1,53 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "aetheroll",
+  "main": "src/server/app.ts",
+  "compatibility_date": "2024-09-23",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+
+  // 1. Durable Objects (Stateful WebSocket & Warm MTProto Sessions)
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "AUTH_DO",
+        "class_name": "TelegramAuthDO"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "TelegramAuthDO"
+      ]
+    }
+  ],
+
+  // 2. Cloudflare R2 Storage (Thumbnails & Zero-Egress Media Cache)
+  "r2_buckets": [
+    {
+      "binding": "R2_BUCKET",
+      "bucket_name": "aetheroll-media"
+    }
+  ],
+
+  // 3. Cloudflare D1 SQL Database (Zero-Knowledge User Index)
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "aetheroll-db",
+      "database_id": "c43a6484-be96-49c4-8558-a8da284796a1",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  // 4. Non-Secret Operational Variables
+  // (Sensitive secrets like TELEGRAM_API_HASH and SESSION_ENCRYPTION_KEY live in .dev.vars / Cloudflare Secrets)
+  "vars": {
+    "TELEGRAM_API_ID": "33733965",
+    "TELEGRAM_TEST_MODE": "false",
+    "ENABLE_TELEMETRY": "false"
+  }
+}

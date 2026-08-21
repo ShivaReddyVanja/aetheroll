@@ -1,6 +1,6 @@
-# Telegram-Backed Media Gallery (Google Photos Clone)
+# Aetheroll — Infinite Cloud Photo & Video Gallery
 
-A self-hosted, Google Photos-style web gallery that uses an unlimited, private Telegram channel as its core media storage engine, paired with Cloudflare R2 for zero-egress, high-performance edge caching.
+A high-performance, zero-knowledge cloud gallery with unlimited storage, sub-5ms edge video streaming, and intelligent media management.
 
 ---
 

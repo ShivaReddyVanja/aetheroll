@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { QrCode, RefreshCw, Smartphone, ShieldCheck, AlertCircle } from "lucide-react";
+import { getAuthWsUrl } from "@/lib/config";
 
 interface QRCodeModalProps {
   onLoginSuccess: (user: any) => void;
@@ -68,17 +69,7 @@ export function QRCodeModal({ onLoginSuccess }: QRCodeModalProps) {
 
     // 1. Try Real-Time WebSocket first (Durable Object)
     try {
-      const isHttps = window.location.protocol === "https:";
-      const defaultWsProtocol = isHttps ? "wss:" : "ws:";
-      const remoteUrl = process.env.NEXT_PUBLIC_REMOTE_API_URL;
-      
-      let wsUrl = `${defaultWsProtocol}//${window.location.host}/api/auth/ws`;
-      if (remoteUrl && remoteUrl.startsWith("http")) {
-        const parsed = new URL(remoteUrl);
-        const remoteWsProto = parsed.protocol === "https:" ? "wss:" : "ws:";
-        wsUrl = `${remoteWsProto}//${parsed.host}/api/auth/ws`;
-      }
-
+      const wsUrl = getAuthWsUrl();
       console.log("[Auth] Connecting to WebSocket:", wsUrl);
       const ws = new WebSocket(wsUrl);
       activeSocket = ws;
@@ -152,7 +143,7 @@ export function QRCodeModal({ onLoginSuccess }: QRCodeModalProps) {
             <QrCode className="w-6 h-6" />
           </div>
           <h2 className="text-lg font-bold text-white tracking-tight">
-            Log in to Telegram Gallery
+            Log in to Aetheroll
           </h2>
           <p className="text-xs text-slate-400">
             Scan with your official Telegram app to connect your private vault
