@@ -18,11 +18,16 @@ export interface MediaItem {
   blur_hash: string;
   thumbnail_r2_key?: string | null;
   captured_at: string;
+  latitude?: number | null;
+  longitude?: number | null;
+  altitude?: number | null;
   is_favorite?: number | boolean;
   uploader_name?: string;
   people?: Array<{ id: string; name: string }>;
   locations?: Array<{ id: string; name: string }>;
   events?: Array<{ id: string; name: string }>;
+  tags?: Array<{ id: string; name: string; color?: string | null }>;
+  trips?: Array<{ id: string; name: string }>;
 }
 
 interface MediaCardProps {

@@ -76,10 +76,11 @@ export function getAuthWsUrl(): string {
 export async function apiFetch(path: string, options: RequestInit = {}): Promise<Response> {
   const base = getApiBaseUrl();
   const cleanPath = path.startsWith("/") ? path : `/${path}`;
-  const url = base ? `${base}${cleanPath}` : cleanPath;
+  const url = path.startsWith("http") ? path : (base ? `${base}${cleanPath}` : cleanPath);
 
   return fetch(url, {
     ...options,
     credentials: "include",
   });
 }
+

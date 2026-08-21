@@ -1071,6 +1071,8 @@ export class TelegramAuthDO {
       blurHash?: string;
       thumbnailBase64?: string;
       capturedAt?: string;
+      latitude?: number | null;
+      longitude?: number | null;
       isBig: boolean;
       isVideo: boolean;
       targetPeer?: any;
@@ -1162,13 +1164,15 @@ export class TelegramAuthDO {
           `INSERT INTO media_items (
              id, channel_id, uploader_user_id, telegram_message_id, file_type,
              mime_type, file_size_bytes, width, height, duration_seconds,
-             blur_hash, thumbnail_r2_key, captured_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             blur_hash, thumbnail_r2_key, captured_at, latitude, longitude
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(channel_id, telegram_message_id) DO UPDATE SET
              file_size_bytes = excluded.file_size_bytes,
              width = excluded.width,
              height = excluded.height,
-             duration_seconds = excluded.duration_seconds`,
+             duration_seconds = excluded.duration_seconds,
+             latitude = COALESCE(excluded.latitude, media_items.latitude),
+             longitude = COALESCE(excluded.longitude, media_items.longitude)`,
           [
             mediaId,
             uploadState.channelId,
@@ -1183,6 +1187,8 @@ export class TelegramAuthDO {
             uploadState.blurHash,
             thumbnailR2Key,
             uploadState.capturedAt,
+            uploadState.latitude || null,
+            uploadState.longitude || null,
           ]
         );
 
@@ -1396,6 +1402,8 @@ export class TelegramAuthDO {
               blurHash: msg.blurHash || "LEHV6nWB2yk8pyo0adR*.7kCMdnj",
               thumbnailBase64: msg.thumbnailBase64 || "",
               capturedAt: msg.capturedAt || new Date().toISOString(),
+              latitude: msg.latitude != null ? Number(msg.latitude) : null,
+              longitude: msg.longitude != null ? Number(msg.longitude) : null,
               isBig,
               isVideo,
               targetPeer,
@@ -1988,6 +1996,10 @@ export class TelegramAuthDO {
       const blurHash = (formData.get("blur_hash") as string) || "LEHV6nWB2yk8pyo0adR*.7kCMdnj";
       const capturedAt = (formData.get("captured_at") as string) || new Date().toISOString();
       const thumbnailBase64 = formData.get("thumbnail_base64") as string;
+      const latitudeStr = formData.get("latitude") as string;
+      const longitudeStr = formData.get("longitude") as string;
+      const latitude = latitudeStr ? parseFloat(latitudeStr) : null;
+      const longitude = longitudeStr ? parseFloat(longitudeStr) : null;
 
       if (!file || !channelId) {
         return new Response(JSON.stringify({ error: "File and channel_id are required" }), {
@@ -2125,17 +2137,19 @@ export class TelegramAuthDO {
         `INSERT INTO media_items (
            id, channel_id, uploader_user_id, telegram_message_id, file_type,
            mime_type, file_size_bytes, width, height, duration_seconds,
-           blur_hash, thumbnail_r2_key, captured_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           blur_hash, thumbnail_r2_key, captured_at, latitude, longitude
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(channel_id, telegram_message_id) DO UPDATE SET
            file_size_bytes = excluded.file_size_bytes,
            width = excluded.width,
            height = excluded.height,
-           duration_seconds = excluded.duration_seconds`,
+           duration_seconds = excluded.duration_seconds,
+           latitude = COALESCE(excluded.latitude, media_items.latitude),
+           longitude = COALESCE(excluded.longitude, media_items.longitude)`,
         [
           mediaId, channelId, userId, realMessageId, isVideo ? "video" : "photo",
           file.type || (isVideo ? "video/mp4" : "image/jpeg"), file.size, width, height, duration,
-          blurHash, thumbnailR2Key, capturedAt
+          blurHash, thumbnailR2Key, capturedAt, latitude, longitude
         ]
       );
 

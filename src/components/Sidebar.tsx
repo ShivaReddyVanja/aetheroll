@@ -8,6 +8,9 @@ import {
   MapPin,
   PlayCircle,
   Folder,
+  Tag,
+  Compass,
+  Calendar,
   Cloud,
   ChevronDown,
   ChevronRight,
@@ -38,7 +41,7 @@ interface SidebarProps {
   selectedChannelId: string | null;
   onSelectChannel: (id: string) => void;
   onOpenChannelPicker: () => void;
-  activeFilter: "all" | "photos" | "videos" | "favorites" | "people" | "places" | "events";
+  activeFilter: "all" | "photos" | "videos" | "favorites" | "people" | "places" | "events" | "trips" | "tags";
   onSelectFilter: (filter: any) => void;
   onOpenUploader: () => void;
   onSyncChannel: (id: string) => void;
@@ -221,8 +224,10 @@ export function Sidebar({
               { id: "favorites", label: "Favorites", icon: Star },
               { id: "people", label: "People & pets", icon: User },
               { id: "places", label: "Places", icon: MapPin },
+              { id: "trips", label: "Trips", icon: Compass },
+              { id: "events", label: "Events", icon: Calendar },
+              { id: "tags", label: "Tags", icon: Tag },
               { id: "videos", label: "Videos", icon: PlayCircle },
-              { id: "events", label: "Events & Trips", icon: Folder },
             ].map((item) => {
               const Icon = item.icon;
               const isActive = activeFilter === item.id;
