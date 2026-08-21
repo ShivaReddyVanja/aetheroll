@@ -156,3 +156,61 @@ export async function decryptSession(
     }
   }
 }
+
+/**
+ * Generates an 8-character cryptographic signature tag for Aetheroll uploads.
+ * e.g. "[AET:v1:7f8a9b2c]"
+ */
+export async function generateAetherollSignature(
+  fileSizeBytes: number,
+  capturedAtSeconds: number,
+  serverSecret?: string
+): Promise<string> {
+  const secret = serverSecret || process.env.SESSION_ENCRYPTION_KEY || "aetheroll-vault-master-secret";
+  const encoder = new TextEncoder();
+  const subtle = globalThis.crypto?.subtle || (await import("crypto")).webcrypto?.subtle;
+  const payload = `${fileSizeBytes}:${Math.floor(capturedAtSeconds)}:${secret}`;
+
+  if (subtle) {
+    const digest = await subtle.digest("SHA-256", encoder.encode(payload));
+    const hex = Array.from(new Uint8Array(digest))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("")
+      .slice(0, 8);
+    return `[AET:v1:${hex}]`;
+  }
+
+  const nodeCrypto = await import("crypto");
+  const hex = nodeCrypto.createHash("sha256").update(payload).digest("hex").slice(0, 8);
+  return `[AET:v1:${hex}]`;
+}
+
+/**
+ * Validates whether a Telegram message was uploaded through Aetheroll.
+ */
+export async function verifyAetherollSignature(
+  messageText: string | undefined | null,
+  fileSizeBytes: number,
+  dateSeconds: number,
+  serverSecret?: string
+): Promise<boolean> {
+  if (!messageText) return false;
+
+  // 1. Direct Aetheroll Cryptographic Signature Match
+  const match = messageText.match(/\[AET:v1:([a-f0-9]{8})\]/i);
+  if (match) {
+    const expectedSig = await generateAetherollSignature(fileSizeBytes, dateSeconds, serverSecret);
+    const expectedHex = expectedSig.replace("[AET:v1:", "").replace("]", "");
+    if (match[1].toLowerCase() === expectedHex.toLowerCase()) {
+      return true;
+    }
+  }
+
+  // 2. Event Ledger WAL Tag Match (Legacy and Threaded events)
+  if (messageText.includes("[GP_EVENT:v1]") || messageText.includes("#aetheroll")) {
+    return true;
+  }
+
+  return false;
+}
+

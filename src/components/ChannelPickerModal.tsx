@@ -98,7 +98,7 @@ export function ChannelPickerModal({
           ) : (
             filteredChannels.map((ch, idx) => {
               const isActive = activeChannelIds.has(ch.id) || (ch as any).is_added === 1;
-              const isSavedMessages = ch.telegram_channel_id === "me";
+              const isSavedMessages = ch.telegram_channel_id === "me" || ch.telegram_channel_id.startsWith("me_");
               const colorGradient = AVATAR_COLORS[idx % AVATAR_COLORS.length];
 
               return (

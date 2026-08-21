@@ -261,7 +261,7 @@ streamRouter.get("/", async (c) => {
       targetPeer = cached.peer;
     } else {
       targetPeer = item.telegram_channel_id;
-      if (item.telegram_channel_id === "me") {
+      if (item.telegram_channel_id === "me" || item.telegram_channel_id.startsWith("me_")) {
         targetPeer = "me";
       } else {
         try {

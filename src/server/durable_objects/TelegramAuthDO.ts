@@ -3,7 +3,7 @@ import crypto from "crypto";
 import { Api, helpers } from "telegram";
 import bigInt from "big-integer";
 import { getDb } from "../lib/db";
-import { encryptSession, decryptSession } from "../lib/crypto";
+import { encryptSession, decryptSession, generateAetherollSignature } from "../lib/crypto";
 import { extractSessionToken, generateCompositeSessionToken } from "../lib/auth";
 import { getR2Storage } from "../lib/r2";
 import {
@@ -612,9 +612,11 @@ export class TelegramAuthDO {
     }
 
     let targetPeer: any = item.telegram_channel_id;
-    if (item.telegram_channel_id !== "me") {
+    if (item.telegram_channel_id !== "me" && !item.telegram_channel_id.startsWith("me_")) {
       try { targetPeer = await client.getInputEntity(item.telegram_channel_id); }
       catch { try { targetPeer = await client.getEntity(item.telegram_channel_id); } catch {} }
+    } else {
+      targetPeer = "me";
     }
 
     const msgId = Number(item.telegram_message_id);
@@ -789,9 +791,11 @@ export class TelegramAuthDO {
         // Full media download fallback
         const msgId = Number(item.telegram_message_id);
         let targetPeer: any = item.telegram_channel_id;
-        if (item.telegram_channel_id !== "me") {
+        if (item.telegram_channel_id !== "me" && !item.telegram_channel_id.startsWith("me_")) {
           try { targetPeer = await client.getInputEntity(item.telegram_channel_id); }
           catch { try { targetPeer = await client.getEntity(item.telegram_channel_id); } catch {} }
+        } else {
+          targetPeer = "me";
         }
         const messages = await client.getMessages(targetPeer, { ids: [msgId] });
         const msg = messages[0];
@@ -1206,7 +1210,7 @@ export class TelegramAuthDO {
             const totalBrowserChunks = Number(msg.totalChunks) || Math.ceil(fileSize / (1024 * 1024));
 
             let targetPeer: any = channel.telegram_channel_id;
-            if (channel.telegram_channel_id === "me") {
+            if (channel.telegram_channel_id === "me" || channel.telegram_channel_id.startsWith("me_")) {
               targetPeer = "me";
             } else {
               try {
@@ -1693,7 +1697,7 @@ export class TelegramAuthDO {
       }
 
       let targetPeer: any = channel.telegram_channel_id;
-      if (channel.telegram_channel_id === "me") {
+      if (channel.telegram_channel_id === "me" || channel.telegram_channel_id.startsWith("me_")) {
         targetPeer = "me";
       } else {
         try {
@@ -1727,10 +1731,18 @@ export class TelegramAuthDO {
         } catch {}
       }
 
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      const signature = await generateAetherollSignature(
+        uploadSession.fileSize,
+        nowSeconds,
+        envObj?.SESSION_ENCRYPTION_KEY
+      );
+
       const isVideo = uploadSession.isVideo;
       const sentMsg = await client.sendFile(targetPeer, {
         file: inputFile,
         thumb: thumbBuf,
+        caption: signature,
         forceDocument: false,
         attributes: isVideo
           ? [
@@ -1854,7 +1866,7 @@ export class TelegramAuthDO {
       const customFile = new CustomFile(file.name, file.size, "", fileBuffer);
 
       let targetPeer: any = channel.telegram_channel_id;
-      if (channel.telegram_channel_id === "me") {
+      if (channel.telegram_channel_id === "me" || channel.telegram_channel_id.startsWith("me_")) {
         targetPeer = "me";
       } else {
         try {
@@ -1875,12 +1887,20 @@ export class TelegramAuthDO {
         } catch {}
       }
 
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      const signature = await generateAetherollSignature(
+        file.size,
+        nowSeconds,
+        envObj?.SESSION_ENCRYPTION_KEY
+      );
+
       console.log(`[UploadOneShot] Streaming file to Telegram targetPeer (${targetPeer})...`);
       let sentMsg: any;
       try {
         sentMsg = await client.sendFile(targetPeer, {
           file: customFile,
           thumb: thumbBuf,
+          caption: signature,
           workers: 1,
           forceDocument: false,
           attributes: isVideo
