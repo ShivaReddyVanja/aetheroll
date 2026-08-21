@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from "react";
 import { X, Search, Plus, RefreshCw, Check, Users, Radio } from "lucide-react";
 import { Channel } from "./Sidebar";
+import { apiFetch } from "@/lib/config";
 
 interface ChannelPickerModalProps {
   onClose: () => void;
@@ -29,14 +30,27 @@ export function ChannelPickerModal({
   const [allChannels, setAllChannels] = useState<Channel[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
+  const [loadingId, setLoadingId] = useState<string | null>(null);
+  const [localActiveIds, setLocalActiveIds] = useState<Set<string>>(new Set(activeChannelIds));
+
+  useEffect(() => {
+    setLocalActiveIds(new Set(activeChannelIds));
+  }, [activeChannelIds]);
 
   useEffect(() => {
     async function loadAllChannels() {
       try {
-        const res = await fetch("/api/channels?all=true");
+        const res = await apiFetch("/api/channels?all=true");
         const data = await res.json();
         if (data.channels) {
           setAllChannels(data.channels);
+          const activeFromApi = new Set<string>();
+          for (const ch of data.channels) {
+            if ((ch as any).is_added === 1 || activeChannelIds.has(ch.id)) {
+              activeFromApi.add(ch.id);
+            }
+          }
+          setLocalActiveIds(activeFromApi);
         }
       } catch (err) {
         console.error("Failed to load Telegram channels:", err);
@@ -45,11 +59,48 @@ export function ChannelPickerModal({
       }
     }
     loadAllChannels();
-  }, []);
+  }, [activeChannelIds]);
 
-  const filteredChannels = allChannels.filter((c) =>
-    c.name.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const handleToggleChannel = async (ch: Channel, isActive: boolean) => {
+    setLoadingId(ch.id);
+    try {
+      if (isActive && onRemoveChannel) {
+        await onRemoveChannel(ch.id);
+        setLocalActiveIds((prev) => {
+          const next = new Set(prev);
+          next.delete(ch.id);
+          return next;
+        });
+      } else {
+        await onSelectAndAddChannel(ch);
+        setLocalActiveIds((prev) => {
+          const next = new Set(prev);
+          next.add(ch.id);
+          return next;
+        });
+      }
+    } catch (err) {
+      console.error("Failed toggling channel:", err);
+    } finally {
+      setLoadingId(null);
+    }
+  };
+
+  const filteredChannels = allChannels
+    .filter((c) => c.name.toLowerCase().includes(searchQuery.toLowerCase()))
+    .sort((a, b) => {
+      const aActive = localActiveIds.has(a.id);
+      const bActive = localActiveIds.has(b.id);
+      if (aActive !== bActive) {
+        return aActive ? -1 : 1; // Added channels appear on top!
+      }
+      const aIsSaved = a.telegram_channel_id === "me" || a.telegram_channel_id.startsWith("me_");
+      const bIsSaved = b.telegram_channel_id === "me" || b.telegram_channel_id.startsWith("me_");
+      if (aIsSaved !== bIsSaved) {
+        return aIsSaved ? -1 : 1; // Saved Messages prioritized within group
+      }
+      return a.name.localeCompare(b.name);
+    });
 
   return (
     <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
@@ -61,7 +112,7 @@ export function ChannelPickerModal({
               Add Library from Telegram
             </h2>
             <p className="text-xs text-[var(--text-secondary)] mt-0.5">
-              Select any Telegram Channel or Group to use as a photo gallery.
+              Select any Telegram Channel, Group, or Saved Messages to use as a photo gallery.
             </p>
           </div>
           <button
@@ -97,8 +148,9 @@ export function ChannelPickerModal({
             </div>
           ) : (
             filteredChannels.map((ch, idx) => {
-              const isActive = activeChannelIds.has(ch.id) || (ch as any).is_added === 1;
+              const isActive = localActiveIds.has(ch.id);
               const isSavedMessages = ch.telegram_channel_id === "me" || ch.telegram_channel_id.startsWith("me_");
+              const isProcessing = loadingId === ch.id;
               const colorGradient = AVATAR_COLORS[idx % AVATAR_COLORS.length];
 
               return (
@@ -131,25 +183,30 @@ export function ChannelPickerModal({
                     </div>
                   </div>
 
-                  {!isSavedMessages && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (isActive && onRemoveChannel) {
-                          onRemoveChannel(ch.id);
-                        } else {
-                          onSelectAndAddChannel(ch);
-                        }
-                      }}
-                      className={`px-3 py-1 rounded-full text-xs font-medium transition-all ${
-                        isActive
-                          ? "bg-red-500/10 text-red-500 hover:bg-red-500 hover:text-white"
-                          : "bg-blue-600 text-white hover:bg-blue-700"
-                      }`}
-                    >
-                      {isActive ? "Remove" : "+ Add"}
-                    </button>
-                  )}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (!isProcessing) {
+                        handleToggleChannel(ch, isActive);
+                      }
+                    }}
+                    disabled={isProcessing}
+                    className={`min-w-[72px] h-8 px-3 rounded-full text-xs font-medium transition-all flex items-center justify-center ${
+                      isProcessing
+                        ? "bg-[var(--bg-hover)] text-[var(--text-secondary)] cursor-not-allowed"
+                        : isActive
+                        ? "bg-red-500/10 text-red-500 hover:bg-red-500 hover:text-white"
+                        : "bg-blue-600 text-white hover:bg-blue-700"
+                    }`}
+                  >
+                    {isProcessing ? (
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin text-current" />
+                    ) : isActive ? (
+                      "Remove"
+                    ) : (
+                      "+ Add"
+                    )}
+                  </button>
                 </div>
               );
             })
