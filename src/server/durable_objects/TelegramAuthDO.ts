@@ -599,9 +599,11 @@ export class TelegramAuthDO {
       fileName: string;
       fileSize: number;
       mimeType: string;
-      totalChunks: number;
-      chunks?: Buffer[];
-      uploadedParts: Set<number>;
+      totalBrowserChunks: number;
+      totalTelegramParts: number;
+      uploadedTelegramParts: Set<number>;
+      inFlightUploads: Set<Promise<any>>;
+      isFinalizing?: boolean;
       width?: number;
       height?: number;
       duration?: number;
@@ -613,11 +615,210 @@ export class TelegramAuthDO {
       targetPeer?: any;
     } | null = null;
 
+    const TG_PART_SIZE = 512 * 1024;
+
     const logToClient = (stage: string, detail: any) => {
       console.log(`[UploadWS:${stage}]`, detail);
       try {
         ws.send(JSON.stringify({ type: "debug_log", stage, detail, timestamp: Date.now() }));
       } catch {}
+    };
+
+    const finalizeUpload = async () => {
+      if (!uploadState || !client) return;
+      try {
+        logToClient("ALL_MTPROTO_PARTS_UPLOADED", { totalParts: uploadState.totalTelegramParts });
+
+        const inputFile = uploadState.isBig
+          ? new Api.InputFileBig({
+              id: uploadState.fileId,
+              parts: uploadState.totalTelegramParts,
+              name: uploadState.fileName,
+            })
+          : new Api.InputFile({
+              id: uploadState.fileId,
+              parts: uploadState.totalTelegramParts,
+              name: uploadState.fileName,
+              md5Checksum: "",
+            });
+
+        const media = uploadState.isVideo
+          ? new Api.InputMediaUploadedDocument({
+              file: inputFile,
+              mimeType: uploadState.mimeType || "video/mp4",
+              attributes: [
+                new Api.DocumentAttributeVideo({
+                  duration: Math.round(uploadState.duration || 0),
+                  w: uploadState.width || 1920,
+                  h: uploadState.height || 1080,
+                  supportsStreaming: true,
+                }),
+              ],
+            })
+          : new Api.InputMediaUploadedPhoto({
+              file: inputFile,
+            });
+
+        logToClient("INVOKING_SEND_MEDIA", { targetPeer: uploadState.targetPeer, isVideo: uploadState.isVideo });
+        const sentMsg: any = await client.invoke(
+          new Api.messages.SendMedia({
+            peer: uploadState.targetPeer,
+            media,
+            message: "",
+            randomId: helpers.readBigIntFromBuffer(helpers.generateRandomBytes(8), true, true),
+          })
+        );
+
+        let realMessageId = sentMsg.id;
+        if (sentMsg.updates) {
+          for (const u of sentMsg.updates) {
+            if (u.id) {
+              realMessageId = u.id;
+              break;
+            }
+            if (u.message && u.message.id) {
+              realMessageId = u.message.id;
+              break;
+            }
+          }
+        }
+
+        logToClient("TELEGRAM_SEND_FILE_SUCCESS", { realMessageId });
+        const mediaId = crypto.randomUUID();
+        const db = getDb(envObj?.DB);
+
+        let thumbnailR2Key: string | null = null;
+        if (uploadState.thumbnailBase64 && envObj?.R2_BUCKET) {
+          try {
+            const r2 = getR2Storage(envObj.R2_BUCKET);
+            thumbnailR2Key = `thumbnails/${uploadState.channelId}/${mediaId}.jpg`;
+            const thumbBuf = Buffer.from(uploadState.thumbnailBase64.replace(/^data:image\/\w+;base64,/, ""), "base64");
+            await r2.put(thumbnailR2Key, thumbBuf, "image/jpeg").catch(() => {});
+          } catch {}
+        }
+
+        await db.run(
+          `INSERT INTO media_items (
+             id, channel_id, uploader_user_id, telegram_message_id, file_type,
+             mime_type, file_size_bytes, width, height, duration_seconds,
+             blur_hash, thumbnail_r2_key, captured_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(channel_id, telegram_message_id) DO UPDATE SET
+             file_size_bytes = excluded.file_size_bytes,
+             width = excluded.width,
+             height = excluded.height,
+             duration_seconds = excluded.duration_seconds`,
+          [
+            mediaId,
+            uploadState.channelId,
+            uploadState.userId,
+            realMessageId,
+            uploadState.isVideo ? "video" : "photo",
+            uploadState.mimeType,
+            uploadState.fileSize,
+            uploadState.width || 1920,
+            uploadState.height || 1080,
+            uploadState.duration || null,
+            uploadState.blurHash,
+            thumbnailR2Key,
+            uploadState.capturedAt,
+          ]
+        );
+
+        // Background WAL event
+        await emitGalleryEvent(client, uploadState.targetPeer, realMessageId, "CREATE", {
+          blur_hash: uploadState.blurHash,
+          captured_at: uploadState.capturedAt,
+        }).catch(() => {});
+
+        ws.send(JSON.stringify({
+          type: "complete",
+          success: true,
+          mediaId,
+          telegramMessageId: realMessageId,
+          item: {
+            id: mediaId,
+            channel_id: uploadState.channelId,
+            telegram_message_id: realMessageId,
+            file_type: uploadState.isVideo ? "video" : "photo",
+            mime_type: uploadState.mimeType,
+            file_size_bytes: uploadState.fileSize,
+            width: uploadState.width || 1920,
+            height: uploadState.height || 1080,
+            duration_seconds: uploadState.duration || null,
+            blur_hash: uploadState.blurHash,
+            thumbnail_r2_key: thumbnailR2Key,
+            captured_at: uploadState.capturedAt,
+          },
+        }));
+        logToClient("UPLOAD_COMPLETE_DONE", { mediaId });
+      } catch (finalizeErr: any) {
+        console.error("[UploadFinalize Error]:", finalizeErr);
+        logToClient("UPLOAD_FINALIZE_ERROR", { error: finalizeErr.message });
+        try {
+          ws.send(JSON.stringify({ type: "error", error: finalizeErr.message || "Failed finalizing upload" }));
+        } catch {}
+      }
+    };
+
+    const uploadSingleTgPart = async (partIndex: number, partBuffer: Buffer) => {
+      if (!uploadState || !client) return;
+      const isLarge = uploadState.isBig;
+      const partReq = isLarge
+        ? new Api.upload.SaveBigFilePart({
+            fileId: uploadState.fileId,
+            filePart: partIndex,
+            fileTotalParts: uploadState.totalTelegramParts,
+            bytes: partBuffer,
+          })
+        : new Api.upload.SaveFilePart({
+            fileId: uploadState.fileId,
+            filePart: partIndex,
+            bytes: partBuffer,
+          });
+
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const partT0 = Date.now();
+          await Promise.race([
+            client.invoke(partReq),
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error(`MTProto part #${partIndex} timeout after 10s`)), 10000)
+            ),
+          ]);
+          break;
+        } catch (partErr: any) {
+          console.warn(`[UploadPart #${partIndex}] Attempt ${attempt}/3 failed:`, partErr?.message);
+          if (attempt === 3) throw partErr;
+          await new Promise((r) => setTimeout(r, 400));
+        }
+      }
+
+      // Immediately clear buffer reference from memory
+      (partBuffer as any) = null;
+
+      uploadState.uploadedTelegramParts.add(partIndex);
+      const overallPercent = 40 + Math.round((uploadState.uploadedTelegramParts.size / uploadState.totalTelegramParts) * 55);
+
+      logToClient("TELEGRAM_STREAM_PROGRESS", {
+        part: uploadState.uploadedTelegramParts.size,
+        total: uploadState.totalTelegramParts,
+        percent: overallPercent,
+      });
+
+      try {
+        ws.send(JSON.stringify({
+          type: "telegram_progress",
+          progressPercent: Math.round((uploadState.uploadedTelegramParts.size / uploadState.totalTelegramParts) * 100),
+          percent: overallPercent,
+        }));
+      } catch {}
+
+      // If all parts are uploaded, finalize immediately!
+      if (uploadState.uploadedTelegramParts.size === uploadState.totalTelegramParts && !uploadState.isFinalizing) {
+        uploadState.isFinalizing = true;
+        await finalizeUpload();
+      }
     };
 
     ws.addEventListener("close", (ev: any) => {
@@ -629,11 +830,10 @@ export class TelegramAuthDO {
     });
 
     ws.addEventListener("message", async (event: any) => {
-      const msgT0 = Date.now();
       try {
         const rawData = event.data;
 
-        // 1. Text / JSON Message: Control Frames ("init", "complete")
+        // 1. Text / JSON Message: Control Frames ("init")
         if (typeof rawData === "string") {
           let msg: any;
           try {
@@ -695,7 +895,8 @@ export class TelegramAuthDO {
             const isBig = fileSize > 10 * 1024 * 1024;
             const isVideo = msg.mimeType ? msg.mimeType.startsWith("video/") : false;
             const fileId = helpers.readBigIntFromBuffer(helpers.generateRandomBytes(8), true, true);
-            const totalChunks = Number(msg.totalChunks) || Math.ceil(fileSize / (1024 * 1024));
+            const totalTelegramParts = Math.ceil(fileSize / TG_PART_SIZE);
+            const totalBrowserChunks = Number(msg.totalChunks) || Math.ceil(fileSize / (1024 * 1024));
 
             let targetPeer: any = channel.telegram_channel_id;
             if (channel.telegram_channel_id === "me") {
@@ -719,9 +920,10 @@ export class TelegramAuthDO {
               fileName: msg.fileName || "upload",
               fileSize,
               mimeType: msg.mimeType || (isVideo ? "video/mp4" : "image/jpeg"),
-              totalChunks,
-              chunks: new Array(totalChunks),
-              uploadedParts: new Set<number>(),
+              totalBrowserChunks,
+              totalTelegramParts,
+              uploadedTelegramParts: new Set<number>(),
+              inFlightUploads: new Set<Promise<any>>(),
               width: msg.width,
               height: msg.height,
               duration: msg.duration,
@@ -736,10 +938,10 @@ export class TelegramAuthDO {
             ws.send(JSON.stringify({
               type: "init_ok",
               uploadId: fileId.toString(),
-              totalChunks,
+              totalChunks: totalBrowserChunks,
               chunkSize: 1024 * 1024,
             }));
-            logToClient("INIT_CONFIRMED", { fileName: uploadState?.fileName, isBig, totalChunks });
+            logToClient("INIT_CONFIRMED", { fileName: uploadState?.fileName, isBig, totalBrowserChunks, totalTelegramParts });
             return;
           }
         }
@@ -770,39 +972,48 @@ export class TelegramAuthDO {
         }
 
         const chunkIndex = binaryBuf.readInt32BE(0);
-        const chunkBytes = binaryBuf.subarray(4);
+        let chunkBytes = binaryBuf.subarray(4);
 
-        if (!uploadState.chunks) uploadState.chunks = new Array(uploadState.totalChunks);
-        uploadState.chunks[chunkIndex] = chunkBytes;
-        uploadState.uploadedParts.add(chunkIndex);
-
-        // Chunks received: 0% -> 40%
+        // Immediately send chunk_ack to browser so browser pipeline continues at full line speed!
         const browserTransferPercent = Math.min(
-          Math.round((uploadState.uploadedParts.size / uploadState.totalChunks) * 40),
+          Math.round(((chunkIndex + 1) / uploadState.totalBrowserChunks) * 40),
           40
         );
 
         logToClient("CHUNK_RECEIVED_OK", {
           chunkIndex,
           chunkBytes: chunkBytes.length,
-          received: uploadState.uploadedParts.size,
-          total: uploadState.totalChunks,
+          totalBrowserChunks: uploadState.totalBrowserChunks,
           percent: browserTransferPercent,
         });
 
         ws.send(JSON.stringify({
           type: "chunk_ack",
           chunkIndex,
-          uploadedCount: uploadState.uploadedParts.size,
-          totalChunks: uploadState.totalChunks,
+          uploadedCount: chunkIndex + 1,
+          totalChunks: uploadState.totalBrowserChunks,
           percent: browserTransferPercent,
         }));
 
-        // When all browser chunks have arrived, stream directly to Telegram via GramJS sendFile
-        if (uploadState.uploadedParts.size === uploadState.totalChunks) {
-          logToClient("ALL_BROWSER_CHUNKS_ARRIVED", { total: uploadState.totalChunks });
-          const fullBuffer = Buffer.concat(uploadState.chunks.filter(Boolean));
-          await this.streamFullBufferToTelegram(ws, client, uploadState, fullBuffer, envObj, logToClient);
+        // Immediately slice 1MB chunk into 512KB MTProto parts and relay concurrently to Telegram!
+        const basePartIndex = chunkIndex * 2;
+        const sub0 = chunkBytes.subarray(0, Math.min(TG_PART_SIZE, chunkBytes.length));
+        const sub1 = chunkBytes.length > TG_PART_SIZE ? chunkBytes.subarray(TG_PART_SIZE) : null;
+
+        // Clear raw buffer references
+        (chunkBytes as any) = null;
+        (binaryBuf as any) = null;
+
+        // Dispatch subpart 0 to Telegram
+        const p0 = uploadSingleTgPart(basePartIndex, sub0);
+        uploadState.inFlightUploads.add(p0);
+        p0.finally(() => uploadState?.inFlightUploads.delete(p0));
+
+        // Dispatch subpart 1 to Telegram if present
+        if (sub1 && sub1.length > 0) {
+          const p1 = uploadSingleTgPart(basePartIndex + 1, sub1);
+          uploadState.inFlightUploads.add(p1);
+          p1.finally(() => uploadState?.inFlightUploads.delete(p1));
         }
       } catch (err: any) {
         console.error("[UploadWS Error]:", err);
@@ -812,209 +1023,6 @@ export class TelegramAuthDO {
         } catch {}
       }
     });
-  }
-
-  private async streamFullBufferToTelegram(
-    ws: WebSocket,
-    client: any,
-    state: any,
-    fullBuffer: Buffer,
-    envObj: any,
-    logToClient: any
-  ) {
-    try {
-      const partSize = 512 * 1024;
-      const partCount = Math.ceil(fullBuffer.length / partSize);
-      const isLarge = fullBuffer.length > 10 * 1024 * 1024;
-      const fileId = helpers.readBigIntFromBuffer(helpers.generateRandomBytes(8), true, true);
-      logToClient("MTPROTO_PARTS_START", { partCount, isLarge, partSize, dcId: client.session.dcId });
-
-      const CONCURRENCY = 2;
-      let completedParts = 0;
-      let lastPercent = 40;
-
-      for (let i = 0; i < partCount; i += CONCURRENCY) {
-        const batchPromises: Promise<void>[] = [];
-        const batchEnd = Math.min(i + CONCURRENCY, partCount);
-
-        for (let j = i; j < batchEnd; j++) {
-          const partIndex = j;
-          const start = partIndex * partSize;
-          const end = Math.min(start + partSize, fullBuffer.length);
-          const chunk = fullBuffer.subarray(start, end);
-
-          const partReq = isLarge
-            ? new Api.upload.SaveBigFilePart({
-                fileId,
-                filePart: partIndex,
-                fileTotalParts: partCount,
-                bytes: chunk,
-              })
-            : new Api.upload.SaveFilePart({
-                fileId,
-                filePart: partIndex,
-                bytes: chunk,
-              });
-
-          batchPromises.push((async () => {
-            const partT0 = Date.now();
-            await client.invoke(partReq);
-            const durationMs = Date.now() - partT0;
-
-            completedParts++;
-            const overallPercent = 40 + Math.round((completedParts / partCount) * 55);
-            if (overallPercent > lastPercent || completedParts % 2 === 0 || completedParts === partCount) {
-              lastPercent = overallPercent;
-              logToClient("TELEGRAM_STREAM_PROGRESS", {
-                part: completedParts,
-                total: partCount,
-                percent: overallPercent,
-                durationMs,
-              });
-              try {
-                ws.send(JSON.stringify({
-                  type: "telegram_progress",
-                  progressPercent: Math.round((completedParts / partCount) * 100),
-                  percent: overallPercent,
-                }));
-              } catch {}
-            }
-          })());
-        }
-
-        await Promise.all(batchPromises);
-      }
-
-      const inputFile = isLarge
-        ? new Api.InputFileBig({
-            id: fileId,
-            parts: partCount,
-            name: state.fileName,
-          })
-        : new Api.InputFile({
-            id: fileId,
-            parts: partCount,
-            name: state.fileName,
-            md5Checksum: "",
-          });
-
-      logToClient("FILE_UPLOADED_TO_MTPROTO", { parts: inputFile.parts });
-
-      const media = state.isVideo
-        ? new Api.InputMediaUploadedDocument({
-            file: inputFile,
-            mimeType: state.mimeType || "video/mp4",
-            attributes: [
-              new Api.DocumentAttributeVideo({
-                duration: Math.round(state.duration || 0),
-                w: state.width || 1920,
-                h: state.height || 1080,
-                supportsStreaming: true,
-              }),
-            ],
-          })
-        : new Api.InputMediaUploadedPhoto({
-            file: inputFile,
-          });
-
-      logToClient("INVOKING_SEND_MEDIA", { targetPeer: state.targetPeer, isVideo: state.isVideo });
-      const sentMsg: any = await client.invoke(
-        new Api.messages.SendMedia({
-          peer: state.targetPeer,
-          media,
-          message: "",
-          randomId: helpers.readBigIntFromBuffer(helpers.generateRandomBytes(8), true, true),
-        })
-      );
-
-      let realMessageId = sentMsg.id;
-      if (sentMsg.updates) {
-        for (const u of sentMsg.updates) {
-          if (u.id) {
-            realMessageId = u.id;
-            break;
-          }
-          if (u.message && u.message.id) {
-            realMessageId = u.message.id;
-            break;
-          }
-        }
-      }
-
-      logToClient("TELEGRAM_SEND_FILE_SUCCESS", { realMessageId });
-      const mediaId = crypto.randomUUID();
-      const db = getDb(envObj?.DB);
-
-      let thumbnailR2Key: string | null = null;
-      if (state.thumbnailBase64 && envObj?.R2_BUCKET) {
-        try {
-          const r2 = getR2Storage(envObj.R2_BUCKET);
-          thumbnailR2Key = `thumbnails/${state.channelId}/${mediaId}.jpg`;
-          const thumbBuf = Buffer.from(state.thumbnailBase64.replace(/^data:image\/\w+;base64,/, ""), "base64");
-          await r2.put(thumbnailR2Key, thumbBuf, "image/jpeg").catch(() => {});
-        } catch {}
-      }
-
-      await db.run(
-        `INSERT INTO media_items (
-           id, channel_id, uploader_user_id, telegram_message_id, file_type,
-           mime_type, file_size_bytes, width, height, duration_seconds,
-           blur_hash, thumbnail_r2_key, captured_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(channel_id, telegram_message_id) DO UPDATE SET
-           file_size_bytes = excluded.file_size_bytes,
-           width = excluded.width,
-           height = excluded.height,
-           duration_seconds = excluded.duration_seconds`,
-        [
-          mediaId,
-          state.channelId,
-          state.userId,
-          realMessageId,
-          state.isVideo ? "video" : "photo",
-          state.mimeType,
-          state.fileSize,
-          state.width || 1920,
-          state.height || 1080,
-          state.duration || null,
-          state.blurHash,
-          thumbnailR2Key,
-          state.capturedAt,
-        ]
-      );
-
-      // Background WAL event
-      await emitGalleryEvent(client, state.targetPeer, realMessageId, "CREATE", {
-        blur_hash: state.blurHash,
-        captured_at: state.capturedAt,
-      }).catch(() => {});
-
-      ws.send(JSON.stringify({
-        type: "complete",
-        success: true,
-        mediaId,
-        telegramMessageId: realMessageId,
-        item: {
-          id: mediaId,
-          channel_id: state.channelId,
-          telegram_message_id: realMessageId,
-          file_type: state.isVideo ? "video" : "photo",
-          mime_type: state.mimeType,
-          file_size_bytes: state.fileSize,
-          width: state.width || 1920,
-          height: state.height || 1080,
-          duration_seconds: state.duration || null,
-          blur_hash: state.blurHash,
-          thumbnail_r2_key: thumbnailR2Key,
-          captured_at: state.capturedAt,
-        },
-      }));
-      logToClient("UPLOAD_COMPLETE_DONE", { mediaId });
-    } catch (err: any) {
-      console.error("[UploadWS stream error]:", err);
-      logToClient("TELEGRAM_STREAM_ERROR", { error: err.message, stack: err.stack });
-      ws.send(JSON.stringify({ type: "error", error: err.message || "Failed streaming file to Telegram" }));
-    }
   }
 
   private async finalizeUploadWs(ws: WebSocket, client: any, state: any, envObj: any, logToClient?: any) {
