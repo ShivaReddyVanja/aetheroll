@@ -476,7 +476,26 @@ export default function GalleryPage() {
 
         {/* Gallery Content Area */}
         <div className="flex-1 overflow-y-auto relative">
-          {loadingMedia && mediaItems.length === 0 ? (
+          {channels.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full text-center px-4">
+              <div className="w-16 h-16 rounded-full bg-blue-500/10 text-blue-500 flex items-center justify-center mb-4 shadow-sm">
+                <Plus className="w-8 h-8" />
+              </div>
+              <h2 className="text-lg font-semibold text-[var(--text-primary)] mb-1">
+                No libraries added yet
+              </h2>
+              <p className="text-xs text-[var(--text-secondary)] max-w-sm mb-6">
+                Connect your Telegram Saved Messages or any Telegram channel or group to start browsing your photos and videos.
+              </p>
+              <button
+                onClick={() => setShowChannelPicker(true)}
+                className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-full shadow-md transition-all flex items-center gap-2"
+              >
+                <Plus className="w-4 h-4" />
+                Add Library
+              </button>
+            </div>
+          ) : loadingMedia && mediaItems.length === 0 ? (
             <div className="flex items-center justify-center h-80 text-[var(--text-tertiary)]">
               <RefreshCw className="w-8 h-8 animate-spin text-blue-500" />
             </div>
