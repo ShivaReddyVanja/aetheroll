@@ -695,7 +695,7 @@ export class TelegramAuthDO {
             const isBig = fileSize > 10 * 1024 * 1024;
             const isVideo = msg.mimeType ? msg.mimeType.startsWith("video/") : false;
             const fileId = helpers.readBigIntFromBuffer(helpers.generateRandomBytes(8), true, true);
-            const totalChunks = Number(msg.totalChunks) || Math.ceil(fileSize / (512 * 1024));
+            const totalChunks = Number(msg.totalChunks) || Math.ceil(fileSize / (1024 * 1024));
 
             let targetPeer: any = channel.telegram_channel_id;
             if (channel.telegram_channel_id === "me") {
@@ -737,7 +737,7 @@ export class TelegramAuthDO {
               type: "init_ok",
               uploadId: fileId.toString(),
               totalChunks,
-              chunkSize: 512 * 1024,
+              chunkSize: 1024 * 1024,
             }));
             logToClient("INIT_CONFIRMED", { fileName: uploadState?.fileName, isBig, totalChunks });
             return;
@@ -1249,7 +1249,7 @@ export class TelegramAuthDO {
         JSON.stringify({
           success: true,
           upload_id: uploadId,
-          chunk_size: 512 * 1024,
+          chunk_size: 1024 * 1024,
           total_chunks,
         }),
         { status: 200, headers: { "Content-Type": "application/json" } }
