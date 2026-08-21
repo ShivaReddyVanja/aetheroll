@@ -10,6 +10,7 @@ import { UploaderModal } from "@/components/UploaderModal";
 import { SettingsModal } from "@/components/SettingsModal";
 import { TimelineScrubber } from "@/components/TimelineScrubber";
 import { ChannelPickerModal } from "@/components/ChannelPickerModal";
+import { BulkActionBar } from "@/components/BulkActionBar";
 import { DevLogHUD } from "@/components/DevLogHUD";
 import { getApiBaseUrl, apiFetch } from "@/lib/config";
 import {
@@ -21,9 +22,12 @@ import {
   RefreshCw,
   X,
   Star,
-  Download,
   Trash2,
-  Share2,
+  Tag,
+  Compass,
+  Calendar,
+  User,
+  MapPin,
 } from "lucide-react";
 
 export default function GalleryPage() {
@@ -48,8 +52,18 @@ export default function GalleryPage() {
 
   // Navigation Filter
   const [activeFilter, setActiveFilter] = useState<
-    "all" | "photos" | "videos" | "favorites" | "people" | "places" | "events"
+    "all" | "photos" | "videos" | "favorites" | "people" | "places" | "events" | "trips" | "tags"
   >("all");
+
+  // Sub-filter selection (e.g. specific person/trip/event/tag chosen inside collections)
+  const [selectedSubFilter, setSelectedSubFilter] = useState<{
+    type: "person" | "trip" | "event" | "tag" | null;
+    id: string | null;
+    name: string | null;
+  }>({ type: null, id: null, name: null });
+
+  // Collections list items for the chips bar
+  const [collectionItems, setCollectionItems] = useState<Array<{ id: string; name: string; color?: string; media_count?: number }>>([]);
 
   // Modals / Lightbox state
   const [activeViewerItem, setActiveViewerItem] = useState<MediaItem | null>(null);
@@ -113,7 +127,37 @@ export default function GalleryPage() {
     }
   }, [user, fetchChannels]);
 
-  // 3. Fetch Media Items
+  // 3. Load sub-collection list when filter changes
+  useEffect(() => {
+    if (!selectedChannelId) return;
+    setSelectedSubFilter({ type: null, id: null, name: null });
+
+    if (activeFilter === "people") {
+      apiFetch(`/api/tags/people?channel_id=${selectedChannelId}`)
+        .then((r) => r.json())
+        .then((d) => setCollectionItems(d.people || []))
+        .catch(() => {});
+    } else if (activeFilter === "trips") {
+      apiFetch(`/api/trips?channel_id=${selectedChannelId}`)
+        .then((r) => r.json())
+        .then((d) => setCollectionItems(d.trips || []))
+        .catch(() => {});
+    } else if (activeFilter === "events") {
+      apiFetch(`/api/tags/events?channel_id=${selectedChannelId}`)
+        .then((r) => r.json())
+        .then((d) => setCollectionItems(d.events || []))
+        .catch(() => {});
+    } else if (activeFilter === "tags") {
+      apiFetch(`/api/tags/user-tags?channel_id=${selectedChannelId}`)
+        .then((r) => r.json())
+        .then((d) => setCollectionItems(d.tags || []))
+        .catch(() => {});
+    } else {
+      setCollectionItems([]);
+    }
+  }, [activeFilter, selectedChannelId]);
+
+  // 4. Fetch Media Items
   const fetchMedia = useCallback(
     async (cursor?: string) => {
       if (!selectedChannelId) return;
@@ -123,7 +167,20 @@ export default function GalleryPage() {
         let url = `/api/media?channel_id=${selectedChannelId}&limit=50`;
         if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
         if (activeFilter === "favorites") url += `&favorites_only=true`;
+        if (activeFilter === "places") url += `&has_geo=true`;
 
+        if (selectedSubFilter.type === "person" && selectedSubFilter.id) {
+          url += `&person_id=${encodeURIComponent(selectedSubFilter.id)}`;
+        }
+        if (selectedSubFilter.type === "trip" && selectedSubFilter.id) {
+          url += `&trip_id=${encodeURIComponent(selectedSubFilter.id)}`;
+        }
+        if (selectedSubFilter.type === "event" && selectedSubFilter.id) {
+          url += `&event_id=${encodeURIComponent(selectedSubFilter.id)}`;
+        }
+        if (selectedSubFilter.type === "tag" && selectedSubFilter.id) {
+          url += `&tag_id=${encodeURIComponent(selectedSubFilter.id)}`;
+        }
         const res = await apiFetch(url);
         const data = await res.json();
 
@@ -146,14 +203,14 @@ export default function GalleryPage() {
         setLoadingMedia(false);
       }
     },
-    [selectedChannelId, activeFilter]
+    [selectedChannelId, activeFilter, selectedSubFilter]
   );
 
   useEffect(() => {
     if (selectedChannelId) {
       fetchMedia();
     }
-  }, [selectedChannelId, activeFilter, fetchMedia]);
+  }, [selectedChannelId, activeFilter, selectedSubFilter, fetchMedia]);
 
   // Channel Sync
   const handleSyncChannel = async (channelId: string) => {
@@ -224,8 +281,10 @@ export default function GalleryPage() {
     return mediaItems.filter(
       (i) =>
         i.people?.some((p) => p.name.toLowerCase().includes(q)) ||
-        i.locations?.some((l) => l.name.toLowerCase().includes(q)) ||
+        i.tags?.some((t) => t.name.toLowerCase().includes(q)) ||
+        i.trips?.some((tr) => tr.name.toLowerCase().includes(q)) ||
         i.events?.some((e) => e.name.toLowerCase().includes(q)) ||
+        i.locations?.some((l) => l.name.toLowerCase().includes(q)) ||
         i.mime_type.toLowerCase().includes(q)
     );
   }, [mediaItems, searchQuery]);
@@ -349,7 +408,10 @@ export default function GalleryPage() {
         onSelectChannel={(id) => setSelectedChannelId(id)}
         onOpenChannelPicker={() => setShowChannelPicker(true)}
         activeFilter={activeFilter}
-        onSelectFilter={(filter) => setActiveFilter(filter)}
+        onSelectFilter={(filter) => {
+          setActiveFilter(filter);
+          setSelectedSubFilter({ type: null, id: null, name: null });
+        }}
         onOpenUploader={() => setShowUploader(true)}
         onSyncChannel={handleSyncChannel}
         onOpenTurboSettings={() => setShowSettings(true)}
@@ -361,15 +423,15 @@ export default function GalleryPage() {
 
       {/* Main Gallery Workspace */}
       <main className="flex-1 flex flex-col h-full overflow-hidden bg-[var(--bg-primary)] relative">
-        {/* Google Photos Top Floating Search Bar */}
+        {/* Google Photos Top Floating Search Bar / Multi-selection Action Bar */}
         <header className="h-16 px-6 flex items-center justify-between z-20 flex-shrink-0">
-          {/* Multi-selection Action Bar Override */}
           {selectedIds.size > 0 ? (
             <div className="w-full h-12 rounded-full bg-[var(--bg-secondary)] border border-[var(--border-color)] px-5 flex items-center justify-between shadow-md animate-fadeIn">
               <div className="flex items-center gap-3">
                 <button
                   onClick={() => setSelectedIds(new Set())}
                   className="p-1 rounded-full text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]"
+                  title="Clear selection"
                 >
                   <X className="w-5 h-5" />
                 </button>
@@ -380,9 +442,11 @@ export default function GalleryPage() {
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => {
-                    selectedIds.forEach((id) => handleToggleFavorite(id, { stopPropagation: () => {} } as any));
+                    selectedIds.forEach((id) =>
+                      handleToggleFavorite(id, { stopPropagation: () => {} } as any)
+                    );
                   }}
-                  className="p-2 rounded-full text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-amber-400"
+                  className="p-2 rounded-full text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-amber-400 transition-colors"
                   title="Favorite selected"
                 >
                   <Star className="w-5 h-5" />
@@ -393,13 +457,6 @@ export default function GalleryPage() {
                   title="Delete selected media"
                 >
                   <Trash2 className="w-5 h-5" />
-                </button>
-                <button
-                  onClick={() => setSelectedIds(new Set())}
-                  className="p-2 rounded-full text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]"
-                  title="Clear selection"
-                >
-                  <X className="w-5 h-5" />
                 </button>
               </div>
             </div>
@@ -425,7 +482,7 @@ export default function GalleryPage() {
                 )}
               </div>
 
-              {/* Right Action Icons (Google Photos Style) */}
+              {/* Right Action Icons */}
               <div className="flex items-center gap-2 ml-4">
                 {/* Sync Channel Button */}
                 <button
@@ -473,6 +530,75 @@ export default function GalleryPage() {
             </>
           )}
         </header>
+
+        {/* Collections Sub-filter Filter Pills Header */}
+        {(activeFilter === "people" ||
+          activeFilter === "trips" ||
+          activeFilter === "events" ||
+          activeFilter === "tags" ||
+          activeFilter === "places") && (
+          <div className="px-6 py-2 border-b border-[var(--border-color)] bg-[var(--bg-surface)] flex items-center gap-2 overflow-x-auto select-none">
+            <span className="text-xs font-semibold text-[var(--text-secondary)] uppercase tracking-wider mr-2 flex items-center gap-1.5">
+              {activeFilter === "people" && <User className="w-3.5 h-3.5 text-blue-400" />}
+              {activeFilter === "trips" && <Compass className="w-3.5 h-3.5 text-amber-500" />}
+              {activeFilter === "events" && <Calendar className="w-3.5 h-3.5 text-purple-400" />}
+              {activeFilter === "tags" && <Tag className="w-3.5 h-3.5 text-emerald-400" />}
+              {activeFilter === "places" && <MapPin className="w-3.5 h-3.5 text-rose-400" />}
+              <span>{activeFilter}</span>
+            </span>
+
+            {/* All Chip */}
+            <button
+              onClick={() => setSelectedSubFilter({ type: null, id: null, name: null })}
+              className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
+                selectedSubFilter.id === null
+                  ? "bg-blue-600 text-white border-blue-600 font-semibold"
+                  : "bg-[var(--bg-secondary)] border-[var(--border-color)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+              }`}
+            >
+              All {activeFilter}
+            </button>
+
+            {/* Individual Sub-filter Chips */}
+            {collectionItems.map((item) => {
+              const isSelected = selectedSubFilter.id === item.id;
+              const subType =
+                activeFilter === "people"
+                  ? "person"
+                  : activeFilter === "trips"
+                  ? "trip"
+                  : activeFilter === "events"
+                  ? "event"
+                  : "tag";
+
+              return (
+                <button
+                  key={item.id}
+                  onClick={() =>
+                    setSelectedSubFilter(
+                      isSelected
+                        ? { type: null, id: null, name: null }
+                        : { type: subType, id: item.id, name: item.name }
+                    )
+                  }
+                  className={`px-3 py-1 rounded-full text-xs font-medium border flex items-center gap-1.5 transition-all ${
+                    isSelected
+                      ? "bg-blue-600 text-white border-blue-600 font-semibold shadow-sm"
+                      : "bg-[var(--bg-secondary)] border-[var(--border-color)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                  }`}
+                >
+                  {item.color && (
+                    <span className="w-2 h-2 rounded-full" style={{ backgroundColor: item.color }} />
+                  )}
+                  <span>{item.name}</span>
+                  {item.media_count != null && (
+                    <span className="text-[10px] opacity-70">({item.media_count})</span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         {/* Gallery Content Area */}
         <div className="flex-1 overflow-y-auto relative">
@@ -522,6 +648,21 @@ export default function GalleryPage() {
             onSelectYear={handleScrollToYear}
           />
         </div>
+
+        {/* Floating Bulk Action Bar */}
+        <BulkActionBar
+          selectedIds={selectedIds}
+          channelId={selectedChannelId || ""}
+          onClearSelection={() => setSelectedIds(new Set())}
+          onActionComplete={() => {
+            setSelectedIds(new Set());
+            fetchMedia();
+          }}
+          onDeleteSelected={(ids) => handleDeleteMedia(ids)}
+          onFavoriteSelected={(ids) => {
+            ids.forEach((id) => handleToggleFavorite(id, { stopPropagation: () => {} } as any));
+          }}
+        />
       </main>
 
       {/* Lightbox / Video Player */}

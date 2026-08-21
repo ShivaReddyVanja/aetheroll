@@ -4,7 +4,7 @@ import crypto from "crypto";
 import { getDb, toSafeNumber, toSafeString } from "../lib/db";
 import { decryptSession, verifyAetherollSignature } from "../lib/crypto";
 import { createTelegramClient, getUserChannels, getConnectedClient, getDefaultTelegramConfig } from "../lib/telegram";
-import { parseGalleryEvent, applyGalleryEventsToDb, GalleryEvent } from "../lib/ledger";
+import { parseGalleryEvent, parseGalleryBatch, applyGalleryEventsToDb, applyGalleryBatch, GalleryEvent, GalleryOp, BATCH_TAG_PREFIX } from "../lib/ledger";
 import { getR2Storage } from "../lib/r2";
 
 import { resolveUserAuth } from "../lib/auth";
@@ -273,6 +273,7 @@ channelsRouter.post("/:id/sync", async (c) => {
     const activeTgMediaMsgIds = new Set<number>();
     const scannedMsgIds: number[] = [];
     const eventRecords: { event: GalleryEvent; msgId: number }[] = [];
+    const batchRecords: { batch: { ts: number; ops: GalleryOp[] }; msgId: number }[] = [];
 
     // Pass 1: Index raw media messages & collect WAL events
     for (const msg of messages) {
@@ -280,11 +281,32 @@ channelsRouter.post("/:id/sync", async (c) => {
       const msgId = toSafeNumber(msg.id);
       scannedMsgIds.push(msgId);
 
-      // Check if this message is a WAL event
-      const event = parseGalleryEvent(msg.message);
+      // 1. Check if this message is an encrypted/legacy inline WAL event
+      const event = await parseGalleryEvent(msg.message, (c.env as any)?.MASTER_ENCRYPTION_KEY);
       if (event) {
         eventRecords.push({ event, msgId });
         continue;
+      }
+
+      // 2. Check if this message is a GP_BATCH document manifest
+      if (msg.message?.startsWith(BATCH_TAG_PREFIX) && msg.media) {
+        try {
+          const docBytes = await client.downloadMedia(msg.media, {});
+          if (docBytes && Buffer.isBuffer(docBytes)) {
+            const batch = await parseGalleryBatch(
+              msg.message,
+              docBytes,
+              channel.telegram_channel_id,
+              (c.env as any)?.MASTER_ENCRYPTION_KEY
+            );
+            if (batch) {
+              batchRecords.push({ batch, msgId });
+              continue;
+            }
+          }
+        } catch (bErr) {
+          console.warn("[Sync] Error reading batch manifest:", bErr);
+        }
       }
 
       if (!msg.media) continue;
@@ -318,6 +340,10 @@ channelsRouter.post("/:id/sync", async (c) => {
       const rawDuration = (msg.document as any)?.attributes?.find((a: any) => a.duration)?.duration;
       const duration = rawDuration != null ? toSafeNumber(rawDuration) : null;
 
+      // Extract raw GPS from Telegram geo attachment if present
+      const geoLat = (msg as any)?.geo?.lat != null ? Number((msg as any).geo.lat) : null;
+      const geoLng = (msg as any)?.geo?.long != null ? Number((msg as any).geo.long) : null;
+
       // Safe placeholder BlurHash
       const defaultBlurHash = "LEHV6nWB2yk8pyo0adR*.7kCMdnj";
 
@@ -328,17 +354,19 @@ channelsRouter.post("/:id/sync", async (c) => {
         `INSERT INTO media_items (
            id, channel_id, uploader_user_id, telegram_message_id, file_type,
            mime_type, file_size_bytes, width, height, duration_seconds,
-           blur_hash, captured_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           blur_hash, captured_at, latitude, longitude
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(channel_id, telegram_message_id) DO UPDATE SET
            file_size_bytes = excluded.file_size_bytes,
            width = excluded.width,
            height = excluded.height,
-           duration_seconds = excluded.duration_seconds`,
+           duration_seconds = excluded.duration_seconds,
+           latitude = COALESCE(excluded.latitude, media_items.latitude),
+           longitude = COALESCE(excluded.longitude, media_items.longitude)`,
         [
           mediaId, channel.id, user.id, msgId, fileType,
           mimeType, fileSize, width, height, duration,
-          defaultBlurHash, capturedAt
+          defaultBlurHash, capturedAt, geoLat, geoLng
         ]
       );
       indexedCount++;
@@ -361,6 +389,10 @@ channelsRouter.post("/:id/sync", async (c) => {
         if (!activeTgMediaMsgIds.has(itemTgId)) {
           // Item was deleted outside our web app (in Telegram client)
           await db.run("DELETE FROM media_favorites WHERE media_item_id = ?", [item.id]);
+          await db.run("DELETE FROM media_tags WHERE media_item_id = ?", [item.id]);
+          await db.run("DELETE FROM trip_media WHERE media_item_id = ?", [item.id]);
+          await db.run("DELETE FROM media_person_tags WHERE media_item_id = ?", [item.id]);
+          await db.run("DELETE FROM media_event_tags WHERE media_item_id = ?", [item.id]);
           await db.run("DELETE FROM media_items WHERE id = ?", [item.id]);
           if (item.thumbnail_r2_key) {
             try { await r2.delete(item.thumbnail_r2_key); } catch {}
@@ -394,12 +426,20 @@ channelsRouter.post("/:id/sync", async (c) => {
       }
     }
 
-    // Pass 4: Replay valid Event Sourcing Ledger (restores tags, favorites, GPS, custom dates)
+    // Pass 4: Replay valid Event Sourcing Ledger (restores tags, trips, people, events, favorites, GPS)
     let appliedEventsCount = 0;
     if (validEvents.length > 0) {
-      appliedEventsCount = await applyGalleryEventsToDb(db, channel.id, user.id, validEvents);
-      console.log(`[EventLedger] Replayed ${appliedEventsCount} events for channel ${channel.name}`);
+      appliedEventsCount += await applyGalleryEventsToDb(db, channel.id, user.id, validEvents);
     }
+
+    // Pass 5: Replay Batch Manifests
+    if (batchRecords.length > 0) {
+      for (const rec of batchRecords) {
+        appliedEventsCount += await applyGalleryBatch(db, channel.id, user.id, rec.batch.ops);
+      }
+    }
+
+    console.log(`[EventLedger] Replayed ${appliedEventsCount} total events/batch-ops for channel ${channel.name}`);
 
     await db.run("UPDATE channels SET last_synced_at = CURRENT_TIMESTAMP WHERE id = ?", [channelId]);
 
