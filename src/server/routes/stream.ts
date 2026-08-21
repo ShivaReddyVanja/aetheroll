@@ -4,6 +4,7 @@ import { Api, utils } from "telegram";
 import bigInt from "big-integer";
 import { getDb } from "../lib/db";
 import { decryptSession } from "../lib/crypto";
+import { extractSessionToken, resolveUserAuth } from "../lib/auth";
 import { getConnectedClient, getDefaultTelegramConfig } from "../lib/telegram";
 import { isTelemetryEnabled } from "./logs";
 
@@ -230,19 +231,10 @@ streamRouter.get("/", async (c) => {
     const mediaId = c.req.query("media_id");
     if (!mediaId) return c.text("media_id required", 400);
 
-    const token = getCookie(c, "tg_session");
-    if (!token) return c.text("Unauthorized", 401);
+    const auth = await resolveUserAuth(c);
+    if (!auth.authenticated || !auth.sessionString) return c.text("Unauthorized", 401);
 
     const db = getDb((c.env as any)?.DB);
-    const session = await db.get(
-      `SELECT u.session_string FROM user_sessions s
-       JOIN users u ON u.id = s.user_id
-       WHERE s.id = ? AND s.expires_at > CURRENT_TIMESTAMP`,
-      [token]
-    );
-
-    if (!session) return c.text("Unauthorized", 401);
-
     const item = await db.get(
       `SELECT m.*, c.telegram_channel_id FROM media_items m
        JOIN channels c ON c.id = m.channel_id
@@ -256,10 +248,7 @@ streamRouter.get("/", async (c) => {
     const rangeHeader = c.req.header("range");
 
     // Reuse persistent MTProto client connection (0ms connection overhead!)
-    const client = await getConnectedClient(
-      await decryptSession(session.session_string, (c.env as any)?.SESSION_ENCRYPTION_KEY),
-      getDefaultTelegramConfig(c.env)
-    );
+    const client = await getConnectedClient(auth.sessionString, auth.telegramConfig);
 
     // Check message media cache to avoid redundant Telegram getMessages RPCs
     const now = Date.now();

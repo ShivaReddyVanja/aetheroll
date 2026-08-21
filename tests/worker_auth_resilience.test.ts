@@ -248,6 +248,41 @@ describe("⚡ Cloudflare Worker & Auth Resilience Suite", () => {
       assert.equal(result.user?.firstName, "Fallback");
       assert.equal(result.user?.username, "fallbackuser");
     });
+
+    it("should handle LoginTokenMigrateTo during initial ExportLoginToken without throwing", async () => {
+      let switched = false;
+      const mockClient = {
+        session: { save: () => "" },
+        connect: async () => {},
+        _switchDC: async (dcId: number) => {
+          switched = true;
+          assert.equal(dcId, 4);
+        },
+        invoke: async (req: any) => {
+          if (!switched) {
+            return new Api.auth.LoginTokenMigrateTo({
+              dcId: 4,
+              token: Buffer.from("redirect_token"),
+            });
+          }
+          return new Api.auth.LoginToken({
+            expires: 1787300000,
+            token: Buffer.from("valid_qr_token"),
+          });
+        },
+      } as any;
+
+      let qrLogin = await mockClient.invoke(new Api.auth.ExportLoginToken({ apiId: 123, apiHash: "abc", exceptIds: [] }));
+      if (qrLogin instanceof Api.auth.LoginTokenMigrateTo) {
+        await mockClient._switchDC(qrLogin.dcId);
+        qrLogin = await mockClient.invoke(new Api.auth.ExportLoginToken({ apiId: 123, apiHash: "abc", exceptIds: [] }));
+      }
+
+      assert.ok(qrLogin instanceof Api.auth.LoginToken);
+      assert.equal(switched, true);
+      const tokenBase64 = Buffer.from(qrLogin.token).toString("base64url");
+      assert.equal(`tg://login?token=${tokenBase64}`, "tg://login?token=dmFsaWRfcXJfdG9rZW4");
+    });
   });
 
   describe("4. Web Session & Cookie Construction", () => {

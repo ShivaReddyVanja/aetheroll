@@ -7,28 +7,31 @@ import { createTelegramClient, getUserChannels, getConnectedClient, getDefaultTe
 import { parseGalleryEvent, applyGalleryEventsToDb, GalleryEvent } from "../lib/ledger";
 import { getR2Storage } from "../lib/r2";
 
+import { resolveUserAuth } from "../lib/auth";
+
 export const channelsRouter = new Hono();
 
 /**
- * Helper to get authenticated user & their Telegram client
+ * Helper to get authenticated user & their Telegram client via unified auth provider
  */
 async function getAuthUserClient(c: any) {
-  const token = getCookie(c, "tg_session");
-  if (!token) throw new Error("Unauthorized");
+  const auth = await resolveUserAuth(c);
+  if (!auth.authenticated || !auth.userId || !auth.sessionString) {
+    throw new Error("Unauthorized");
+  }
 
   const db = getDb((c.env as any)?.DB);
-  const session = await db.get(
-    `SELECT u.* FROM user_sessions s
-     JOIN users u ON u.id = s.user_id
-     WHERE s.id = ? AND s.expires_at > CURRENT_TIMESTAMP`,
-    [token]
-  );
-
-  if (!session) throw new Error("Unauthorized");
-
-  const plainSession = await decryptSession(session.session_string, (c.env as any)?.SESSION_ENCRYPTION_KEY);
-  const client = createTelegramClient(plainSession, getDefaultTelegramConfig(c.env));
-  return { user: session, client, db };
+  const client = createTelegramClient(auth.sessionString, auth.telegramConfig);
+  return {
+    user: {
+      id: auth.userId,
+      telegram_user_id: auth.telegramUserId,
+      display_name: auth.displayName,
+      session_string: auth.sessionString,
+    },
+    client,
+    db,
+  };
 }
 
 /**

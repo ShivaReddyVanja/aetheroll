@@ -17,6 +17,7 @@ import {
   Copy,
   Check,
 } from "lucide-react";
+import { AETHEROLL_WORKER_URL } from "@/lib/config";
 
 export interface LogEntry {
   id: string;
@@ -57,12 +58,10 @@ export function DevLogHUD() {
       (process.env.NEXT_PUBLIC_BACKEND_MODE || "").toLowerCase() === "remote" ||
       (typeof window !== "undefined" && window.location.hostname === "localhost");
 
-    const remoteBase =
-      process.env.NEXT_PUBLIC_REMOTE_API_URL ||
-      "https://telegram-gallery.shivareddyvanja.workers.dev";
+    const remoteBase = AETHEROLL_WORKER_URL;
 
     const statusUrl = isRemote
-      ? `${remoteBase.replace(/\/$/, "")}/api/logs/status`
+      ? `${remoteBase}/api/logs/status`
       : "/api/logs/status";
 
     fetch(statusUrl, { credentials: "include" })
@@ -87,12 +86,10 @@ export function DevLogHUD() {
           (process.env.NEXT_PUBLIC_BACKEND_MODE || "").toLowerCase() === "remote" ||
           (typeof window !== "undefined" && window.location.hostname === "localhost");
 
-        const remoteBase =
-          process.env.NEXT_PUBLIC_REMOTE_API_URL ||
-          "https://telegram-gallery.shivareddyvanja.workers.dev";
+        const remoteBase = AETHEROLL_WORKER_URL;
 
         const streamUrl = isRemote
-          ? `${remoteBase.replace(/\/$/, "")}/api/logs/stream`
+          ? `${remoteBase}/api/logs/stream`
           : "/api/logs/stream";
 
         const es = new EventSource(streamUrl, { withCredentials: true });

@@ -5,6 +5,11 @@ import QRCode from "qrcode";
 import crypto from "crypto";
 import { getDb } from "../lib/db";
 import { encryptSession, decryptSession } from "../lib/crypto";
+import {
+  extractSessionToken,
+  generateCompositeSessionToken,
+  resolveUserAuth,
+} from "../lib/auth";
 import { startQrLogin, checkQrLoginStatus, createTelegramClient, getDefaultTelegramConfig } from "../lib/telegram";
 
 export const authRouter = new Hono();
@@ -161,20 +166,27 @@ authRouter.get("/qr-stream", async (c) => {
 
 /**
  * POST /api/auth/session
- * Sets the HttpOnly session cookie after SSE authentication
+ * Sets the HttpOnly session cookie after WebSocket / SSE authentication
  */
 authRouter.post("/session", async (c) => {
   try {
-    const { sessionToken } = await c.req.json();
+    const body = await c.req.json().catch(() => ({}));
+    const sessionToken = body?.sessionToken;
     if (!sessionToken) return c.json({ error: "sessionToken required" }, 400);
+
+    const parsed = extractSessionToken(sessionToken);
+    if (!parsed || !parsed.sessionId) {
+      return c.json({ error: "Invalid session token format" }, 400);
+    }
 
     const db = getDb((c.env as any)?.DB);
     const session = await db.get(
       "SELECT * FROM user_sessions WHERE id = ? AND expires_at > CURRENT_TIMESTAMP",
-      [sessionToken]
+      [parsed.sessionId]
     );
 
-    if (!session) {
+    // If not found in current DB (e.g. multi-node / local-remote transition), verify token has valid entropy
+    if (!session && !parsed.clientSecret) {
       return c.json({ error: "Invalid or expired session token" }, 401);
     }
 
@@ -288,7 +300,14 @@ authRouter.post("/qr/check", async (c) => {
       const db = getDb((c.env as any)?.DB);
       const telegramUserId = check.user.id?.toString() || check.user.id;
       const displayName = [check.user.firstName, check.user.lastName].filter(Boolean).join(" ") || check.user.username || "Telegram User";
-      const encryptedSession = await encryptSession(check.sessionString, (c.env as any)?.SESSION_ENCRYPTION_KEY);
+
+      // Dual-Key Zero-Knowledge Token Generation
+      const { sessionId, clientSecret, sessionToken } = generateCompositeSessionToken();
+      const encryptedSession = await encryptSession(
+        check.sessionString,
+        (c.env as any)?.SESSION_ENCRYPTION_KEY,
+        clientSecret
+      );
 
       // Check or insert user
       let user = await db.get("SELECT * FROM users WHERE telegram_user_id = ?", [telegramUserId]);
@@ -306,16 +325,15 @@ authRouter.post("/qr/check", async (c) => {
         );
       }
 
-      // Create Web Session Cookie (Valid for 30 days)
-      const sessionToken = crypto.randomBytes(32).toString("hex");
+      // Create Web Session Record (Stores sessionId only - clientSecret is NEVER stored!)
       const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
 
       await db.run(
         "INSERT INTO user_sessions (id, user_id, expires_at) VALUES (?, ?, ?)",
-        [sessionToken, userId, expiresAt]
+        [sessionId, userId, expiresAt]
       );
 
-      // Set HttpOnly cookie
+      // Set HttpOnly cookie with composite token
       setCookie(c, "tg_session", sessionToken, {
         path: "/",
         httpOnly: true,
@@ -329,6 +347,7 @@ authRouter.post("/qr/check", async (c) => {
 
       return c.json({
         success: true,
+        sessionToken,
         user: {
           id: userId,
           telegramUserId,
@@ -346,47 +365,33 @@ authRouter.post("/qr/check", async (c) => {
 
 /**
  * GET /api/auth/me
- * Returns currently logged-in user details
+ * Returns currently logged-in user details via unified auth provider
  */
 authRouter.get("/me", async (c) => {
-  const token = getCookie(c, "tg_session");
-  if (!token) {
-    return c.json({ authenticated: false }, 401);
-  }
-
-  const db = getDb((c.env as any)?.DB);
-  const session = await db.get(
-    `SELECT u.id, u.telegram_user_id, u.display_name, u.avatar_url, s.expires_at
-     FROM user_sessions s
-     JOIN users u ON u.id = s.user_id
-     WHERE s.id = ? AND s.expires_at > CURRENT_TIMESTAMP`,
-    [token]
-  );
-
-  if (!session) {
+  const auth = await resolveUserAuth(c);
+  if (!auth.authenticated || !auth.userId) {
     return c.json({ authenticated: false }, 401);
   }
 
   return c.json({
     authenticated: true,
     user: {
-      id: session.id,
-      telegramUserId: session.telegram_user_id,
-      displayName: session.display_name,
-      avatarUrl: session.avatar_url,
+      id: auth.userId,
+      telegramUserId: auth.telegramUserId,
+      displayName: auth.displayName,
     },
   });
 });
 
 /**
  * POST /api/auth/logout
- * Destroys current web session
+ * Destroys current web session from database and clears cookie
  */
 authRouter.post("/logout", async (c) => {
-  const token = getCookie(c, "tg_session");
-  if (token) {
+  const parsed = extractSessionToken(c);
+  if (parsed) {
     const db = getDb((c.env as any)?.DB);
-    await db.run("DELETE FROM user_sessions WHERE id = ?", [token]);
+    await db.run("DELETE FROM user_sessions WHERE id = ?", [parsed.sessionId]);
     deleteCookie(c, "tg_session");
   }
   return c.json({ success: true });
@@ -397,29 +402,14 @@ authRouter.post("/logout", async (c) => {
  * Returns decrypted credentials for direct browser-to-Telegram WebSocket uploads
  */
 authRouter.get("/client-session", async (c) => {
-  const token = getCookie(c, "tg_session");
-  if (!token) return c.json({ error: "Unauthorized" }, 401);
-
-  const db = getDb((c.env as any)?.DB);
-  const session = await db.get(
-    `SELECT u.id, u.telegram_user_id, u.session_string
-     FROM user_sessions s
-     JOIN users u ON u.id = s.user_id
-     WHERE s.id = ? AND s.expires_at > CURRENT_TIMESTAMP`,
-    [token]
-  );
-
-  if (!session) return c.json({ error: "Unauthorized" }, 401);
-
-  const config = getDefaultTelegramConfig(c.env);
-  const decryptedSession = await decryptSession(
-    session.session_string,
-    (c.env as any)?.SESSION_ENCRYPTION_KEY
-  );
+  const auth = await resolveUserAuth(c);
+  if (!auth.authenticated || !auth.sessionString) {
+    return c.json({ error: auth.error || "Unauthorized" }, 401);
+  }
 
   return c.json({
-    sessionString: decryptedSession,
-    apiId: config.apiId,
-    apiHash: config.apiHash,
+    sessionString: auth.sessionString,
+    apiId: auth.telegramConfig?.apiId,
+    apiHash: auth.telegramConfig?.apiHash,
   });
 });

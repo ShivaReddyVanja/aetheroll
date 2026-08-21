@@ -11,7 +11,7 @@ const isProdBackend = backendMode === "prod" || backendMode === "remote";
 const remoteUrl =
   process.env.REMOTE_API_URL ||
   process.env.NEXT_PUBLIC_REMOTE_API_URL ||
-  "https://telegram-gallery.shivareddyvanja.workers.dev";
+  "https://aetheroll.shivareddyvanja.workers.dev";
 
 console.log(
   `\x1b[36m[Backend Switch]\x1b[0m Active Backend: \x1b[1m${

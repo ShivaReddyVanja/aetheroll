@@ -16,15 +16,14 @@ import {
 import { generateBlurHashAndThumbnail, generateVideoThumbnailAndMetadata } from "@/lib/blurhash";
 import { extractExifMetadata } from "@/lib/exif";
 
+import { AETHEROLL_WORKER_URL } from "@/lib/config";
+
 /**
  * The Cloudflare Worker URL used for direct uploads.
  * Chunks go browser → worker directly, bypassing the Next.js dev proxy which
  * drops long-running connections with ECONNRESET on large binary bodies.
  */
-const WORKER_URL = (
-  process.env.NEXT_PUBLIC_REMOTE_API_URL ||
-  "https://telegram-gallery.shivareddyvanja.workers.dev"
-).replace(/\/$/, "");
+const WORKER_URL = AETHEROLL_WORKER_URL;
 
 /**
  * Read the session token for cross-origin upload headers.

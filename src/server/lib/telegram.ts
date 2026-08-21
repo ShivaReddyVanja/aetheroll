@@ -85,7 +85,7 @@ export function createTelegramClient(
     connectionRetries: 3,
     retryDelay: 1000,
     testServers: cfg.testMode,
-    deviceModel: "Telegram Gallery Web",
+    deviceModel: "Aetheroll Web",
     systemVersion: "Web",
     appVersion: "1.0.0",
     timeout: 30,
@@ -94,7 +94,7 @@ export function createTelegramClient(
 
   // Override getDC to return official SSL domain names for WebSocket TLS validation
   client.getDC = async (dcId: number, downloadDC?: boolean) => {
-    const domain = DC_DOMAINS[dcId] || "flora.web.telegram.org";
+    const domain = DC_DOMAINS[dcId] || "venus.web.telegram.org";
     return {
       id: dcId,
       ipAddress: downloadDC ? domain.replace(".web.telegram.org", "-1.web.telegram.org") : domain,
@@ -102,10 +102,10 @@ export function createTelegramClient(
     };
   };
 
-  // If session already has a dcId, ensure serverAddress uses the valid SSL domain name
-  if (session.dcId && DC_DOMAINS[session.dcId]) {
-    session.setDC(session.dcId, DC_DOMAINS[session.dcId], 443);
-  }
+  // Ensure serverAddress uses the valid SSL domain name (never raw IP which fails Cloudflare WSS TLS certificate check)
+  const targetDcId = session.dcId || (cfg.testMode ? 2 : 2);
+  const targetDomain = DC_DOMAINS[targetDcId] || "venus.web.telegram.org";
+  session.setDC(targetDcId, targetDomain, 443);
 
   return client;
 }
@@ -140,13 +140,25 @@ export async function startQrLogin(config?: TelegramConfig | any): Promise<{
   const client = createTelegramClient("", cfg);
   await client.connect();
 
-  const qrLogin = await client.invoke(
+  let qrLogin = await client.invoke(
     new Api.auth.ExportLoginToken({
       apiId: cfg.apiId,
       apiHash: cfg.apiHash,
       exceptIds: [],
     })
   );
+
+  if (qrLogin instanceof Api.auth.LoginTokenMigrateTo) {
+    console.log(`[MTProto] Initial ExportLoginToken redirected to DC ${qrLogin.dcId}...`);
+    await (client as any)._switchDC(qrLogin.dcId);
+    qrLogin = await client.invoke(
+      new Api.auth.ExportLoginToken({
+        apiId: cfg.apiId,
+        apiHash: cfg.apiHash,
+        exceptIds: [],
+      })
+    );
+  }
 
   if (qrLogin instanceof Api.auth.LoginToken) {
     // Generate tg://login?token=... URL for QR code
@@ -159,7 +171,7 @@ export async function startQrLogin(config?: TelegramConfig | any): Promise<{
     };
   }
 
-  throw new Error("Unexpected response from Telegram auth.ExportLoginToken");
+  throw new Error(`Unexpected response from Telegram auth.ExportLoginToken: ${(qrLogin as any)?.className || typeof qrLogin}`);
 }
 
 /**

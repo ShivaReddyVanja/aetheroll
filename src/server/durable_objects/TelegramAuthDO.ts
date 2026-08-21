@@ -4,8 +4,15 @@ import { Api, helpers } from "telegram";
 import bigInt from "big-integer";
 import { getDb } from "../lib/db";
 import { encryptSession, decryptSession } from "../lib/crypto";
+import { extractSessionToken, generateCompositeSessionToken } from "../lib/auth";
 import { getR2Storage } from "../lib/r2";
-import { createTelegramClient, getConnectedClient, getDefaultTelegramConfig } from "../lib/telegram";
+import {
+  createTelegramClient,
+  getConnectedClient,
+  getDefaultTelegramConfig,
+  startQrLogin,
+  checkQrLoginStatus,
+} from "../lib/telegram";
 import { uploadFile, CustomFile } from "telegram/client/uploads";
 import { emitGalleryEvent } from "../lib/ledger";
 
@@ -20,7 +27,7 @@ function toBigInt(val: number | string, radix?: number) {
 export class TelegramAuthDO {
   state: any;
   env: any;
-  activeSessions: Map<string, { client: any; qrImage?: string; token?: Buffer; expires?: number; authenticatedUser?: any; sessionToken?: string; error?: string }>;
+  activeSessions: Map<string, { client: any; qrImage?: string; token?: Buffer; tokenBuffer?: Buffer; qrUrl?: string; expires?: number; authenticatedUser?: any; sessionToken?: string; error?: string }>;
   userClients: Map<string, { client: any; lastUsed: number }>;
   uploadSessions: Map<string, {
     userId: string;
@@ -59,6 +66,75 @@ export class TelegramAuthDO {
     this.prefetchedChunks = new Map();
     this.recentLogs = [];
     this.logStreamControllers = new Set();
+  }
+
+  /**
+   * Unified session resolution and MTProto client warmup with Dual-Key decryption & idle tracking
+   */
+  async getOrConnectUserClient(
+    request: Request,
+    envObj: any
+  ): Promise<{ client: any; userId?: string; sessionId?: string; error?: string }> {
+    this.sweepIdleClients();
+
+    const parsed = extractSessionToken(request);
+    if (!parsed) {
+      return { client: null, error: "Unauthorized: Missing session token" };
+    }
+
+    const cached = this.userClients.get(parsed.fullToken) || this.userClients.get(parsed.sessionId);
+    if (cached && cached.client && cached.client.connected) {
+      cached.lastUsed = Date.now();
+      return { client: cached.client, userId: (cached.client as any).__userId, sessionId: parsed.sessionId };
+    }
+
+    const db = getDb(envObj?.DB);
+    const session = await db.get(
+      `SELECT u.id as user_id, u.telegram_user_id, u.display_name, u.session_string, s.expires_at
+       FROM user_sessions s
+       JOIN users u ON u.id = s.user_id
+       WHERE s.id = ? AND s.expires_at > CURRENT_TIMESTAMP`,
+      [parsed.sessionId]
+    );
+
+    if (!session) {
+      return { client: null, error: "Unauthorized: Session not found or expired" };
+    }
+
+    try {
+      const decrypted = await decryptSession(
+        session.session_string,
+        envObj?.SESSION_ENCRYPTION_KEY,
+        parsed.clientSecret
+      );
+      const config = getDefaultTelegramConfig(envObj);
+      const client = await getConnectedClient(decrypted, config);
+      (client as any).__userId = session.user_id;
+
+      this.userClients.set(parsed.fullToken, { client, lastUsed: Date.now() });
+      this.userClients.set(parsed.sessionId, { client, lastUsed: Date.now() });
+      return { client, userId: session.user_id, sessionId: parsed.sessionId };
+    } catch (decryptErr: any) {
+      return { client: null, error: "Unauthorized: Session decryption failed" };
+    }
+  }
+
+  /**
+   * 15-minute sliding inactivity sweeper that disconnects idle sessions from RAM
+   */
+  sweepIdleClients() {
+    const now = Date.now();
+    const IDLE_LIMIT = 15 * 60 * 1000;
+    for (const [key, entry] of this.userClients.entries()) {
+      if (now - entry.lastUsed > IDLE_LIMIT) {
+        try {
+          if (entry.client && typeof entry.client.disconnect === "function") {
+            entry.client.disconnect();
+          }
+        } catch {}
+        this.userClients.delete(key);
+      }
+    }
   }
 
   isTelemetryActive(envObj?: any): boolean {
@@ -335,9 +411,13 @@ export class TelegramAuthDO {
           [(user as any).firstName, (user as any).lastName].filter(Boolean).join(" ") ||
           (user as any).username ||
           "Telegram User";
+
+        // Dual-Key Zero-Knowledge Token Generation
+        const { sessionId, clientSecret, sessionToken } = generateCompositeSessionToken();
         const encryptedSession = await encryptSession(
           sessionString,
-          this.env?.SESSION_ENCRYPTION_KEY
+          this.env?.SESSION_ENCRYPTION_KEY,
+          clientSecret
         );
 
         let dbUser = await db.get("SELECT * FROM users WHERE telegram_user_id = ?", [telegramUserId]);
@@ -355,12 +435,11 @@ export class TelegramAuthDO {
           );
         }
 
-        const sessionToken = crypto.randomBytes(32).toString("hex");
         const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
 
         await db.run(
           "INSERT INTO user_sessions (id, user_id, expires_at) VALUES (?, ?, ?)",
-          [sessionToken, userId, expiresAt]
+          [sessionId, userId, expiresAt]
         );
 
         try {
@@ -378,7 +457,7 @@ export class TelegramAuthDO {
         } catch {}
       }
     } catch (err: any) {
-      console.error("[TelegramAuthDO Exception]:", err);
+      console.error("[TelegramAuthDO WS Exception]:", err);
       if (!isCancelled) {
         try {
           ws.send(JSON.stringify({ type: "error", error: err.message || "Failed to initialize login" }));
@@ -393,111 +472,40 @@ export class TelegramAuthDO {
 
   private async handleQrHttp(envObj?: any): Promise<Response> {
     const qrId = crypto.randomUUID();
-    const sessionState: any = { qrId };
-    this.activeSessions.set(qrId, sessionState);
-
     try {
       const targetEnv = envObj || this.env;
-      const config = getDefaultTelegramConfig(targetEnv);
-      const client = createTelegramClient(config);
-      sessionState.client = client;
-      await client.connect();
+      const { token, expires, client, tokenBuffer } = await startQrLogin(targetEnv);
 
-      // Start auth flow in background inside DO
-      const authPromise = client.signInUserWithQrCode(
-        { apiId: config.apiId, apiHash: config.apiHash },
-        {
-          qrCode: async ({ token, expires }: { token: Buffer; expires: number }) => {
-            const tokenBase64Url = Buffer.from(token).toString("base64url");
-            const tgUrl = `tg://login?token=${tokenBase64Url}`;
-            const qrSvg = await QRCode.toString(tgUrl, {
-              type: "svg",
-              width: 280,
-              margin: 2,
-              color: { dark: "#000000", light: "#ffffff" },
-            });
-            sessionState.qrImage = `data:image/svg+xml;utf8,${encodeURIComponent(qrSvg)}`;
-            sessionState.qrUrl = tgUrl;
-            sessionState.expires = expires;
-          },
-          onError: async (err: Error) => {
-            sessionState.error = err.message;
-            return true;
-          },
-        }
-      );
+      // Generate pure SVG QR code
+      const qrSvg = await QRCode.toString(token, {
+        type: "svg",
+        width: 280,
+        margin: 2,
+        color: { dark: "#000000", light: "#ffffff" },
+      });
+      const qrImage = `data:image/svg+xml;utf8,${encodeURIComponent(qrSvg)}`;
 
-      authPromise
-        .then(async (user: any) => {
-          if (user) {
-            const sessionString = (client.session as any).save();
-            const db = getDb(targetEnv?.DB);
-            const telegramUserId = user.id?.toString() || user.id;
-            const displayName =
-              [user.firstName, user.lastName].filter(Boolean).join(" ") ||
-              user.username ||
-              "Telegram User";
-            const encryptedSession = await encryptSession(
-              sessionString,
-              targetEnv?.SESSION_ENCRYPTION_KEY
-            );
-
-            let dbUser = await db.get("SELECT * FROM users WHERE telegram_user_id = ?", [telegramUserId]);
-            const userId = dbUser?.id || crypto.randomUUID();
-
-            if (!dbUser) {
-              await db.run(
-                "INSERT INTO users (id, telegram_user_id, display_name, session_string) VALUES (?, ?, ?, ?)",
-                [userId, telegramUserId, displayName, encryptedSession]
-              );
-            } else {
-              await db.run(
-                "UPDATE users SET display_name = ?, session_string = ? WHERE id = ?",
-                [displayName, encryptedSession, userId]
-              );
-            }
-
-            const sessionToken = crypto.randomBytes(32).toString("hex");
-            const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
-
-            await db.run(
-              "INSERT INTO user_sessions (id, user_id, expires_at) VALUES (?, ?, ?)",
-              [sessionToken, userId, expiresAt]
-            );
-
-            sessionState.authenticatedUser = {
-              id: userId,
-              telegramUserId,
-              displayName,
-            };
-            sessionState.sessionToken = sessionToken;
-          }
-        })
-        .catch((err: any) => {
-          sessionState.error = err?.message || "Auth error";
-        });
-
-      // Wait briefly for initial QR generation
-      for (let i = 0; i < 20; i++) {
-        if (sessionState.qrImage) break;
-        await new Promise((r) => setTimeout(r, 200));
-      }
-
-      if (!sessionState.qrImage) {
-        throw new Error("Failed generating initial QR code");
-      }
+      this.activeSessions.set(qrId, {
+        client,
+        tokenBuffer,
+        expires,
+        qrImage,
+        qrUrl: token,
+      });
 
       return new Response(
         JSON.stringify({
           qrId,
-          qrUrl: sessionState.qrUrl,
-          qrImage: sessionState.qrImage,
-          expires: sessionState.expires,
+          qrUrl: token,
+          qrImage,
+          expires,
         }),
         { headers: { "Content-Type": "application/json" } }
       );
     } catch (err: any) {
-      return new Response(JSON.stringify({ error: err.message || "Failed generating QR" }), {
+      const errMsg = err?.errorMessage || err?.message || (typeof err === "object" ? (err.description || JSON.stringify(err)) : String(err));
+      console.error("[handleQrHttp Error]:", errMsg, err);
+      return new Response(JSON.stringify({ error: errMsg || "Failed generating QR" }), {
         status: 500,
         headers: { "Content-Type": "application/json" },
       });
@@ -513,43 +521,87 @@ export class TelegramAuthDO {
     }
 
     const sessionState = this.activeSessions.get(qrId);
-    if (!sessionState) {
+    if (!sessionState || !sessionState.client || !sessionState.tokenBuffer) {
       return new Response(JSON.stringify({ error: "Session expired or invalid" }), {
         status: 400,
         headers: { "Content-Type": "application/json" },
       });
     }
 
-    if (sessionState.error) {
-      this.activeSessions.delete(qrId);
-      return new Response(JSON.stringify({ error: sessionState.error }), {
-        status: 400,
+    try {
+      const targetEnv = envObj || this.env;
+      const check = await checkQrLoginStatus(sessionState.client, sessionState.tokenBuffer, targetEnv);
+
+      if (check.success && check.sessionString && check.user) {
+        const db = getDb(targetEnv?.DB);
+        const telegramUserId = check.user.id?.toString() || check.user.id;
+        const displayName =
+          [check.user.firstName, check.user.lastName].filter(Boolean).join(" ") ||
+          check.user.username ||
+          "Telegram User";
+
+        // Dual-Key Zero-Knowledge Token Generation
+        const { sessionId, clientSecret, sessionToken } = generateCompositeSessionToken();
+        const encryptedSession = await encryptSession(
+          check.sessionString,
+          targetEnv?.SESSION_ENCRYPTION_KEY,
+          clientSecret
+        );
+
+        let dbUser = await db.get("SELECT * FROM users WHERE telegram_user_id = ?", [telegramUserId]);
+        const userId = dbUser?.id || crypto.randomUUID();
+
+        if (!dbUser) {
+          await db.run(
+            "INSERT INTO users (id, telegram_user_id, display_name, session_string) VALUES (?, ?, ?, ?)",
+            [userId, telegramUserId, displayName, encryptedSession]
+          );
+        } else {
+          await db.run(
+            "UPDATE users SET display_name = ?, session_string = ? WHERE id = ?",
+            [displayName, encryptedSession, userId]
+          );
+        }
+
+        const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+
+        await db.run(
+          "INSERT INTO user_sessions (id, user_id, expires_at) VALUES (?, ?, ?)",
+          [sessionId, userId, expiresAt]
+        );
+
+        const cookieValue = `tg_session=${sessionToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`;
+        const response = new Response(
+          JSON.stringify({
+            success: true,
+            sessionToken,
+            user: {
+              id: userId,
+              telegramUserId,
+              displayName,
+            },
+          }),
+          {
+            headers: {
+              "Content-Type": "application/json",
+              "Set-Cookie": cookieValue,
+            },
+          }
+        );
+        this.activeSessions.delete(qrId);
+        return response;
+      }
+
+      return new Response(JSON.stringify({ success: false }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    } catch (checkErr: any) {
+      console.error("[handleCheckHttp Error]:", checkErr);
+      return new Response(JSON.stringify({ error: checkErr.message || "Failed checking login" }), {
+        status: 500,
         headers: { "Content-Type": "application/json" },
       });
     }
-
-    if (sessionState.authenticatedUser && sessionState.sessionToken) {
-      const cookieValue = `tg_session=${sessionState.sessionToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`;
-      const response = new Response(
-        JSON.stringify({
-          success: true,
-          sessionToken: sessionState.sessionToken,
-          user: sessionState.authenticatedUser,
-        }),
-        {
-          headers: {
-            "Content-Type": "application/json",
-            "Set-Cookie": cookieValue,
-          },
-        }
-      );
-      this.activeSessions.delete(qrId);
-      return response;
-    }
-
-    return new Response(JSON.stringify({ success: false }), {
-      headers: { "Content-Type": "application/json" },
-    });
   }
 
   private async resolveMediaLocation(client: any, item: any): Promise<any> {
@@ -709,21 +761,10 @@ export class TelegramAuthDO {
       const mediaId = url.searchParams.get("media_id");
       if (!mediaId) return new Response("media_id required", { status: 400 });
 
-      // Get tg_session from cookie or header
-      const cookieHeader = request.headers.get("cookie") || "";
-      const match = cookieHeader.match(/tg_session=([^;]+)/);
-      const token = match ? match[1] : request.headers.get("x-tg-session");
-      if (!token) return new Response("Unauthorized", { status: 401 });
+      const { client, userId, error } = await this.getOrConnectUserClient(request, envObj);
+      if (!client) return new Response(error || "Unauthorized", { status: 401 });
 
       const db = getDb(envObj?.DB);
-      const session = await db.get(
-        `SELECT u.id as user_id, u.session_string FROM user_sessions s
-         JOIN users u ON u.id = s.user_id
-         WHERE s.id = ? AND s.expires_at > CURRENT_TIMESTAMP`,
-        [token]
-      );
-      if (!session) return new Response("Unauthorized", { status: 401 });
-
       const item = await db.get(
         `SELECT m.*, c.telegram_channel_id FROM media_items m
          JOIN channels c ON c.id = m.channel_id
@@ -735,16 +776,6 @@ export class TelegramAuthDO {
       const totalSize = Number(item.file_size_bytes) || 0;
       const rangeHeader = request.headers.get("range");
       const r2 = getR2Storage(envObj?.R2_BUCKET);
-
-      // Reuse warm MTProto client in DO RAM
-      let clientRecord = this.userClients.get(session.user_id);
-      let client = clientRecord?.client;
-
-      if (!client || !client.connected) {
-        const decrypted = await decryptSession(session.session_string, envObj?.SESSION_ENCRYPTION_KEY);
-        client = await getConnectedClient(decrypted, getDefaultTelegramConfig(envObj));
-        this.userClients.set(session.user_id, { client, lastUsed: Date.now() });
-      }
 
       // 1. Resolve Media Location (cached in RAM for 1 hour)
       let fileLocation = await this.resolveMediaLocation(client, item);
@@ -1116,8 +1147,8 @@ export class TelegramAuthDO {
 
           if (msg.type === "init") {
             logToClient("INIT_RECEIVED", { fileName: msg.fileName, fileSize: msg.fileSize, totalChunks: msg.totalChunks });
-            const token = msg.token;
-            if (!token) {
+            const parsed = extractSessionToken({ headers: new Headers({ "x-tg-session": msg.token }) });
+            if (!parsed) {
               ws.send(JSON.stringify({ type: "error", error: "Authentication token required" }));
               return;
             }
@@ -1127,7 +1158,7 @@ export class TelegramAuthDO {
               `SELECT u.id as user_id, u.session_string FROM user_sessions s
                JOIN users u ON u.id = s.user_id
                WHERE s.id = ? AND s.expires_at > CURRENT_TIMESTAMP`,
-              [token]
+              [parsed.sessionId]
             );
 
             if (!session) {
@@ -1150,14 +1181,19 @@ export class TelegramAuthDO {
               return;
             }
 
-            let clientRecord = this.userClients.get(session.user_id);
+            let clientRecord = this.userClients.get(parsed.fullToken) || this.userClients.get(parsed.sessionId);
             client = clientRecord?.client;
 
             if (!client || !client.connected) {
               logToClient("CONNECTING_MTPROTO", { userId: session.user_id });
-              const decrypted = await decryptSession(session.session_string, envObj?.SESSION_ENCRYPTION_KEY);
+              const decrypted = await decryptSession(
+                session.session_string,
+                envObj?.SESSION_ENCRYPTION_KEY,
+                parsed.clientSecret
+              );
               client = await getConnectedClient(decrypted, getDefaultTelegramConfig(envObj));
-              this.userClients.set(session.user_id, { client, lastUsed: Date.now() });
+              this.userClients.set(parsed.fullToken, { client, lastUsed: Date.now() });
+              this.userClients.set(parsed.sessionId, { client, lastUsed: Date.now() });
             }
 
             logToClient("MTPROTO_READY", { dcId: client.session.dcId, connected: client.connected });
@@ -1446,25 +1482,9 @@ export class TelegramAuthDO {
 
   private async handleUploadInit(request: Request, envObj: any): Promise<Response> {
     try {
-      const cookieHeader = request.headers.get("cookie") || "";
-      const match = cookieHeader.match(/tg_session=([^;]+)/);
-      const token = match ? match[1] : request.headers.get("x-tg-session");
-      if (!token) {
-        return new Response(JSON.stringify({ error: "Unauthorized" }), {
-          status: 401,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-
-      const db = getDb(envObj?.DB);
-      const session = await db.get(
-        `SELECT u.id as user_id, u.session_string FROM user_sessions s
-         JOIN users u ON u.id = s.user_id
-         WHERE s.id = ? AND s.expires_at > CURRENT_TIMESTAMP`,
-        [token]
-      );
-      if (!session) {
-        return new Response(JSON.stringify({ error: "Unauthorized" }), {
+      const { client, userId, error } = await this.getOrConnectUserClient(request, envObj);
+      if (!client || !userId) {
+        return new Response(JSON.stringify({ error: error || "Unauthorized" }), {
           status: 401,
           headers: { "Content-Type": "application/json" },
         });
@@ -1480,11 +1500,12 @@ export class TelegramAuthDO {
         );
       }
 
+      const db = getDb(envObj?.DB);
       const channel = await db.get(
         `SELECT c.* FROM channels c
          JOIN gallery_channels gc ON gc.channel_id = c.id
          WHERE c.id = ? AND gc.user_id = ?`,
-        [channel_id, session.user_id]
+        [channel_id, userId]
       );
       if (!channel) {
         return new Response(JSON.stringify({ error: "Channel not found or unauthorized" }), {
@@ -1498,20 +1519,8 @@ export class TelegramAuthDO {
       const isBig = file_size > 10 * 1024 * 1024;
       const isVideo = mime_type ? mime_type.startsWith("video/") : false;
 
-      // Eagerly connect/warm up MTProto client and upload sender in RAM so first chunk is instantaneous
-      if (!this.userClients.get(session.user_id)?.client?.connected) {
-        try {
-          const decrypted = await decryptSession(session.session_string, envObj?.SESSION_ENCRYPTION_KEY);
-          const client = await getConnectedClient(decrypted, getDefaultTelegramConfig(envObj));
-          await client.getSender(client.session.dcId);
-          this.userClients.set(session.user_id, { client, lastUsed: Date.now() });
-        } catch (warmErr) {
-          console.warn("[UploadInit] Client warmup warning:", warmErr);
-        }
-      }
-
       this.uploadSessions.set(uploadId, {
-        userId: session.user_id,
+        userId,
         fileId,
         totalParts: total_chunks,
         uploadedParts: new Set(),
@@ -1545,27 +1554,9 @@ export class TelegramAuthDO {
   private async handleUploadChunk(request: Request, envObj: any): Promise<Response> {
     const startT0 = Date.now();
     try {
-      const cookieHeader = request.headers.get("cookie") || "";
-      const match = cookieHeader.match(/tg_session=([^;]+)/);
-      const token = match ? match[1] : request.headers.get("x-tg-session");
-      if (!token) {
-        console.warn("[UploadChunk] No token in cookie or x-tg-session header");
-        return new Response(JSON.stringify({ error: "Unauthorized" }), {
-          status: 401,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-
-      const db = getDb(envObj?.DB);
-      const session = await db.get(
-        `SELECT u.id as user_id, u.session_string FROM user_sessions s
-         JOIN users u ON u.id = s.user_id
-         WHERE s.id = ? AND s.expires_at > CURRENT_TIMESTAMP`,
-        [token]
-      );
-      if (!session) {
-        console.warn("[UploadChunk] Token not found or expired in DB:", token.slice(0, 8) + "...");
-        return new Response(JSON.stringify({ error: "Unauthorized" }), {
+      const { client, userId, error } = await this.getOrConnectUserClient(request, envObj);
+      if (!client || !userId) {
+        return new Response(JSON.stringify({ error: error || "Unauthorized" }), {
           status: 401,
           headers: { "Content-Type": "application/json" },
         });
@@ -1576,8 +1567,6 @@ export class TelegramAuthDO {
       const chunkIndex = parseInt(formData.get("chunk_index") as string, 10);
       const chunkBlob = formData.get("chunk") as Blob;
 
-      console.log(`[UploadChunk] Request parsed: uploadId=${uploadId}, chunkIndex=${chunkIndex}, hasBlob=${!!chunkBlob}`);
-
       if (!uploadId || isNaN(chunkIndex) || !chunkBlob) {
         return new Response(
           JSON.stringify({ error: "upload_id, chunk_index, and chunk required" }),
@@ -1586,23 +1575,11 @@ export class TelegramAuthDO {
       }
 
       const uploadSession = this.uploadSessions.get(uploadId);
-      if (!uploadSession || uploadSession.userId !== session.user_id) {
-        console.warn(`[UploadChunk] Upload session ${uploadId} not found in DO RAM. Active sessions: ${Array.from(this.uploadSessions.keys()).join(",")}`);
+      if (!uploadSession || uploadSession.userId !== userId) {
         return new Response(JSON.stringify({ error: "Upload session expired or invalid" }), {
           status: 404,
           headers: { "Content-Type": "application/json" },
         });
-      }
-
-      let clientRecord = this.userClients.get(session.user_id);
-      let client = clientRecord?.client;
-
-      if (!client || !client.connected) {
-        console.log(`[UploadChunk] MTProto client not connected in RAM for user ${session.user_id}, connecting now...`);
-        const decrypted = await decryptSession(session.session_string, envObj?.SESSION_ENCRYPTION_KEY);
-        client = await getConnectedClient(decrypted, getDefaultTelegramConfig(envObj));
-        this.userClients.set(session.user_id, { client, lastUsed: Date.now() });
-        console.log(`[UploadChunk] MTProto client connected to DC ${client.session.dcId}`);
       }
 
       let chunkBuffer: Buffer;
@@ -1631,10 +1608,7 @@ export class TelegramAuthDO {
             bytes: chunkBuffer,
           });
 
-      console.log(`[UploadChunk] Getting upload sender for DC ${client.session.dcId}...`);
       const sender = await client.getSender(client.session.dcId);
-      console.log(`[UploadChunk] Upload sender isConnected: ${sender.isConnected()}. Invoking send(${isBig ? "SaveBigFilePart" : "SaveFilePart"}, part=${chunkIndex}/${uploadSession.totalParts}, size=${chunkBuffer.length})...`);
-
       const partResult = await Promise.race([
         sender.send(partReq),
         new Promise((_, reject) =>
@@ -1642,7 +1616,6 @@ export class TelegramAuthDO {
         ),
       ]);
 
-      console.log(`[UploadChunk] Part ${chunkIndex} ACK from Telegram in ${Date.now() - startT0}ms! Result:`, partResult);
       uploadSession.uploadedParts.add(chunkIndex);
 
       return new Response(
@@ -1659,8 +1632,7 @@ export class TelegramAuthDO {
       return new Response(
         JSON.stringify({
           error: err.message || "Upload chunk failed",
-          name: err.name,
-          stack: err.stack,
+          details: err.stack,
         }),
         { status: 500, headers: { "Content-Type": "application/json" } }
       );
@@ -1669,30 +1641,15 @@ export class TelegramAuthDO {
 
   private async handleUploadComplete(request: Request, envObj: any): Promise<Response> {
     try {
-      const cookieHeader = request.headers.get("cookie") || "";
-      const match = cookieHeader.match(/tg_session=([^;]+)/);
-      const token = match ? match[1] : request.headers.get("x-tg-session");
-      if (!token) {
-        return new Response(JSON.stringify({ error: "Unauthorized" }), {
+      const { client, userId, error } = await this.getOrConnectUserClient(request, envObj);
+      if (!client || !userId) {
+        return new Response(JSON.stringify({ error: error || "Unauthorized" }), {
           status: 401,
           headers: { "Content-Type": "application/json" },
         });
       }
 
       const db = getDb(envObj?.DB);
-      const session = await db.get(
-        `SELECT u.id as user_id, u.session_string FROM user_sessions s
-         JOIN users u ON u.id = s.user_id
-         WHERE s.id = ? AND s.expires_at > CURRENT_TIMESTAMP`,
-        [token]
-      );
-      if (!session) {
-        return new Response(JSON.stringify({ error: "Unauthorized" }), {
-          status: 401,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-
       const body = await request.json();
       const {
         upload_id,
@@ -1706,7 +1663,7 @@ export class TelegramAuthDO {
       } = body;
 
       const uploadSession = this.uploadSessions.get(upload_id);
-      if (!uploadSession || uploadSession.userId !== session.user_id) {
+      if (!uploadSession || uploadSession.userId !== userId) {
         return new Response(JSON.stringify({ error: "Upload session expired or invalid" }), {
           status: 404,
           headers: { "Content-Type": "application/json" },
@@ -1726,22 +1683,13 @@ export class TelegramAuthDO {
         `SELECT c.* FROM channels c
          JOIN gallery_channels gc ON gc.channel_id = c.id
          WHERE c.id = ? AND gc.user_id = ?`,
-        [channel_id || uploadSession.channelId, session.user_id]
+        [channel_id || uploadSession.channelId, userId]
       );
       if (!channel) {
         return new Response(JSON.stringify({ error: "Channel not found or unauthorized" }), {
           status: 404,
           headers: { "Content-Type": "application/json" },
         });
-      }
-
-      let clientRecord = this.userClients.get(session.user_id);
-      let client = clientRecord?.client;
-
-      if (!client || !client.connected) {
-        const decrypted = await decryptSession(session.session_string, envObj?.SESSION_ENCRYPTION_KEY);
-        client = await getConnectedClient(decrypted, getDefaultTelegramConfig(envObj));
-        this.userClients.set(session.user_id, { client, lastUsed: Date.now() });
       }
 
       let targetPeer: any = channel.telegram_channel_id;
@@ -1813,7 +1761,7 @@ export class TelegramAuthDO {
         [
           mediaId,
           channel.id,
-          session.user_id,
+          userId,
           realMessageId,
           isVideo ? "video" : "photo",
           uploadSession.mimeType,
@@ -1851,25 +1799,9 @@ export class TelegramAuthDO {
 
   private async handleUploadOneShot(request: Request, envObj: any): Promise<Response> {
     try {
-      const cookieHeader = request.headers.get("cookie") || "";
-      const match = cookieHeader.match(/tg_session=([^;]+)/);
-      const token = match ? match[1] : request.headers.get("x-tg-session");
-      if (!token) {
-        return new Response(JSON.stringify({ error: "Unauthorized" }), {
-          status: 401,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-
-      const db = getDb(envObj?.DB);
-      const session = await db.get(
-        `SELECT u.id as user_id, u.session_string FROM user_sessions s
-         JOIN users u ON u.id = s.user_id
-         WHERE s.id = ? AND s.expires_at > CURRENT_TIMESTAMP`,
-        [token]
-      );
-      if (!session) {
-        return new Response(JSON.stringify({ error: "Unauthorized" }), {
+      const { client, userId, error } = await this.getOrConnectUserClient(request, envObj);
+      if (!client || !userId) {
+        return new Response(JSON.stringify({ error: error || "Unauthorized" }), {
           status: 401,
           headers: { "Content-Type": "application/json" },
         });
@@ -1889,11 +1821,12 @@ export class TelegramAuthDO {
         });
       }
 
+      const db = getDb(envObj?.DB);
       const channel = await db.get(
         `SELECT c.* FROM channels c
          JOIN gallery_channels gc ON gc.channel_id = c.id
          WHERE c.id = ? AND gc.user_id = ?`,
-        [channelId, session.user_id]
+        [channelId, userId]
       );
 
       if (!channel) {
@@ -1904,15 +1837,6 @@ export class TelegramAuthDO {
       }
 
       console.log(`[UploadOneShot] Received file: ${file.name} (${file.size} bytes), target channel: ${channelId}`);
-      let clientRecord = this.userClients.get(session.user_id);
-      let client = clientRecord?.client;
-
-      if (!client || !client.connected) {
-        console.log(`[UploadOneShot] Connecting MTProto client for user ${session.user_id}...`);
-        const decrypted = await decryptSession(session.session_string, envObj?.SESSION_ENCRYPTION_KEY);
-        client = await getConnectedClient(decrypted, getDefaultTelegramConfig(envObj));
-        this.userClients.set(session.user_id, { client, lastUsed: Date.now() });
-      }
 
       console.log(`[UploadOneShot] MTProto client ready on DC ${client.session.dcId}. Reading file buffer...`);
       const arrayBuffer = await file.arrayBuffer();
@@ -2008,7 +1932,7 @@ export class TelegramAuthDO {
            height = excluded.height,
            duration_seconds = excluded.duration_seconds`,
         [
-          mediaId, channelId, session.user_id, realMessageId, isVideo ? "video" : "photo",
+          mediaId, channelId, userId, realMessageId, isVideo ? "video" : "photo",
           file.type || (isVideo ? "video/mp4" : "image/jpeg"), file.size, width, height, duration,
           blurHash, thumbnailR2Key, capturedAt
         ]
