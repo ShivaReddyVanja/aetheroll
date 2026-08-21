@@ -695,7 +695,7 @@ export class TelegramAuthDO {
             const isBig = fileSize > 10 * 1024 * 1024;
             const isVideo = msg.mimeType ? msg.mimeType.startsWith("video/") : false;
             const fileId = helpers.readBigIntFromBuffer(helpers.generateRandomBytes(8), true, true);
-            const totalChunks = Number(msg.totalChunks) || Math.ceil(fileSize / (128 * 1024));
+            const totalChunks = Number(msg.totalChunks) || Math.ceil(fileSize / (512 * 1024));
 
             let targetPeer: any = channel.telegram_channel_id;
             if (channel.telegram_channel_id === "me") {
@@ -737,7 +737,7 @@ export class TelegramAuthDO {
               type: "init_ok",
               uploadId: fileId.toString(),
               totalChunks,
-              chunkSize: 128 * 1024,
+              chunkSize: 512 * 1024,
             }));
             logToClient("INIT_CONFIRMED", { fileName: uploadState?.fileName, isBig, totalChunks });
             return;
@@ -823,52 +823,66 @@ export class TelegramAuthDO {
     logToClient: any
   ) {
     try {
-      const partSize = 128 * 1024;
+      const partSize = 512 * 1024;
       const partCount = Math.ceil(fullBuffer.length / partSize);
       const isLarge = fullBuffer.length > 10 * 1024 * 1024;
       const fileId = helpers.readBigIntFromBuffer(helpers.generateRandomBytes(8), true, true);
       logToClient("MTPROTO_PARTS_START", { partCount, isLarge, partSize, dcId: client.session.dcId });
 
+      const CONCURRENCY = 2;
+      let completedParts = 0;
       let lastPercent = 40;
-      for (let i = 0; i < partCount; i++) {
-        const start = i * partSize;
-        const end = Math.min(start + partSize, fullBuffer.length);
-        const chunk = fullBuffer.subarray(start, end);
 
-        const partReq = isLarge
-          ? new Api.upload.SaveBigFilePart({
-              fileId,
-              filePart: i,
-              fileTotalParts: partCount,
-              bytes: chunk,
-            })
-          : new Api.upload.SaveFilePart({
-              fileId,
-              filePart: i,
-              bytes: chunk,
-            });
+      for (let i = 0; i < partCount; i += CONCURRENCY) {
+        const batchPromises: Promise<void>[] = [];
+        const batchEnd = Math.min(i + CONCURRENCY, partCount);
 
-        const partT0 = Date.now();
-        await client.invoke(partReq);
-        const durationMs = Date.now() - partT0;
+        for (let j = i; j < batchEnd; j++) {
+          const partIndex = j;
+          const start = partIndex * partSize;
+          const end = Math.min(start + partSize, fullBuffer.length);
+          const chunk = fullBuffer.subarray(start, end);
 
-        const overallPercent = 40 + Math.round(((i + 1) / partCount) * 55);
-        if (overallPercent > lastPercent || (i + 1) % 5 === 0 || i === partCount - 1) {
-          lastPercent = overallPercent;
-          logToClient("TELEGRAM_STREAM_PROGRESS", {
-            part: i + 1,
-            total: partCount,
-            percent: overallPercent,
-            durationMs,
-          });
-          try {
-            ws.send(JSON.stringify({
-              type: "telegram_progress",
-              progressPercent: Math.round(((i + 1) / partCount) * 100),
-              percent: overallPercent,
-            }));
-          } catch {}
+          const partReq = isLarge
+            ? new Api.upload.SaveBigFilePart({
+                fileId,
+                filePart: partIndex,
+                fileTotalParts: partCount,
+                bytes: chunk,
+              })
+            : new Api.upload.SaveFilePart({
+                fileId,
+                filePart: partIndex,
+                bytes: chunk,
+              });
+
+          batchPromises.push((async () => {
+            const partT0 = Date.now();
+            await client.invoke(partReq);
+            const durationMs = Date.now() - partT0;
+
+            completedParts++;
+            const overallPercent = 40 + Math.round((completedParts / partCount) * 55);
+            if (overallPercent > lastPercent || completedParts % 2 === 0 || completedParts === partCount) {
+              lastPercent = overallPercent;
+              logToClient("TELEGRAM_STREAM_PROGRESS", {
+                part: completedParts,
+                total: partCount,
+                percent: overallPercent,
+                durationMs,
+              });
+              try {
+                ws.send(JSON.stringify({
+                  type: "telegram_progress",
+                  progressPercent: Math.round((completedParts / partCount) * 100),
+                  percent: overallPercent,
+                }));
+              } catch {}
+            }
+          })());
         }
+
+        await Promise.all(batchPromises);
       }
 
       const inputFile = isLarge
@@ -1235,7 +1249,7 @@ export class TelegramAuthDO {
         JSON.stringify({
           success: true,
           upload_id: uploadId,
-          chunk_size: 1048576,
+          chunk_size: 512 * 1024,
           total_chunks,
         }),
         { status: 200, headers: { "Content-Type": "application/json" } }

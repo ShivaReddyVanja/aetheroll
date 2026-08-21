@@ -140,8 +140,8 @@ export function UploaderModal({
         // 2. Client-Side EXIF Metadata
         const exif = await extractExifMetadata(file);
 
-        // 128KB chunks are strictly compatible with Cloudflare Workers TCP socket write limits
-        const CHUNK_SIZE = 128 * 1024;
+        // 512KB chunks are strictly supported over Telegram WebSocket gateways and Cloudflare DO
+        const CHUNK_SIZE = 512 * 1024;
         const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
         const sessionToken = getSessionToken();
 
@@ -157,11 +157,13 @@ export function UploaderModal({
           const ws = new WebSocket(`${wsBaseUrl}/api/media/upload/ws`);
           ws.binaryType = "arraybuffer";
 
-          let currentChunk = 0;
+          let nextChunkToSend = 0;
+          let ackedChunks = 0;
+          const PIPELINE_WINDOW = 2; // Up to 2 concurrent in-flight 512KB frames
 
-          const sendNextChunk = async () => {
-            if (currentChunk >= totalChunks) return;
-            const startByte = currentChunk * CHUNK_SIZE;
+          const sendChunk = async (chunkIndex: number) => {
+            if (chunkIndex >= totalChunks) return;
+            const startByte = chunkIndex * CHUNK_SIZE;
             const endByte = Math.min(startByte + CHUNK_SIZE, file.size);
             const sliceBlob = file.slice(startByte, endByte);
             const sliceBuffer = await sliceBlob.arrayBuffer();
@@ -169,10 +171,19 @@ export function UploaderModal({
             // Frame: [4-byte big-endian Int32 chunkIndex | chunk bytes]
             const frameBuffer = new Uint8Array(4 + sliceBuffer.byteLength);
             const view = new DataView(frameBuffer.buffer);
-            view.setInt32(0, currentChunk, false); // big-endian
+            view.setInt32(0, chunkIndex, false); // big-endian
             frameBuffer.set(new Uint8Array(sliceBuffer), 4);
 
-            ws.send(frameBuffer);
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(frameBuffer);
+            }
+          };
+
+          const pumpPipeline = async () => {
+            while (nextChunkToSend < totalChunks && (nextChunkToSend - ackedChunks) < PIPELINE_WINDOW) {
+              const toSend = nextChunkToSend++;
+              sendChunk(toSend);
+            }
           };
 
           ws.onopen = () => {
@@ -210,11 +221,13 @@ export function UploaderModal({
                   )
                 );
               } else if (data.type === "init_ok") {
-                currentChunk = 0;
-                await sendNextChunk();
+                nextChunkToSend = 0;
+                ackedChunks = 0;
+                await pumpPipeline();
               } else if (data.type === "chunk_ack") {
-                const browserPercent = Math.min(Math.round(((data.chunkIndex + 1) / totalChunks) * 40), 40);
-                const loadedMb = (Math.min((data.chunkIndex + 1) * CHUNK_SIZE, file.size) / (1024 * 1024)).toFixed(1);
+                ackedChunks++;
+                const browserPercent = Math.min(Math.round((ackedChunks / totalChunks) * 40), 40);
+                const loadedMb = (Math.min(ackedChunks * CHUNK_SIZE, file.size) / (1024 * 1024)).toFixed(1);
                 const totalMb = (file.size / (1024 * 1024)).toFixed(1);
 
                 setTasks((prev) =>
@@ -224,16 +237,13 @@ export function UploaderModal({
                           ...t,
                           status: "uploading",
                           progress: browserPercent,
-                          uploadedText: `Buffering: ${loadedMb} / ${totalMb} MB (${Math.round(((data.chunkIndex + 1) / totalChunks) * 100)}%)`,
+                          uploadedText: `Buffering: ${loadedMb} / ${totalMb} MB (${Math.round((ackedChunks / totalChunks) * 100)}%)`,
                         }
                       : t
                   )
                 );
 
-                currentChunk = data.chunkIndex + 1;
-                if (currentChunk < totalChunks) {
-                  await sendNextChunk();
-                }
+                await pumpPipeline();
               } else if (data.type === "telegram_progress") {
                 const totalMb = (file.size / (1024 * 1024)).toFixed(1);
                 setTasks((prev) =>
@@ -276,7 +286,7 @@ export function UploaderModal({
           };
 
           ws.onclose = (ev) => {
-            if (!ev.wasClean && currentChunk < totalChunks) {
+            if (!ev.wasClean && ackedChunks < totalChunks) {
               reject(new Error(`WebSocket connection closed unexpectedly (Code: ${ev.code})`));
             }
           };

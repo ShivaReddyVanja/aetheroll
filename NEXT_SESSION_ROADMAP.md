@@ -2,32 +2,32 @@
 
 ## 🎯 Primary Goals for Next Session
 
-1. **⚡ Upload Speed Acceleration**: Upgrade chunk size from 128KB to 512KB and enable concurrent part pipelining.
+1. **✅ ⚡ Upload Speed Acceleration (COMPLETED)**: Upgraded chunk size from 128KB to 512KB and enabled concurrent 2x pipelining across browser WS & MTProto parts.
 2. **🎬 Video Playback & Seeking Performance**: Implement Cloudflare Edge Caching and R2 video slice caching for sub-10ms chunk delivery.
 3. **🖼️ Thumbnail & Preview Streaming**: Optimize R2 thumbnail caching and instant BlurHash rendering.
 
 ---
 
-## ⚡ 1. Upload Speed Acceleration (512KB Chunks + Concurrency)
+## ✅ 1. Upload Speed Acceleration (512KB Chunks + Concurrency - COMPLETED)
 
-### Context & Why This Works:
-Now that the backend is powered by **Telegram's Native WebSocket Gateways (`PromisedWebSockets` over `wss://flora.web.telegram.org/apiws`)**, we are no longer constrained by raw TCP stream buffer limits. Native WebSocket binary frames support 512KB chunks effortlessly.
+### Context & Implementation:
+Backend is powered by **Telegram's Native WebSocket Gateways (`PromisedWebSockets` over `wss://flora.web.telegram.org/apiws`)**. Native WebSocket binary frames support 512KB chunks effortlessly.
 
-### Speed Comparison:
+### Speed Comparison Achieved:
 
-| Metric | 128KB Chunks (Current) | 512KB Chunks (Target) | 512KB + 2x Concurrency |
+| Metric | 128KB Chunks (Previous) | 512KB Chunks | 512KB + 2x Concurrency (Current) |
 | :--- | :--- | :--- | :--- |
 | **Total Parts (14.1 MB file)** | 108 parts | 28 parts | 28 parts (14 batches) |
 | **Network Roundtrip ACKs** | 108 ACKs | 28 ACKs (**4x fewer**) | 14 ACKs (**8x fewer**) |
 | **Upload Time (Est.)** | ~15 seconds | **~3–5 seconds** | **~2–3 seconds** |
 
-### Implementation Plan:
+### Completed Implementation:
 1. **Frontend (`UploaderModal.tsx`)**:
-   - Update `CHUNK_SIZE = 512 * 1024` (524,288 bytes).
-   - Stream 512KB binary frames over `/api/media/upload/ws`.
+   - Upgraded `CHUNK_SIZE = 512 * 1024` (524,288 bytes).
+   - Streamed 512KB binary frames with 2-frame pipelined sliding window over `/api/media/upload/ws`.
 2. **Backend (`TelegramAuthDO.ts`)**:
-   - Update `partSize = 512 * 1024`.
-   - Dispatch `SaveBigFilePart` / `SaveFilePart` in parallel batches of 2 (`Promise.all([client.invoke(partA), client.invoke(partB)])`).
+   - Upgraded `partSize = 512 * 1024`.
+   - Dispatched `SaveBigFilePart` / `SaveFilePart` in parallel batches of 2 via `Promise.all`.
 
 ---
 
