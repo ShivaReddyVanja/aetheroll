@@ -45,7 +45,7 @@ channelsRouter.get("/", async (c) => {
     const { user, client, db } = await getAuthUserClient(c);
     const returnAll = c.req.query("all") === "true";
 
-    // Ensure 'me' (Saved Messages) exists in channels and gallery_channels specifically for THIS user
+    // Ensure 'me' (Saved Messages) exists in channels catalog specifically for THIS user
     const userMeTgId = `me_${user.telegram_user_id}`;
     let meChannel = await db.get("SELECT * FROM channels WHERE telegram_channel_id = ?", [userMeTgId]);
     const meChannelId = meChannel?.id || crypto.randomUUID();
@@ -55,12 +55,6 @@ channelsRouter.get("/", async (c) => {
         [meChannelId, userMeTgId]
       );
     }
-    await db.run(
-      `INSERT INTO gallery_channels (user_id, channel_id)
-       VALUES (?, ?)
-       ON CONFLICT(user_id, channel_id) DO NOTHING`,
-      [user.id, meChannelId]
-    );
 
     if (returnAll) {
       // 1. Fetch live channels from Telegram for the picker modal
@@ -80,13 +74,6 @@ channelsRouter.get("/", async (c) => {
           } else {
             await db.run("UPDATE channels SET name = ? WHERE id = ?", [ch.title, channelId]);
           }
-
-          if (ch.id === "me") {
-            await db.run(
-              `INSERT INTO gallery_channels (user_id, channel_id) VALUES (?, ?) ON CONFLICT DO NOTHING`,
-              [user.id, channelId]
-            );
-          }
         }
       } catch (tgErr) {
         console.warn("Failed live TG channel sync, using cached D1 channels:", tgErr);
@@ -101,7 +88,7 @@ channelsRouter.get("/", async (c) => {
          LEFT JOIN media_items m ON m.channel_id = c.id AND m.deleted_at IS NULL
          WHERE c.telegram_channel_id NOT LIKE 'me_%' OR c.telegram_channel_id = ?
          GROUP BY c.id
-         ORDER BY (c.telegram_channel_id = ?) DESC, c.name ASC`,
+         ORDER BY is_added DESC, (c.telegram_channel_id = ?) DESC, c.name ASC`,
         [user.id, userMeTgId, userMeTgId]
       );
       return c.json({ channels: allChannels });
@@ -231,12 +218,6 @@ channelsRouter.post("/remove", async (c) => {
 
     if (!channel_id) {
       return c.json({ error: "channel_id required" }, 400);
-    }
-
-    // Protect 'me' (Saved Messages) from being removed
-    const channel = await db.get("SELECT telegram_channel_id FROM channels WHERE id = ?", [channel_id]);
-    if (channel?.telegram_channel_id === "me" || channel?.telegram_channel_id?.startsWith("me_")) {
-      return c.json({ error: "Cannot remove Saved Messages" }, 400);
     }
 
     await db.run("DELETE FROM gallery_channels WHERE user_id = ? AND channel_id = ?", [user.id, channel_id]);
