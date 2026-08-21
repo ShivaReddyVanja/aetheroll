@@ -48,6 +48,10 @@ interface UploadTask {
   file: File;
   status: "pending" | "processing" | "uploading" | "cloud_saving" | "done" | "error";
   progress: number;
+  step1Progress?: number;
+  step2Progress?: number;
+  step1Text?: string;
+  step2Text?: string;
   error?: string;
   previewUrl?: string;
   isVideo: boolean;
@@ -147,7 +151,18 @@ export function UploaderModal({
 
         setTasks((prev) =>
           prev.map((t, idx) =>
-            idx === i ? { ...t, status: "uploading", progress: 0, uploadedText: "Connecting upload stream..." } : t
+            idx === i
+              ? {
+                  ...t,
+                  status: "uploading",
+                  progress: 0,
+                  step1Progress: 0,
+                  step2Progress: 0,
+                  step1Text: "Connecting stream...",
+                  step2Text: "Waiting for stream...",
+                  uploadedText: "Uploading...",
+                }
+              : t
           )
         );
 
@@ -159,7 +174,7 @@ export function UploaderModal({
 
           let nextChunkToSend = 0;
           let ackedChunks = 0;
-          const PIPELINE_WINDOW = 2; // Up to 2 concurrent in-flight 512KB frames
+          const PIPELINE_WINDOW = 2; // Up to 2 concurrent in-flight frames
 
           const sendChunk = async (chunkIndex: number) => {
             if (chunkIndex >= totalChunks) return;
@@ -210,25 +225,16 @@ export function UploaderModal({
               const data = JSON.parse(event.data);
               if (data.type === "debug_log") {
                 console.log(`%c[SERVER] %c${data.stage}`, "color: #ff007f; font-weight: bold", "color: #00e5ff; font-weight: 500;", data.detail || "");
-                setTasks((prev) =>
-                  prev.map((t, idx) =>
-                    idx === i
-                      ? {
-                          ...t,
-                          uploadedText: `Stage: ${data.stage} ${data.detail?.rpc ? `(${data.detail.rpc} #${data.detail.part})` : ""}`,
-                        }
-                      : t
-                  )
-                );
               } else if (data.type === "init_ok") {
                 nextChunkToSend = 0;
                 ackedChunks = 0;
                 await pumpPipeline();
               } else if (data.type === "chunk_ack") {
                 ackedChunks++;
-                const browserPercent = Math.min(Math.round((ackedChunks / totalChunks) * 40), 40);
+                const step1Percent = Math.min(Math.round((ackedChunks / totalChunks) * 100), 100);
                 const loadedMb = (Math.min(ackedChunks * CHUNK_SIZE, file.size) / (1024 * 1024)).toFixed(1);
                 const totalMb = (file.size / (1024 * 1024)).toFixed(1);
+                const step1Text = step1Percent >= 100 ? `${totalMb} MB (100%)` : `${loadedMb} / ${totalMb} MB (${step1Percent}%)`;
 
                 setTasks((prev) =>
                   prev.map((t, idx) =>
@@ -236,8 +242,9 @@ export function UploaderModal({
                       ? {
                           ...t,
                           status: "uploading",
-                          progress: browserPercent,
-                          uploadedText: `Buffering: ${loadedMb} / ${totalMb} MB (${Math.round((ackedChunks / totalChunks) * 100)}%)`,
+                          step1Progress: step1Percent,
+                          step1Text,
+                          uploadedText: step1Percent < 100 ? `Step 1: ${step1Percent}%` : `Step 2: ${t.step2Progress || 0}%`,
                         }
                       : t
                   )
@@ -245,15 +252,19 @@ export function UploaderModal({
 
                 await pumpPipeline();
               } else if (data.type === "telegram_progress") {
+                const step2Percent = data.progressPercent || 0;
                 const totalMb = (file.size / (1024 * 1024)).toFixed(1);
+                const step2Text = step2Percent >= 100 ? `Saved (100%)` : `${step2Percent}% of ${totalMb} MB`;
+
                 setTasks((prev) =>
                   prev.map((t, idx) =>
                     idx === i
                       ? {
                           ...t,
                           status: "uploading",
-                          progress: data.percent || 40,
-                          uploadedText: `Saving to Telegram Vault: ${data.progressPercent}% of ${totalMb} MB`,
+                          step2Progress: step2Percent,
+                          step2Text,
+                          uploadedText: (t.step1Progress || 0) < 100 ? `Step 1: ${t.step1Progress}%` : `Step 2: ${step2Percent}%`,
                         }
                       : t
                   )
@@ -264,8 +275,13 @@ export function UploaderModal({
                     idx === i
                       ? {
                           ...t,
+                          status: "done",
                           progress: 100,
-                          uploadedText: "Complete!",
+                          step1Progress: 100,
+                          step2Progress: 100,
+                          step1Text: "Complete (100%)",
+                          step2Text: "Complete (100%)",
+                          uploadedText: "Uploaded to Telegram",
                         }
                       : t
                   )
@@ -469,16 +485,66 @@ export function UploaderModal({
                     )}
 
                     {task.status === "uploading" && (
-                      <div className="w-full flex items-center gap-2">
-                        <div className="flex-1 h-2 bg-[var(--border-color)] rounded-full overflow-hidden">
-                          <div
-                            className="h-full bg-blue-600 rounded-full transition-all duration-150 ease-out"
-                            style={{ width: `${task.progress}%` }}
-                          />
+                      <div className="w-full flex flex-col gap-2 mt-1.5">
+                        {/* Step 1: Uploading to Edge */}
+                        <div className="flex flex-col gap-1">
+                          <div className="flex items-center justify-between text-[11px]">
+                            <span className="flex items-center gap-1.5 font-medium text-[var(--text-secondary)]">
+                              <span
+                                className={`w-3.5 h-3.5 rounded-full flex items-center justify-center text-[8px] font-bold transition-colors ${
+                                  (task.step1Progress ?? 0) >= 100
+                                    ? "bg-emerald-500 text-white"
+                                    : "bg-blue-600 text-white"
+                                }`}
+                              >
+                                {(task.step1Progress ?? 0) >= 100 ? "✓" : "1"}
+                              </span>
+                              <span className="text-[var(--text-primary)] text-[11px] font-medium">Step 1: Upload to Edge</span>
+                            </span>
+                            <span className="text-[var(--text-tertiary)] font-mono text-[10px]">
+                              {task.step1Text || `${task.step1Progress ?? 0}%`}
+                            </span>
+                          </div>
+                          <div className="h-1.5 bg-[var(--border-color)] rounded-full overflow-hidden">
+                            <div
+                              className={`h-full rounded-full transition-all duration-300 ease-out ${
+                                (task.step1Progress ?? 0) >= 100 ? "bg-emerald-500" : "bg-blue-600"
+                              }`}
+                              style={{ width: `${task.step1Progress ?? 0}%` }}
+                            />
+                          </div>
                         </div>
-                        <span className="text-[10px] text-blue-500 font-bold min-w-[32px] text-right">
-                          {task.progress}%
-                        </span>
+
+                        {/* Step 2: Vaulting to Telegram */}
+                        <div className="flex flex-col gap-1">
+                          <div className="flex items-center justify-between text-[11px]">
+                            <span className="flex items-center gap-1.5 font-medium text-[var(--text-secondary)]">
+                              <span
+                                className={`w-3.5 h-3.5 rounded-full flex items-center justify-center text-[8px] font-bold transition-colors ${
+                                  (task.step2Progress ?? 0) >= 100
+                                    ? "bg-emerald-500 text-white"
+                                    : (task.step2Progress ?? 0) > 0
+                                    ? "bg-indigo-600 text-white"
+                                    : "bg-[var(--border-color)] text-[var(--text-tertiary)]"
+                                }`}
+                              >
+                                {(task.step2Progress ?? 0) >= 100 ? "✓" : "2"}
+                              </span>
+                              <span className="text-[var(--text-primary)] text-[11px] font-medium">Step 2: Vault to Telegram</span>
+                            </span>
+                            <span className="text-[var(--text-tertiary)] font-mono text-[10px]">
+                              {task.step2Text || `${task.step2Progress ?? 0}%`}
+                            </span>
+                          </div>
+                          <div className="h-1.5 bg-[var(--border-color)] rounded-full overflow-hidden">
+                            <div
+                              className={`h-full rounded-full transition-all duration-300 ease-out ${
+                                (task.step2Progress ?? 0) >= 100 ? "bg-emerald-500" : "bg-indigo-600"
+                              }`}
+                              style={{ width: `${task.step2Progress ?? 0}%` }}
+                            />
+                          </div>
+                        </div>
                       </div>
                     )}
 
