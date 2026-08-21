@@ -45,6 +45,8 @@ export class TelegramAuthDO {
   mediaLocationCache: Map<string, { fileLocation: any; dcId?: number; expires: number }>;
   inFlightPrefetches: Map<string, Promise<Buffer | null>>;
   prefetchedChunks: Map<string, { buffer: Buffer; expires: number }>;
+  segmentRingCache: Map<string, { buffer: Buffer; expires: number; lastUsed: number }>;
+  inFlightSegments: Map<string, Promise<Buffer | null>>;
   recentLogs: Array<{
     id: string;
     timestamp: number;
@@ -64,6 +66,8 @@ export class TelegramAuthDO {
     this.mediaLocationCache = new Map();
     this.inFlightPrefetches = new Map();
     this.prefetchedChunks = new Map();
+    this.segmentRingCache = new Map();
+    this.inFlightSegments = new Map();
     this.recentLogs = [];
     this.logStreamControllers = new Set();
   }
@@ -669,6 +673,148 @@ export class TelegramAuthDO {
     });
   }
 
+  private async fetchSegmentParallel(
+    client: any,
+    item: any,
+    fileLocation: any,
+    segmentIndex: number,
+    r2: any
+  ): Promise<Buffer | null> {
+    const SEGMENT_SIZE = 16 * 1024 * 1024;
+    const TG_CHUNK_SIZE = 512 * 1024;
+    const totalSize = Number(item.file_size_bytes) || 0;
+    const segStart = segmentIndex * SEGMENT_SIZE;
+    if (segStart >= totalSize) return null;
+    const segEnd = Math.min(segStart + SEGMENT_SIZE, totalSize);
+    const segLength = segEnd - segStart;
+    const segmentKey = `${item.id}:seg:${segmentIndex}`;
+
+    // 1. Check in-memory ring cache
+    const now = Date.now();
+    const cached = this.segmentRingCache.get(segmentKey);
+    if (cached && cached.expires > now) {
+      cached.lastUsed = now;
+      this.logEvent("RAM", "success", `⚡ [Ring-Buffer Hit] Segment ${segmentIndex} (${(segLength / 1024 / 1024).toFixed(1)}MB)`);
+      return cached.buffer;
+    }
+
+    // 2. Check In-Flight Promise deduplication
+    const existing = this.inFlightSegments.get(segmentKey);
+    if (existing) {
+      this.logEvent("PREFETCH", "info", `🔗 [In-Flight Share] Joining active Segment ${segmentIndex} fetch`);
+      return existing;
+    }
+
+    const fetchPromise = (async (): Promise<Buffer | null> => {
+      const segStartTime = Date.now();
+      try {
+        const offsets: number[] = [];
+        for (let off = segStart; off < segEnd; off += TG_CHUNK_SIZE) {
+          offsets.push(off);
+        }
+
+        const buffers: Buffer[] = new Array(offsets.length);
+        const CONCURRENCY = 6;
+        let cursor = 0;
+
+        const downloadWorker = async () => {
+          while (cursor < offsets.length) {
+            const idx = cursor++;
+            const offset = offsets[idx];
+            const partLength = Math.min(TG_CHUNK_SIZE, totalSize - offset);
+
+            // Check if individual chunk is in prefetchedChunks
+            const chunkKey = `${item.id}:${offset}`;
+            const ramChunk = this.prefetchedChunks.get(chunkKey);
+            if (ramChunk && ramChunk.expires > Date.now()) {
+              buffers[idx] = ramChunk.buffer.subarray(0, partLength);
+              continue;
+            }
+
+            try {
+              const req = new Api.upload.GetFile({
+                location: fileLocation,
+                offset: toBigInt(offset),
+                limit: TG_CHUNK_SIZE,
+                precise: true,
+              });
+              const res: any = await Promise.race([
+                client.invoke(req),
+                new Promise((_, reject) => setTimeout(() => reject(new Error("Segment chunk timeout")), 7000)),
+              ]);
+              if (res && res.bytes) {
+                const b = Buffer.from(res.bytes).subarray(0, partLength);
+                buffers[idx] = b;
+                this.storeChunkInRam(chunkKey, b);
+              }
+            } catch (err: any) {
+              console.warn(`[SegmentFetch] Error offset=${offset}:`, err?.message);
+              if (err?.errorMessage === "FILE_REFERENCE_EXPIRED") {
+                this.mediaLocationCache.delete(item.id);
+              }
+              // Retry once with fresh invoke
+              try {
+                const req = new Api.upload.GetFile({
+                  location: fileLocation,
+                  offset: toBigInt(offset),
+                  limit: TG_CHUNK_SIZE,
+                  precise: true,
+                });
+                const res: any = await client.invoke(req);
+                if (res && res.bytes) {
+                  const b = Buffer.from(res.bytes).subarray(0, partLength);
+                  buffers[idx] = b;
+                  this.storeChunkInRam(chunkKey, b);
+                }
+              } catch {}
+            }
+          }
+        };
+
+        const workers = Array.from({ length: Math.min(CONCURRENCY, offsets.length) }, () => downloadWorker());
+        await Promise.all(workers);
+
+        const assembled = Buffer.concat(buffers.filter(Boolean));
+        if (assembled.length === 0) return null;
+
+        // Maintain Ring-Buffer Cache (keep max 3 active segments ~48MB in RAM)
+        if (this.segmentRingCache.size >= 3) {
+          let oldestKey: string | null = null;
+          let oldestTime = Infinity;
+          for (const [k, v] of this.segmentRingCache.entries()) {
+            if (v.lastUsed < oldestTime) {
+              oldestTime = v.lastUsed;
+              oldestKey = k;
+            }
+          }
+          if (oldestKey) this.segmentRingCache.delete(oldestKey);
+        }
+
+        this.segmentRingCache.set(segmentKey, {
+          buffer: assembled,
+          expires: Date.now() + 15 * 60 * 1000, // 15 min TTL
+          lastUsed: Date.now(),
+        });
+
+        const elapsed = Date.now() - segStartTime;
+        const mb = assembled.length / 1024 / 1024;
+        const speedMbS = elapsed > 0 ? (mb / (elapsed / 1000)).toFixed(1) : "0";
+        this.logEvent(
+          "STREAM",
+          "success",
+          `🚀 [Segment ${segmentIndex} Assembled] ${mb.toFixed(1)}MB in ${elapsed}ms (${speedMbS} MB/s)`
+        );
+
+        return assembled;
+      } finally {
+        this.inFlightSegments.delete(segmentKey);
+      }
+    })();
+
+    this.inFlightSegments.set(segmentKey, fetchPromise);
+    return fetchPromise;
+  }
+
   private async fetchSingleChunk(
     client: any,
     item: any,
@@ -682,79 +828,21 @@ export class TelegramAuthDO {
     // 1. Check RAM Cache (0ms)
     const ramCached = this.prefetchedChunks.get(chunkKey);
     if (ramCached && ramCached.expires > now) {
-      this.logEvent("RAM", "success", `⚡ [RAM Hit 0ms] Chunk offset=${alignedOffset} (512KB)`);
       return ramCached.buffer;
     }
 
-    // 2. Check R2 Cache (sub-15ms)
-    const chunkR2Key = `chunks/${item.id}/${alignedOffset}.bin`;
-    try {
-      const r2Start = Date.now();
-      const r2Cached: any = await r2.get(chunkR2Key);
-      if (r2Cached) {
-        const buf = Buffer.isBuffer(r2Cached)
-          ? r2Cached
-          : Buffer.from(typeof r2Cached.arrayBuffer === "function" ? await r2Cached.arrayBuffer() : r2Cached);
-        this.storeChunkInRam(chunkKey, buf);
-        this.logEvent("RAM", "info", `📦 [R2 Hit ${Date.now() - r2Start}ms] Chunk offset=${alignedOffset} (512KB)`);
-        return buf;
-      }
-    } catch {}
-
-    // 3. Check In-Flight Promise (deduplication of parallel requests)
-    const existingInFlight = this.inFlightPrefetches.get(chunkKey);
-    if (existingInFlight) {
-      this.logEvent("PREFETCH", "info", `🔗 [In-Flight Promise Share] Joining existing fetch for offset=${alignedOffset}`);
-      return existingInFlight;
+    // 2. Check Ring-Buffer Segment Cache
+    const SEGMENT_SIZE = 16 * 1024 * 1024;
+    const segmentIndex = Math.floor(alignedOffset / SEGMENT_SIZE);
+    const segment = await this.fetchSegmentParallel(client, item, fileLocation, segmentIndex, r2);
+    if (segment) {
+      const segStart = segmentIndex * SEGMENT_SIZE;
+      const sliceStart = alignedOffset - segStart;
+      const sliceEnd = Math.min(sliceStart + 512 * 1024, segment.length);
+      return segment.subarray(sliceStart, sliceEnd);
     }
 
-    // 4. Launch new MTProto GetFile RPC
-    const fetchPromise = (async (): Promise<Buffer | null> => {
-      const mtprotoStart = Date.now();
-      try {
-        const CHUNK_SIZE = 512 * 1024;
-        let chunkBuf: Buffer | null = null;
-
-        if (fileLocation) {
-          try {
-            this.logEvent("MTPROTO", "warn", `📡 [Telegram RPC] GetFile offset=${alignedOffset} (512KB)...`);
-            const req = new Api.upload.GetFile({
-              location: fileLocation,
-              offset: toBigInt(alignedOffset),
-              limit: CHUNK_SIZE,
-            });
-            const res: any = await Promise.race([
-              client.invoke(req),
-              new Promise((_, reject) => setTimeout(() => reject(new Error("GetFile MTProto timeout")), 8000)),
-            ]);
-            if (res && res.bytes) {
-              chunkBuf = Buffer.from(res.bytes);
-              this.logEvent("MTPROTO", "success", `✅ [Telegram RPC] Received 512KB in ${Date.now() - mtprotoStart}ms (offset=${alignedOffset})`);
-            }
-          } catch (invokeErr: any) {
-            this.logEvent("MTPROTO", "error", `❌ [Telegram RPC Error offset=${alignedOffset}]: ${invokeErr?.message}`);
-            // Invalidate location cache if Telegram file reference expired
-            if (invokeErr?.errorMessage === "FILE_REFERENCE_EXPIRED") {
-              this.mediaLocationCache.delete(item.id);
-            }
-          }
-        }
-
-        if (chunkBuf && chunkBuf.length > 0) {
-          this.storeChunkInRam(chunkKey, chunkBuf);
-          // Async background R2 write (0ms impact on stream)
-          r2.put(chunkR2Key, chunkBuf, "application/octet-stream").catch(() => {});
-          return chunkBuf;
-        }
-
-        return null;
-      } finally {
-        this.inFlightPrefetches.delete(chunkKey);
-      }
-    })();
-
-    this.inFlightPrefetches.set(chunkKey, fetchPromise);
-    return fetchPromise;
+    return null;
   }
 
   private async handleStream(request: Request, envObj: any): Promise<Response> {
@@ -832,40 +920,34 @@ export class TelegramAuthDO {
         });
       }
 
-      const alignedStart = Math.floor(start / CHUNK_SIZE) * CHUNK_SIZE;
-      this.logEvent("STREAM", "info", `🎬 [Stream Request] ${item.id.slice(0, 8)}... Range: ${start}-${end}/${totalSize} (${((end - start + 1) / 1024).toFixed(0)}KB)`);
+      const SEGMENT_SIZE = 16 * 1024 * 1024;
+      const segmentIndex = Math.floor(start / SEGMENT_SIZE);
+      const segStart = segmentIndex * SEGMENT_SIZE;
 
-      // 3. Speculative Read-Ahead Prefetch
-      // Next chunk (K + 1)
-      const nextAlignedStart = alignedStart + CHUNK_SIZE;
-      if (nextAlignedStart < totalSize) {
-        this.logEvent("PREFETCH", "info", `🚀 [Read-Ahead] Prefetching Chunk K+1 (offset=${nextAlignedStart})`);
-        this.fetchSingleChunk(client, item, fileLocation, nextAlignedStart, r2).catch(() => {});
-      }
+      this.logEvent(
+        "STREAM",
+        "info",
+        `🎬 [Stream Request] ${item.id.slice(0, 8)}... Range: ${start}-${end}/${totalSize} (Segment ${segmentIndex})`
+      );
 
-      // Initial Playback Optimization: Speculatively prefetch Tail chunk(s) containing MP4 `moov` atom
-      if (alignedStart === 0 && totalSize > CHUNK_SIZE) {
-        const lastChunkOffset = Math.floor((totalSize - 1) / CHUNK_SIZE) * CHUNK_SIZE;
-        if (lastChunkOffset > 0 && lastChunkOffset !== nextAlignedStart) {
-          this.logEvent("PREFETCH", "success", `🎯 [Tail moov] Speculative prefetch for atom index (offset=${lastChunkOffset})`);
-          this.fetchSingleChunk(client, item, fileLocation, lastChunkOffset, r2).catch(() => {});
-        }
-        // If file is large (> 5MB), also prefetch second-to-last chunk in case moov spans > 512KB
-        if (lastChunkOffset > CHUNK_SIZE * 2) {
-          const secondLastChunkOffset = lastChunkOffset - CHUNK_SIZE;
-          this.fetchSingleChunk(client, item, fileLocation, secondLastChunkOffset, r2).catch(() => {});
+      // 3. Predictive Lookahead Prefetch: Next segment if reading past 50% of current segment
+      const offsetWithinSeg = start - segStart;
+      if (offsetWithinSeg > SEGMENT_SIZE / 2) {
+        const nextSegIndex = segmentIndex + 1;
+        if (nextSegIndex * SEGMENT_SIZE < totalSize) {
+          this.fetchSegmentParallel(client, item, fileLocation, nextSegIndex, r2).catch(() => {});
         }
       }
 
-      // 4. Fetch the requested chunk K
-      const chunkBuffer = await this.fetchSingleChunk(client, item, fileLocation, alignedStart, r2);
-      if (!chunkBuffer || chunkBuffer.length === 0) {
-        return new Response("Chunk unavailable", { status: 502 });
+      // 4. Fetch the 16MB segment in parallel
+      const segmentBuffer = await this.fetchSegmentParallel(client, item, fileLocation, segmentIndex, r2);
+      if (!segmentBuffer || segmentBuffer.length === 0) {
+        return new Response("Segment unavailable", { status: 502 });
       }
 
-      const sliceStart = start - alignedStart;
-      const sliceEnd = Math.min(sliceStart + (end - start + 1), chunkBuffer.length);
-      const exactSlice = chunkBuffer.subarray(sliceStart, sliceEnd);
+      const sliceStart = start - segStart;
+      const sliceEnd = Math.min(sliceStart + (end - start + 1), segmentBuffer.length);
+      const exactSlice = segmentBuffer.subarray(sliceStart, sliceEnd);
       if (exactSlice.length === 0) {
         return new Response(null, {
           status: 416,
