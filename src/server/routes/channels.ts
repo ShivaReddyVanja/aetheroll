@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { getCookie } from "hono/cookie";
 import crypto from "crypto";
 import { getDb, toSafeNumber, toSafeString } from "../lib/db";
-import { decryptSession } from "../lib/crypto";
+import { decryptSession, verifyAetherollSignature } from "../lib/crypto";
 import { createTelegramClient, getUserChannels, getConnectedClient, getDefaultTelegramConfig } from "../lib/telegram";
 import { parseGalleryEvent, applyGalleryEventsToDb, GalleryEvent } from "../lib/ledger";
 import { getR2Storage } from "../lib/r2";
@@ -45,13 +45,14 @@ channelsRouter.get("/", async (c) => {
     const { user, client, db } = await getAuthUserClient(c);
     const returnAll = c.req.query("all") === "true";
 
-    // Ensure 'me' (Saved Messages) exists in channels and gallery_channels
-    let meChannel = await db.get("SELECT * FROM channels WHERE telegram_channel_id = 'me'");
+    // Ensure 'me' (Saved Messages) exists in channels and gallery_channels specifically for THIS user
+    const userMeTgId = `me_${user.telegram_user_id}`;
+    let meChannel = await db.get("SELECT * FROM channels WHERE telegram_channel_id = ?", [userMeTgId]);
     const meChannelId = meChannel?.id || crypto.randomUUID();
     if (!meChannel) {
       await db.run(
-        "INSERT INTO channels (id, telegram_channel_id, name) VALUES (?, 'me', 'Saved Messages (Private Cloud)')",
-        [meChannelId]
+        "INSERT INTO channels (id, telegram_channel_id, name) VALUES (?, ?, 'Saved Messages (Private Cloud)')",
+        [meChannelId, userMeTgId]
       );
     }
     await db.run(
@@ -67,16 +68,24 @@ channelsRouter.get("/", async (c) => {
         const tgChannels = await getUserChannels(client);
 
         for (const ch of tgChannels) {
-          let channelRow = await db.get("SELECT * FROM channels WHERE telegram_channel_id = ?", [ch.id]);
+          const targetTgId = ch.id === "me" ? userMeTgId : ch.id;
+          let channelRow = await db.get("SELECT * FROM channels WHERE telegram_channel_id = ?", [targetTgId]);
           const channelId = channelRow?.id || crypto.randomUUID();
 
           if (!channelRow) {
             await db.run(
               "INSERT INTO channels (id, telegram_channel_id, name) VALUES (?, ?, ?)",
-              [channelId, ch.id, ch.title]
+              [channelId, targetTgId, ch.title]
             );
           } else {
             await db.run("UPDATE channels SET name = ? WHERE id = ?", [ch.title, channelId]);
+          }
+
+          if (ch.id === "me") {
+            await db.run(
+              `INSERT INTO gallery_channels (user_id, channel_id) VALUES (?, ?) ON CONFLICT DO NOTHING`,
+              [user.id, channelId]
+            );
           }
         }
       } catch (tgErr) {
@@ -90,9 +99,10 @@ channelsRouter.get("/", async (c) => {
                 EXISTS(SELECT 1 FROM gallery_channels gc WHERE gc.channel_id = c.id AND gc.user_id = ?) as is_added
          FROM channels c
          LEFT JOIN media_items m ON m.channel_id = c.id AND m.deleted_at IS NULL
+         WHERE c.telegram_channel_id NOT LIKE 'me_%' OR c.telegram_channel_id = ?
          GROUP BY c.id
-         ORDER BY (c.telegram_channel_id = 'me') DESC, c.name ASC`,
-        [user.id]
+         ORDER BY (c.telegram_channel_id = ?) DESC, c.name ASC`,
+        [user.id, userMeTgId, userMeTgId]
       );
       return c.json({ channels: allChannels });
     }
@@ -106,8 +116,8 @@ channelsRouter.get("/", async (c) => {
        LEFT JOIN media_items m ON m.channel_id = c.id AND m.deleted_at IS NULL
        WHERE gc.user_id = ?
        GROUP BY c.id
-       ORDER BY (c.telegram_channel_id = 'me') DESC, media_count DESC, c.name ASC`,
-      [user.id]
+       ORDER BY (c.telegram_channel_id = ? OR c.telegram_channel_id = 'me') DESC, media_count DESC, c.name ASC`,
+      [user.id, userMeTgId]
     );
 
     return c.json({ channels: userChannels });
@@ -129,13 +139,16 @@ channelsRouter.post("/add", async (c) => {
       return c.json({ error: "telegram_channel_id required" }, 400);
     }
 
-    let channelRow = await db.get("SELECT * FROM channels WHERE telegram_channel_id = ?", [telegram_channel_id]);
+    const userMeTgId = `me_${user.telegram_user_id}`;
+    const targetTgId = telegram_channel_id === "me" ? userMeTgId : telegram_channel_id;
+
+    let channelRow = await db.get("SELECT * FROM channels WHERE telegram_channel_id = ?", [targetTgId]);
     const channelId = channelRow?.id || crypto.randomUUID();
 
     if (!channelRow) {
       await db.run(
         "INSERT INTO channels (id, telegram_channel_id, name) VALUES (?, ?, ?)",
-        [channelId, telegram_channel_id, name || "Telegram Channel"]
+        [channelId, targetTgId, name || "Telegram Channel"]
       );
     }
 
@@ -150,10 +163,12 @@ channelsRouter.post("/add", async (c) => {
     // Initial background sync for newly added channel
     try {
       if (!client.connected) await client.connect();
-      let targetPeer: any = telegram_channel_id;
-      if (telegram_channel_id !== "me") {
-        try { targetPeer = await client.getInputEntity(telegram_channel_id); }
-        catch { try { targetPeer = await client.getEntity(telegram_channel_id); } catch {} }
+      let targetPeer: any = targetTgId;
+      if (targetTgId === "me" || targetTgId.startsWith("me_")) {
+        targetPeer = "me";
+      } else {
+        try { targetPeer = await client.getInputEntity(targetTgId); }
+        catch { try { targetPeer = await client.getEntity(targetTgId); } catch {} }
       }
       const messages = await client.getMessages(targetPeer, { limit: 100 });
       for (const msg of messages) {
@@ -164,11 +179,23 @@ channelsRouter.post("/add", async (c) => {
         const fileType = isPhoto ? "photo" : "video";
         const mimeType = isPhoto ? "image/jpeg" : (msg.document?.mimeType || "video/mp4");
         const fileSize = toSafeNumber((msg.photo as any)?.sizes?.slice(-1)[0]?.size || (msg.document as any)?.size || 0);
+        const dateSeconds = toSafeNumber(msg.date, Math.floor(Date.now() / 1000));
+
+        // Strictly verify Aetheroll cryptographic upload signature or WAL event
+        const isAetherollMedia = await verifyAetherollSignature(
+          msg.message,
+          fileSize,
+          dateSeconds,
+          (c.env as any)?.SESSION_ENCRYPTION_KEY
+        );
+        if (!isAetherollMedia) {
+          continue; // Ignore random non-Aetheroll chat files
+        }
+
         const width = toSafeNumber((msg.photo as any)?.sizes?.slice(-1)[0]?.w || (msg.document as any)?.attributes?.find((a: any) => a.w)?.w || 1920);
         const height = toSafeNumber((msg.photo as any)?.sizes?.slice(-1)[0]?.h || (msg.document as any)?.attributes?.find((a: any) => a.h)?.h || 1080);
         const rawDuration = (msg.document as any)?.attributes?.find((a: any) => a.duration)?.duration;
         const duration = rawDuration != null ? toSafeNumber(rawDuration) : null;
-        const dateSeconds = toSafeNumber(msg.date, Math.floor(Date.now() / 1000));
         const capturedAt = new Date(dateSeconds * 1000).toISOString();
         const tgMsgId = toSafeNumber(msg.id);
 
@@ -208,7 +235,7 @@ channelsRouter.post("/remove", async (c) => {
 
     // Protect 'me' (Saved Messages) from being removed
     const channel = await db.get("SELECT telegram_channel_id FROM channels WHERE id = ?", [channel_id]);
-    if (channel?.telegram_channel_id === "me") {
+    if (channel?.telegram_channel_id === "me" || channel?.telegram_channel_id?.startsWith("me_")) {
       return c.json({ error: "Cannot remove Saved Messages" }, 400);
     }
 
@@ -245,7 +272,7 @@ channelsRouter.post("/:id/sync", async (c) => {
 
     // Fetch last 200 messages from channel
     let targetPeer: any = channel.telegram_channel_id;
-    if (channel.telegram_channel_id === "me") {
+    if (channel.telegram_channel_id === "me" || channel.telegram_channel_id.startsWith("me_")) {
       targetPeer = "me";
     } else {
       try {
@@ -286,12 +313,24 @@ channelsRouter.post("/:id/sync", async (c) => {
 
       if (!isPhoto && !isVideo) continue;
 
-      activeTgMediaMsgIds.add(msgId);
-
       const fileType = isPhoto ? "photo" : "video";
       const mimeType = isPhoto ? "image/jpeg" : (msg.document?.mimeType || "video/mp4");
       const fileSize = toSafeNumber((msg.photo as any)?.sizes?.slice(-1)[0]?.size || (msg.document as any)?.size || 0);
-      
+      const dateSeconds = toSafeNumber(msg.date, Math.floor(Date.now() / 1000));
+
+      // Strictly verify Aetheroll cryptographic upload signature or WAL event
+      const isAetherollMedia = await verifyAetherollSignature(
+        msg.message,
+        fileSize,
+        dateSeconds,
+        (c.env as any)?.SESSION_ENCRYPTION_KEY
+      );
+      if (!isAetherollMedia) {
+        continue; // Ignore random non-Aetheroll chat files
+      }
+
+      activeTgMediaMsgIds.add(msgId);
+
       // Default dimensions or extracted
       const width = toSafeNumber((msg.photo as any)?.sizes?.slice(-1)[0]?.w || (msg.document as any)?.attributes?.find((a: any) => a.w)?.w || 1920);
       const height = toSafeNumber((msg.photo as any)?.sizes?.slice(-1)[0]?.h || (msg.document as any)?.attributes?.find((a: any) => a.h)?.h || 1080);
@@ -302,7 +341,6 @@ channelsRouter.post("/:id/sync", async (c) => {
       const defaultBlurHash = "LEHV6nWB2yk8pyo0adR*.7kCMdnj";
 
       const mediaId = crypto.randomUUID();
-      const dateSeconds = toSafeNumber(msg.date, Math.floor(Date.now() / 1000));
       const capturedAt = new Date(dateSeconds * 1000).toISOString();
 
       await db.run(
