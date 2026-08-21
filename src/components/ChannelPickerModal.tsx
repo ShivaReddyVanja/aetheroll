@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from "react";
 import { X, Search, Plus, RefreshCw, Check, Users, Radio } from "lucide-react";
 import { Channel } from "./Sidebar";
+import { apiFetch } from "@/lib/config";
 
 interface ChannelPickerModalProps {
   onClose: () => void;
@@ -33,7 +34,7 @@ export function ChannelPickerModal({
   useEffect(() => {
     async function loadAllChannels() {
       try {
-        const res = await fetch("/api/channels?all=true");
+        const res = await apiFetch("/api/channels?all=true");
         const data = await res.json();
         if (data.channels) {
           setAllChannels(data.channels);

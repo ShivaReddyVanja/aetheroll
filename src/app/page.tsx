@@ -11,6 +11,7 @@ import { SettingsModal } from "@/components/SettingsModal";
 import { TimelineScrubber } from "@/components/TimelineScrubber";
 import { ChannelPickerModal } from "@/components/ChannelPickerModal";
 import { DevLogHUD } from "@/components/DevLogHUD";
+import { getApiBaseUrl, apiFetch } from "@/lib/config";
 import {
   Search,
   Plus,
@@ -71,13 +72,10 @@ export default function GalleryPage() {
   // 1. Check Authentication on Mount
   const checkAuth = useCallback(async () => {
     try {
-      const res = await fetch("/api/auth/me");
+      const res = await apiFetch("/api/auth/me");
       const data = await res.json();
       if (data.authenticated && data.user) {
         setUser(data.user);
-        if (data.sessionToken) {
-          localStorage.setItem("tg_session_token", data.sessionToken);
-        }
       } else {
         setUser(null);
       }
@@ -96,7 +94,7 @@ export default function GalleryPage() {
   const fetchChannels = useCallback(async () => {
     if (!user) return;
     try {
-      const res = await fetch("/api/channels");
+      const res = await apiFetch("/api/channels");
       const data = await res.json();
       if (data.channels) {
         setChannels(data.channels);
@@ -126,7 +124,7 @@ export default function GalleryPage() {
         if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
         if (activeFilter === "favorites") url += `&favorites_only=true`;
 
-        const res = await fetch(url);
+        const res = await apiFetch(url);
         const data = await res.json();
 
         if (data.items) {
@@ -161,7 +159,7 @@ export default function GalleryPage() {
   const handleSyncChannel = async (channelId: string) => {
     setIsSyncing(true);
     try {
-      const res = await fetch(`/api/channels/${channelId}/sync`, { method: "POST" });
+      const res = await apiFetch(`/api/channels/${channelId}/sync`, { method: "POST" });
       const data = await res.json();
       if (data.success) {
         await fetchMedia();
@@ -178,7 +176,7 @@ export default function GalleryPage() {
   const handleToggleFavorite = async (mediaId: string, e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      const res = await fetch(`/api/media/${mediaId}/favorite`, { method: "POST" });
+      const res = await apiFetch(`/api/media/${mediaId}/favorite`, { method: "POST" });
       const data = await res.json();
       setMediaItems((prev) =>
         prev.map((item) =>
@@ -247,7 +245,7 @@ export default function GalleryPage() {
   // Add channel from Telegram
   const handleSelectAndAddChannel = async (channel: Channel) => {
     try {
-      const res = await fetch("/api/channels/add", {
+      const res = await apiFetch("/api/channels/add", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -269,7 +267,7 @@ export default function GalleryPage() {
   // Remove channel from Telegram Gallery
   const handleRemoveChannel = async (channelId: string) => {
     try {
-      await fetch("/api/channels/remove", {
+      await apiFetch("/api/channels/remove", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ channel_id: channelId }),
@@ -295,7 +293,7 @@ export default function GalleryPage() {
     if (!window.confirm(confirmText)) return;
 
     try {
-      const res = await fetch("/api/media/delete", {
+      const res = await apiFetch("/api/media/delete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ media_ids: mediaIds }),
@@ -315,7 +313,7 @@ export default function GalleryPage() {
 
   // Logout
   const handleLogout = async () => {
-    await fetch("/api/auth/logout", { method: "POST" });
+    await apiFetch("/api/auth/logout", { method: "POST" });
     setUser(null);
     setChannels([]);
     setMediaItems([]);
