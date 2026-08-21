@@ -3,7 +3,7 @@ import path from "path";
 const backendMode = (
   process.env.BACKEND_MODE ||
   process.env.NEXT_PUBLIC_BACKEND_MODE ||
-  "dev"
+  "prod"
 ).toLowerCase().trim();
 
 const isProdBackend = backendMode === "prod" || backendMode === "remote";
