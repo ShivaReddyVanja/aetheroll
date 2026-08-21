@@ -1720,9 +1720,17 @@ export class TelegramAuthDO {
             md5Checksum: "",
           });
 
+      let thumbBuf: Buffer | undefined = undefined;
+      if (thumbnail_base64) {
+        try {
+          thumbBuf = Buffer.from(thumbnail_base64.replace(/^data:image\/\w+;base64,/, ""), "base64");
+        } catch {}
+      }
+
       const isVideo = uploadSession.isVideo;
       const sentMsg = await client.sendFile(targetPeer, {
         file: inputFile,
+        thumb: thumbBuf,
         forceDocument: false,
         attributes: isVideo
           ? [
@@ -1860,13 +1868,31 @@ export class TelegramAuthDO {
         }
       }
 
+      let thumbBuf: Buffer | undefined = undefined;
+      if (thumbnailBase64) {
+        try {
+          thumbBuf = Buffer.from(thumbnailBase64.replace(/^data:image\/\w+;base64,/, ""), "base64");
+        } catch {}
+      }
+
       console.log(`[UploadOneShot] Streaming file to Telegram targetPeer (${targetPeer})...`);
       let sentMsg: any;
       try {
         sentMsg = await client.sendFile(targetPeer, {
           file: customFile,
+          thumb: thumbBuf,
           workers: 1,
           forceDocument: false,
+          attributes: isVideo
+            ? [
+                new Api.DocumentAttributeVideo({
+                  duration: Math.round(Number(formData.get("duration")) || 0),
+                  w: Number(formData.get("width")) || 1920,
+                  h: Number(formData.get("height")) || 1080,
+                  supportsStreaming: true,
+                }),
+              ]
+            : undefined,
         });
         console.log(`[UploadOneShot] Telegram sendFile SUCCESS! Message ID: ${sentMsg.id}`);
       } catch (sendErr: any) {
