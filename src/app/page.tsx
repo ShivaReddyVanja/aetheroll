@@ -243,7 +243,7 @@ export default function GalleryPage() {
   // Add channel from Telegram
   const handleSelectAndAddChannel = async (channel: Channel) => {
     try {
-      await fetch("/api/channels/add", {
+      const res = await fetch("/api/channels/add", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -251,12 +251,61 @@ export default function GalleryPage() {
           name: channel.name,
         }),
       });
+      const data = await res.json();
       setShowChannelPicker(false);
       await fetchChannels();
-      setSelectedChannelId(channel.id);
-      handleSyncChannel(channel.id);
+      const targetId = data.channelId || channel.id;
+      setSelectedChannelId(targetId);
+      handleSyncChannel(targetId);
     } catch (err) {
       console.error("Failed adding channel:", err);
+    }
+  };
+
+  // Remove channel from Telegram Gallery
+  const handleRemoveChannel = async (channelId: string) => {
+    try {
+      await fetch("/api/channels/remove", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ channel_id: channelId }),
+      });
+      await fetchChannels();
+      if (selectedChannelId === channelId) {
+        const remaining = channels.filter((c) => c.id !== channelId);
+        setSelectedChannelId(remaining[0]?.id || null);
+      }
+    } catch (err) {
+      console.error("Failed removing channel:", err);
+    }
+  };
+
+  // Delete media item(s)
+  const handleDeleteMedia = async (mediaIds: string[]) => {
+    if (mediaIds.length === 0) return;
+    const confirmText =
+      mediaIds.length === 1
+        ? "Delete this item from your gallery and Telegram?"
+        : `Delete ${mediaIds.length} items from your gallery and Telegram?`;
+
+    if (!window.confirm(confirmText)) return;
+
+    try {
+      const res = await fetch("/api/media/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ media_ids: mediaIds }),
+      });
+      if (res.ok) {
+        const idSet = new Set(mediaIds);
+        setMediaItems((prev) => prev.filter((item) => !idSet.has(item.id)));
+        setSelectedIds(new Set());
+        if (activeViewerItem && idSet.has(activeViewerItem.id)) {
+          setActiveViewerItem(null);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to delete media:", err);
     }
   };
 
@@ -285,7 +334,7 @@ export default function GalleryPage() {
         <QRCodeModal
           onLoginSuccess={(authUser) => {
             setUser(authUser);
-            fetchChannels();
+            checkAuth();
           }}
         />
       )}
@@ -337,6 +386,13 @@ export default function GalleryPage() {
                   <Star className="w-5 h-5" />
                 </button>
                 <button
+                  onClick={() => handleDeleteMedia(Array.from(selectedIds))}
+                  className="p-2 rounded-full text-[var(--text-secondary)] hover:bg-rose-500/10 hover:text-rose-500 transition-colors"
+                  title="Delete selected media"
+                >
+                  <Trash2 className="w-5 h-5" />
+                </button>
+                <button
                   onClick={() => setSelectedIds(new Set())}
                   className="p-2 rounded-full text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]"
                   title="Clear selection"
@@ -369,6 +425,16 @@ export default function GalleryPage() {
 
               {/* Right Action Icons (Google Photos Style) */}
               <div className="flex items-center gap-2 ml-4">
+                {/* Sync Channel Button */}
+                <button
+                  onClick={() => selectedChannelId && handleSyncChannel(selectedChannelId)}
+                  disabled={!selectedChannelId || isSyncing}
+                  title={isSyncing ? "Syncing with Telegram..." : `Sync "${currentChannel?.name || "Library"}" from Telegram`}
+                  className="p-2.5 rounded-full text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-blue-500 transition-colors disabled:opacity-40"
+                >
+                  <RefreshCw className={`w-5 h-5 ${isSyncing ? "animate-spin text-blue-500" : ""}`} />
+                </button>
+
                 {/* Upload Button */}
                 <button
                   onClick={() => setShowUploader(true)}
@@ -423,6 +489,9 @@ export default function GalleryPage() {
               loading={loadingMedia}
               hasMore={!!nextCursor}
               onLoadMore={() => nextCursor && fetchMedia(nextCursor)}
+              onSync={() => selectedChannelId && handleSyncChannel(selectedChannelId)}
+              isSyncing={isSyncing}
+              onOpenUploader={() => setShowUploader(true)}
             />
           )}
 
@@ -444,6 +513,7 @@ export default function GalleryPage() {
           onNavigate={(nextItem) => setActiveViewerItem(nextItem)}
           onToggleFavorite={handleToggleFavorite}
           onItemUpdated={() => fetchMedia()}
+          onDelete={(id) => handleDeleteMedia([id])}
         />
       )}
 
@@ -475,6 +545,7 @@ export default function GalleryPage() {
         <ChannelPickerModal
           onClose={() => setShowChannelPicker(false)}
           onSelectAndAddChannel={handleSelectAndAddChannel}
+          onRemoveChannel={handleRemoveChannel}
           activeChannelIds={new Set(channels.map((c) => c.id))}
         />
       )}

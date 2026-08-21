@@ -6,8 +6,9 @@ import path from "path";
 import { getDb } from "../lib/db";
 import { decryptSession } from "../lib/crypto";
 import { getR2Storage } from "../lib/r2";
-import { createTelegramClient, getConnectedClient } from "../lib/telegram";
+import { createTelegramClient, getConnectedClient, getDefaultTelegramConfig } from "../lib/telegram";
 import { emitGalleryEvent } from "../lib/ledger";
+import { Api, utils } from "telegram";
 
 export const mediaRouter = new Hono();
 
@@ -126,6 +127,12 @@ import { CustomFile } from "telegram/client/uploads";
  * Actually uploads photo/video file directly to Telegram channel via MTProto
  */
 mediaRouter.post("/upload", async (c) => {
+  const authDo = (c.env as any)?.AUTH_DO;
+  if (authDo && typeof authDo.idFromName === "function") {
+    return forwardToUploadDO(c);
+  }
+
+  // 2. Fallback for local Node / SQLite dev environment
   try {
     const token = getCookie(c, "tg_session");
     if (!token) return c.json({ error: "Unauthorized" }, 401);
@@ -152,8 +159,8 @@ mediaRouter.post("/upload", async (c) => {
 
     const channel = await db.get(
       `SELECT c.* FROM channels c
-       JOIN user_channels uc ON uc.channel_id = c.id
-       WHERE c.id = ? AND uc.user_id = ?`,
+       JOIN gallery_channels gc ON gc.channel_id = c.id
+       WHERE c.id = ? AND gc.user_id = ?`,
       [channelId, session.id]
     );
 
@@ -161,22 +168,17 @@ mediaRouter.post("/upload", async (c) => {
       return c.json({ error: "Channel not found or unauthorized" }, 404);
     }
 
-    const client = await getConnectedClient(decryptSession(session.session_string));
+    const client = await getConnectedClient(
+      await decryptSession(session.session_string, (c.env as any)?.SESSION_ENCRYPTION_KEY),
+      getDefaultTelegramConfig(c.env)
+    );
 
     const arrayBuffer = await file.arrayBuffer();
     const fileBuffer = Buffer.from(arrayBuffer);
     const isVideo = file.type.startsWith("video/");
 
-    console.log(`[MTProto] Uploading ${file.name} (${(file.size / (1024 * 1024)).toFixed(2)} MB) to TG channel ${channel.telegram_channel_id}...`);
-
-    const tempDir = path.resolve(process.cwd(), ".data/temp");
-    if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
-    const tempFilePath = path.join(tempDir, `${crypto.randomUUID()}_${file.name}`);
-    await fs.promises.writeFile(tempFilePath, fileBuffer);
-
-    const customFile = new CustomFile(file.name, file.size, tempFilePath, fileBuffer);
+    const customFile = new CustomFile(file.name, file.size, "", fileBuffer);
     
-    // Resolve peer entity for Telegram
     let targetPeer: any = channel.telegram_channel_id;
     if (channel.telegram_channel_id === "me") {
       targetPeer = "me";
@@ -192,69 +194,125 @@ mediaRouter.post("/upload", async (c) => {
       }
     }
 
-    let sentMsg: any;
-    try {
-      sentMsg = await client.sendFile(targetPeer, {
-        file: customFile,
-        workers: 1,
-        forceDocument: false,
-      });
-    } catch (sendErr: any) {
-      if (sendErr?.errorMessage === "CHAT_WRITE_FORBIDDEN" || sendErr?.message?.includes("CHAT_WRITE_FORBIDDEN")) {
-        return c.json(
-          {
-            error: "You do not have post/admin permissions in this Telegram channel. Please select 'Saved Messages' or a private channel/group you own.",
-          },
-          403
-        );
-      }
-      throw sendErr;
-    } finally {
-      try {
-        if (fs.existsSync(tempFilePath)) await fs.promises.unlink(tempFilePath);
-      } catch {}
-    }
+    const sentMsg = await client.sendFile(targetPeer, {
+      file: customFile,
+      workers: 1,
+      forceDocument: false,
+    });
 
     const realMessageId = sentMsg.id;
-    console.log(`[MTProto] Uploaded successfully! Message ID: ${realMessageId}`);
+    const mediaId = crypto.randomUUID();
+    let thumbnailR2Key: string | null = null;
 
-    const customWidth = formData.get("width") ? parseInt(formData.get("width") as string, 10) : undefined;
-    const customHeight = formData.get("height") ? parseInt(formData.get("height") as string, 10) : undefined;
-    const customDuration = formData.get("duration") ? parseFloat(formData.get("duration") as string) : undefined;
+    await db.run(
+      `INSERT INTO media_items (
+         id, channel_id, uploader_user_id, telegram_message_id, file_type,
+         mime_type, file_size_bytes, width, height, duration_seconds,
+         blur_hash, thumbnail_r2_key, captured_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(channel_id, telegram_message_id) DO UPDATE SET
+         file_size_bytes = excluded.file_size_bytes`,
+      [
+        mediaId, channelId, session.id, realMessageId, isVideo ? "video" : "photo",
+        file.type || (isVideo ? "video/mp4" : "image/jpeg"), file.size, 1920, 1080, null,
+        blurHash, thumbnailR2Key, capturedAt
+      ]
+    );
 
-    // Extract dimensions & duration
-    let width = customWidth || 1920;
-    let height = customHeight || 1080;
-    let duration: number | null = customDuration || (isVideo ? 0 : null);
+    return c.json({ success: true, mediaId, telegramMessageId: realMessageId });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
 
-    if (sentMsg.photo) {
-      const sizes = (sentMsg.photo as any).sizes;
-      if (sizes && sizes.length > 0) {
-        const largest = sizes[sizes.length - 1];
-        if (largest.w && largest.h) {
-          width = largest.w;
-          height = largest.h;
-        }
-      }
-    } else if (sentMsg.document) {
-      const doc = sentMsg.document as any;
-      const videoAttr = doc.attributes?.find((a: any) => a.w && a.h);
-      if (videoAttr) {
-        if (!customWidth) width = videoAttr.w;
-        if (!customHeight) height = videoAttr.h;
-        if (!customDuration && videoAttr.duration) duration = videoAttr.duration;
-      }
+function forwardToUploadDO(c: any) {
+  const authDo = (c.env as any)?.AUTH_DO;
+  if (authDo && typeof authDo.idFromName === "function") {
+    const token = getCookie(c, "tg_session") || c.req.header("x-tg-session") || "default";
+    const doId = authDo.idFromName(token);
+    const stub = authDo.get(doId);
+
+    const headers = new Headers(c.req.raw.headers);
+    if (c.env?.TELEGRAM_API_ID) headers.set("x-tg-api-id", String(c.env.TELEGRAM_API_ID));
+    if (c.env?.TELEGRAM_API_HASH) headers.set("x-tg-api-hash", String(c.env.TELEGRAM_API_HASH));
+    if (c.env?.TELEGRAM_TEST_MODE) headers.set("x-tg-test-mode", String(c.env.TELEGRAM_TEST_MODE));
+    if (c.env?.SESSION_ENCRYPTION_KEY) headers.set("x-tg-enc-key", String(c.env.SESSION_ENCRYPTION_KEY));
+
+    const req = new Request(c.req.raw, { headers });
+    return stub.fetch(req);
+  }
+  return c.json({ error: "Upload requires Durable Object backend" }, 400);
+}
+
+mediaRouter.get("/upload/ws", async (c) => {
+  return forwardToUploadDO(c);
+});
+
+mediaRouter.post("/upload/init", async (c) => {
+  return forwardToUploadDO(c);
+});
+
+mediaRouter.post("/upload/chunk", async (c) => {
+  return forwardToUploadDO(c);
+});
+
+mediaRouter.post("/upload/complete", async (c) => {
+  return forwardToUploadDO(c);
+});
+
+/**
+ * POST /api/media/register
+ * Instant 5ms registration of media uploaded directly from the browser to Telegram
+ */
+mediaRouter.post("/register", async (c) => {
+  try {
+    const token = getCookie(c, "tg_session");
+    if (!token) return c.json({ error: "Unauthorized" }, 401);
+
+    const db = getDb((c.env as any)?.DB);
+    const session = await db.get(
+      `SELECT u.id, u.session_string FROM user_sessions s
+       JOIN users u ON u.id = s.user_id
+       WHERE s.id = ? AND s.expires_at > CURRENT_TIMESTAMP`,
+      [token]
+    );
+    if (!session) return c.json({ error: "Unauthorized" }, 401);
+
+    const body = await c.req.json();
+    const {
+      channel_id,
+      telegram_message_id,
+      file_type,
+      mime_type,
+      file_size_bytes,
+      width,
+      height,
+      duration_seconds,
+      blur_hash,
+      thumbnail_base64,
+      captured_at,
+    } = body;
+
+    if (!channel_id || !telegram_message_id) {
+      return c.json({ error: "channel_id and telegram_message_id required" }, 400);
     }
+
+    const channel = await db.get(
+      `SELECT c.* FROM channels c
+       JOIN gallery_channels gc ON gc.channel_id = c.id
+       WHERE c.id = ? AND gc.user_id = ?`,
+      [channel_id, session.id]
+    );
+    if (!channel) return c.json({ error: "Channel not found or unauthorized" }, 404);
 
     const mediaId = crypto.randomUUID();
     let thumbnailR2Key: string | null = null;
 
-    // Cache thumbnail in R2 / local cache
-    if (thumbnailBase64) {
+    if (thumbnail_base64) {
       const r2 = getR2Storage((c.env as any)?.R2_BUCKET);
-      thumbnailR2Key = `thumbnails/${channelId}/${mediaId}.webp`;
-      const thumbBuf = Buffer.from(thumbnailBase64.replace(/^data:image\/\w+;base64,/, ""), "base64");
-      await r2.put(thumbnailR2Key, thumbBuf, "image/webp");
+      thumbnailR2Key = `thumbnails/${channel_id}/${mediaId}.jpg`;
+      const thumbBuf = Buffer.from(thumbnail_base64.replace(/^data:image\/\w+;base64,/, ""), "base64");
+      await r2.put(thumbnailR2Key, thumbBuf, "image/jpeg").catch(() => {});
     }
 
     await db.run(
@@ -269,22 +327,26 @@ mediaRouter.post("/upload", async (c) => {
          height = excluded.height,
          duration_seconds = excluded.duration_seconds`,
       [
-        mediaId, channelId, session.id, realMessageId, isVideo ? "video" : "photo",
-        file.type || (isVideo ? "video/mp4" : "image/jpeg"), file.size, width, height, duration,
-        blurHash, thumbnailR2Key, capturedAt
+        mediaId,
+        channel_id,
+        session.id,
+        Number(telegram_message_id),
+        file_type || "photo",
+        mime_type || "image/jpeg",
+        Number(file_size_bytes) || 0,
+        Number(width) || 1920,
+        Number(height) || 1080,
+        duration_seconds != null ? Number(duration_seconds) : null,
+        blur_hash || "LEHV6nWB2yk8pyo0adR*.7kCMdnj",
+        thumbnailR2Key,
+        captured_at || new Date().toISOString(),
       ]
     );
 
-    // Emit Telegram WAL Event
-    await emitGalleryEvent(client, targetPeer, realMessageId, "CREATE", {
-      blur_hash: blurHash,
-      captured_at: capturedAt,
-    });
-
-    return c.json({ success: true, mediaId, telegramMessageId: realMessageId });
+    return c.json({ success: true, mediaId });
   } catch (error: any) {
-    console.error("[MTProto] Upload error:", error);
-    return c.json({ error: error.message || "Failed uploading to Telegram" }, 500);
+    console.error("[MediaRegister] Error:", error);
+    return c.json({ error: error.message || "Failed registering media" }, 500);
   }
 });
 
@@ -328,7 +390,10 @@ mediaRouter.post("/:id/favorite", async (c) => {
         [mediaId]
       );
       if (item) {
-        const client = await getConnectedClient(decryptSession(session.session_string));
+        const client = await getConnectedClient(
+          await decryptSession(session.session_string, (c.env as any)?.SESSION_ENCRYPTION_KEY),
+          getDefaultTelegramConfig(c.env)
+        );
         let targetPeer: any = item.telegram_channel_id;
         if (targetPeer !== "me") {
           try {
@@ -350,8 +415,115 @@ mediaRouter.post("/:id/favorite", async (c) => {
 });
 
 /**
+ * POST /api/media/delete
+ * Deletes one or more media items from D1, R2 cache, and Telegram channels
+ */
+mediaRouter.post("/delete", async (c) => {
+  try {
+    const token = getCookie(c, "tg_session");
+    if (!token) return c.json({ error: "Unauthorized" }, 401);
+
+    const db = getDb((c.env as any)?.DB);
+    const session = await db.get(
+      `SELECT u.id, u.session_string FROM user_sessions s
+       JOIN users u ON u.id = s.user_id
+       WHERE s.id = ? AND s.expires_at > CURRENT_TIMESTAMP`,
+      [token]
+    );
+    if (!session) return c.json({ error: "Unauthorized" }, 401);
+
+    const body = await c.req.json();
+    const media_ids: string[] = Array.isArray(body.media_ids)
+      ? body.media_ids
+      : body.media_id
+      ? [body.media_id]
+      : [];
+
+    if (media_ids.length === 0) {
+      return c.json({ error: "media_ids array required" }, 400);
+    }
+
+    const r2 = getR2Storage((c.env as any)?.R2_BUCKET);
+    let client: any = null;
+    try {
+      client = await getConnectedClient(
+        await decryptSession(session.session_string, (c.env as any)?.SESSION_ENCRYPTION_KEY),
+        getDefaultTelegramConfig(c.env)
+      );
+    } catch (clientErr) {
+      console.warn("[MediaDelete] Telegram client connect error:", clientErr);
+    }
+
+    let deletedCount = 0;
+    for (const mediaId of media_ids) {
+      const item = await db.get(
+        `SELECT m.*, c.telegram_channel_id FROM media_items m
+         JOIN channels c ON c.id = m.channel_id
+         WHERE m.id = ?`,
+        [mediaId]
+      );
+
+      // 1. Delete from D1 Database first (instant & reliable)
+      await db.run("DELETE FROM media_favorites WHERE media_item_id = ?", [mediaId]);
+      await db.run("DELETE FROM media_items WHERE id = ?", [mediaId]);
+      deletedCount++;
+
+      if (!item) continue;
+
+      // 2. Delete cached thumbnail & full files from R2
+      if (item.thumbnail_r2_key) {
+        try { await r2.delete(item.thumbnail_r2_key); } catch {}
+      }
+      try { await r2.delete(`cache/${item.channel_id}/${item.id}.bin`); } catch {}
+
+      // 3. Delete message from Telegram and all its metadata replies with strict timeout
+      if (client && item.telegram_message_id) {
+        try {
+          const deleteTgPromise = (async () => {
+            let targetPeer: any = item.telegram_channel_id;
+            if (targetPeer !== "me") {
+              try { targetPeer = await client.getInputEntity(targetPeer); }
+              catch { try { targetPeer = await client.getEntity(targetPeer); } catch {} }
+            }
+            const msgId = Number(item.telegram_message_id);
+            const idsToDelete: number[] = [msgId];
+
+            // Find all reply metadata messages attached to this media item (e.g. [GP_EVENT:v1])
+            try {
+              const replies = await client.getMessages(targetPeer, { replyTo: msgId, limit: 20 });
+              if (replies && replies.length > 0) {
+                for (const r of replies) {
+                  if (r && r.id) idsToDelete.push(Number(r.id));
+                }
+              }
+            } catch (replyErr) {
+              console.warn("[MediaDelete] GetReplies check warning:", replyErr);
+            }
+
+            // Atomic batch deletion of media + all metadata reply messages
+            await client.deleteMessages(targetPeer, idsToDelete, { revoke: true });
+          })();
+
+          await Promise.race([
+            deleteTgPromise,
+            new Promise((resolve) => setTimeout(resolve, 2000)),
+          ]);
+        } catch (tgDelErr) {
+          console.warn("[MediaDelete] Telegram message delete warning:", tgDelErr);
+        }
+      }
+    }
+
+    return c.json({ success: true, deletedCount });
+  } catch (error: any) {
+    console.error("Delete Error:", error);
+    return c.json({ error: error.message || "Failed to delete media" }, 500);
+  }
+});
+
+/**
  * GET /api/media/:id/thumbnail
- * Serves cached thumbnail from R2 or downloads from Telegram on-the-fly
+ * Serves cached thumbnail from R2 or decodes stripped bytes instantly from Telegram
  */
 mediaRouter.get("/:id/thumbnail", async (c) => {
   try {
@@ -374,8 +546,9 @@ mediaRouter.get("/:id/thumbnail", async (c) => {
       if (cached) {
         return new Response(cached as any, {
           headers: {
-            "Content-Type": "image/webp",
+            "Content-Type": "image/jpeg",
             "Cache-Control": "public, max-age=31536000, immutable",
+            "Access-Control-Allow-Origin": "*",
           },
         });
       }
@@ -394,7 +567,10 @@ mediaRouter.get("/:id/thumbnail", async (c) => {
 
     if (!userRow) return c.text("Unauthorized", 401);
 
-    const client = await getConnectedClient(decryptSession(userRow.session_string));
+    const client = await getConnectedClient(
+      await decryptSession(userRow.session_string, (c.env as any)?.SESSION_ENCRYPTION_KEY),
+      getDefaultTelegramConfig(c.env)
+    );
 
     let targetPeer: any = item.telegram_channel_id;
     if (item.telegram_channel_id === "me") {
@@ -409,24 +585,53 @@ mediaRouter.get("/:id/thumbnail", async (c) => {
       }
     }
 
-    const messages = await client.getMessages(targetPeer, { ids: [item.telegram_message_id] });
+    const msgId = Number(item.telegram_message_id);
+    const messages = await client.getMessages(targetPeer, { ids: [msgId] });
     const msg = messages[0];
 
     if (!msg || !msg.media) return c.text("Media not found on Telegram", 404);
 
-    const thumbBuffer = await client.downloadMedia(msg.media, {
-      thumb: 1, // Small/Medium preview size
-    });
+    let thumbBuffer: Buffer | null = null;
+
+    // Fast Path: Extract instant stripped thumbnail (0ms CPU, 0 network requests)
+    const photoSizes = (msg.media as any)?.photo?.sizes || [];
+    const docThumbs = (msg.media as any)?.document?.thumbs || [];
+    const stripped = [...photoSizes, ...docThumbs].find(
+      (s: any) => s instanceof Api.PhotoStrippedSize || s.className === "PhotoStrippedSize" || s.bytes
+    );
+
+    if (stripped && stripped.bytes) {
+      try {
+        thumbBuffer = Buffer.from(utils.strippedPhotoToJpg(stripped.bytes));
+      } catch (stripErr) {
+        console.warn("[Thumbnail] Stripped JPEG conversion fallback:", stripErr);
+      }
+    }
+
+    // Fallback: download small preview thumbnail
+    if (!thumbBuffer) {
+      const downloaded = await client.downloadMedia(msg.media, {
+        thumb: 1, // Small/Medium preview size
+      });
+      if (downloaded && Buffer.isBuffer(downloaded)) {
+        thumbBuffer = downloaded;
+      }
+    }
 
     if (thumbBuffer && Buffer.isBuffer(thumbBuffer)) {
       const key = `thumbnails/${item.channel_id}/${item.id}.jpg`;
-      await r2.put(key, thumbBuffer, "image/jpeg");
-      await db.run("UPDATE media_items SET thumbnail_r2_key = ? WHERE id = ?", [key, item.id]);
+      try {
+        await r2.put(key, thumbBuffer, "image/jpeg");
+        await db.run("UPDATE media_items SET thumbnail_r2_key = ? WHERE id = ?", [key, item.id]);
+      } catch (r2Err) {
+        console.warn("[Thumbnail] R2 cache write non-fatal error:", r2Err);
+      }
 
       return new Response(thumbBuffer as any, {
         headers: {
           "Content-Type": "image/jpeg",
           "Cache-Control": "public, max-age=31536000, immutable",
+          "Access-Control-Allow-Origin": "*",
         },
       });
     }

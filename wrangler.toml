@@ -6,17 +6,44 @@ compatibility_flags = ["nodejs_compat"]
 # Cloudflare D1 Database Binding
 [[d1_databases]]
 binding = "DB"
-database_name = "telegram-gallery-db"
-database_id = "local-d1-id" # Replace with your Cloudflare D1 UUID when deploying to production
+database_name = "telegram-db"
+database_id = "a50444f4-40ab-4caf-96fc-9fd2102481d6"
 
 # Cloudflare R2 Storage Bucket Binding
 [[r2_buckets]]
 binding = "R2_BUCKET"
-bucket_name = "telegram-gallery-cache"
+bucket_name = "telegram-gallery"
 preview_bucket_name = "telegram-gallery-cache-preview"
+
+# Cloudflare Durable Objects (Persistent MTProto Session Manager & WebSocket Actor)
+[durable_objects]
+bindings = [
+  { name = "AUTH_DO", class_name = "TelegramAuthDO" }
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["TelegramAuthDO"]
 
 # Environment Variables
 [vars]
-TELEGRAM_API_ID = "2496"
-TELEGRAM_API_HASH = "8da85b0d5b165218c3a5585098d5786d"
+TELEGRAM_API_ID = "12345678"
+TELEGRAM_API_HASH = "0123456789abcdef0123456789abcdef"
 TELEGRAM_TEST_MODE = "false"
+SESSION_ENCRYPTION_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+[observability]
+enabled = false
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+persist = true
+invocation_logs = true
+
+[observability.traces]
+enabled = false
+persist = true
+head_sampling_rate = 1
+

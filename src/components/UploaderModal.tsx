@@ -16,6 +16,26 @@ import {
 import { generateBlurHashAndThumbnail, generateVideoThumbnailAndMetadata } from "@/lib/blurhash";
 import { extractExifMetadata } from "@/lib/exif";
 
+/**
+ * The Cloudflare Worker URL used for direct uploads.
+ * Chunks go browser → worker directly, bypassing the Next.js dev proxy which
+ * drops long-running connections with ECONNRESET on large binary bodies.
+ */
+const WORKER_URL = (
+  process.env.NEXT_PUBLIC_REMOTE_API_URL ||
+  "https://telegram-gallery.shivareddyvanja.workers.dev"
+).replace(/\/$/, "");
+
+/**
+ * Read the session token for cross-origin upload headers.
+ * The tg_session cookie is HttpOnly (not readable by JS), so at login we also
+ * persist the token in localStorage under "tg_session_token".
+ */
+function getSessionToken(): string {
+  if (typeof localStorage === "undefined") return "";
+  return localStorage.getItem("tg_session_token") ?? "";
+}
+
 interface UploaderModalProps {
   channelId: string;
   channelName: string;
@@ -120,94 +140,162 @@ export function UploaderModal({
         // 2. Client-Side EXIF Metadata
         const exif = await extractExifMetadata(file);
 
-        // 3. Prepare FormData
-        const formData = new FormData();
-        formData.append("file", file);
-        formData.append("channel_id", channelId);
-        formData.append("blur_hash", blurHash);
-        formData.append("width", width.toString());
-        formData.append("height", height.toString());
-        if (isVideo && duration > 0) {
-          formData.append("duration", duration.toString());
-        }
-        formData.append("captured_at", exif.capturedAt || new Date().toISOString());
-        if (thumbnailBase64) {
-          formData.append("thumbnail_base64", thumbnailBase64);
-        }
+        // 128KB chunks are strictly compatible with Cloudflare Workers TCP socket write limits
+        const CHUNK_SIZE = 128 * 1024;
+        const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+        const sessionToken = getSessionToken();
 
-        // 4. Real-time XMLHttpRequest upload with exact byte progress
-        const responseData = await new Promise<{ mediaId?: string; error?: string }>(
-          (resolve, reject) => {
-            const xhr = new XMLHttpRequest();
-            xhr.open("POST", "/api/media/upload");
-
-            xhr.upload.onprogress = (event) => {
-              if (event.lengthComputable) {
-                if (event.loaded >= event.total) {
-                  setTasks((prev) =>
-                    prev.map((t, idx) =>
-                      idx === i
-                        ? {
-                            ...t,
-                            status: "cloud_saving",
-                            progress: 100,
-                            uploadedText: "Saving to Telegram...",
-                          }
-                        : t
-                    )
-                  );
-                } else {
-                  const percent = Math.round((event.loaded / event.total) * 100);
-                  const loadedMb = (event.loaded / (1024 * 1024)).toFixed(1);
-                  const totalMb = (event.total / (1024 * 1024)).toFixed(1);
-                  const speedText = `${loadedMb} / ${totalMb} MB (${percent}%)`;
-
-                  setTasks((prev) =>
-                    prev.map((t, idx) =>
-                      idx === i
-                        ? {
-                            ...t,
-                            status: "uploading",
-                            progress: percent,
-                            uploadedText: speedText,
-                          }
-                        : t
-                    )
-                  );
-                }
-              }
-            };
-
-            xhr.onload = () => {
-              try {
-                const res = JSON.parse(xhr.responseText);
-                if (xhr.status >= 200 && xhr.status < 300) {
-                  resolve(res);
-                } else {
-                  reject(new Error(res.error || `Upload failed with status ${xhr.status}`));
-                }
-              } catch (e) {
-                reject(new Error(`Server error (${xhr.status})`));
-              }
-            };
-
-            xhr.onerror = () => reject(new Error("Network error during upload"));
-            xhr.send(formData);
-          }
+        setTasks((prev) =>
+          prev.map((t, idx) =>
+            idx === i ? { ...t, status: "uploading", progress: 0, uploadedText: "Connecting upload stream..." } : t
+          )
         );
 
-        if (responseData.error) {
-          throw new Error(responseData.error);
+        // Upload via persistent WebSocket pipeline directly to Cloudflare Durable Object
+        const completeData = await new Promise<{ success: boolean; item?: any; mediaId?: string; error?: string }>((resolve, reject) => {
+          const wsBaseUrl = WORKER_URL.replace(/^http:/, "ws:").replace(/^https:/, "wss:");
+          const ws = new WebSocket(`${wsBaseUrl}/api/media/upload/ws`);
+          ws.binaryType = "arraybuffer";
+
+          let currentChunk = 0;
+
+          const sendNextChunk = async () => {
+            if (currentChunk >= totalChunks) return;
+            const startByte = currentChunk * CHUNK_SIZE;
+            const endByte = Math.min(startByte + CHUNK_SIZE, file.size);
+            const sliceBlob = file.slice(startByte, endByte);
+            const sliceBuffer = await sliceBlob.arrayBuffer();
+
+            // Frame: [4-byte big-endian Int32 chunkIndex | chunk bytes]
+            const frameBuffer = new Uint8Array(4 + sliceBuffer.byteLength);
+            const view = new DataView(frameBuffer.buffer);
+            view.setInt32(0, currentChunk, false); // big-endian
+            frameBuffer.set(new Uint8Array(sliceBuffer), 4);
+
+            ws.send(frameBuffer);
+          };
+
+          ws.onopen = () => {
+            // Step 1: Send JSON init handshake
+            ws.send(JSON.stringify({
+              type: "init",
+              token: sessionToken,
+              fileName: file.name,
+              fileSize: file.size,
+              channelId,
+              mimeType: file.type || (isVideo ? "video/mp4" : "image/jpeg"),
+              totalChunks,
+              width,
+              height,
+              duration: isVideo && duration > 0 ? duration : null,
+              blurHash,
+              thumbnailBase64,
+              capturedAt: exif.capturedAt || new Date().toISOString(),
+            }));
+          };
+
+          ws.onmessage = async (event) => {
+            try {
+              const data = JSON.parse(event.data);
+              if (data.type === "debug_log") {
+                console.log(`%c[SERVER] %c${data.stage}`, "color: #ff007f; font-weight: bold", "color: #00e5ff; font-weight: 500;", data.detail || "");
+                setTasks((prev) =>
+                  prev.map((t, idx) =>
+                    idx === i
+                      ? {
+                          ...t,
+                          uploadedText: `Stage: ${data.stage} ${data.detail?.rpc ? `(${data.detail.rpc} #${data.detail.part})` : ""}`,
+                        }
+                      : t
+                  )
+                );
+              } else if (data.type === "init_ok") {
+                currentChunk = 0;
+                await sendNextChunk();
+              } else if (data.type === "chunk_ack") {
+                const browserPercent = Math.min(Math.round(((data.chunkIndex + 1) / totalChunks) * 40), 40);
+                const loadedMb = (Math.min((data.chunkIndex + 1) * CHUNK_SIZE, file.size) / (1024 * 1024)).toFixed(1);
+                const totalMb = (file.size / (1024 * 1024)).toFixed(1);
+
+                setTasks((prev) =>
+                  prev.map((t, idx) =>
+                    idx === i
+                      ? {
+                          ...t,
+                          status: "uploading",
+                          progress: browserPercent,
+                          uploadedText: `Buffering: ${loadedMb} / ${totalMb} MB (${Math.round(((data.chunkIndex + 1) / totalChunks) * 100)}%)`,
+                        }
+                      : t
+                  )
+                );
+
+                currentChunk = data.chunkIndex + 1;
+                if (currentChunk < totalChunks) {
+                  await sendNextChunk();
+                }
+              } else if (data.type === "telegram_progress") {
+                const totalMb = (file.size / (1024 * 1024)).toFixed(1);
+                setTasks((prev) =>
+                  prev.map((t, idx) =>
+                    idx === i
+                      ? {
+                          ...t,
+                          status: "uploading",
+                          progress: data.percent || 40,
+                          uploadedText: `Saving to Telegram Vault: ${data.progressPercent}% of ${totalMb} MB`,
+                        }
+                      : t
+                  )
+                );
+              } else if (data.type === "complete") {
+                setTasks((prev) =>
+                  prev.map((t, idx) =>
+                    idx === i
+                      ? {
+                          ...t,
+                          progress: 100,
+                          uploadedText: "Complete!",
+                        }
+                      : t
+                  )
+                );
+                try { ws.close(); } catch {}
+                resolve(data);
+              } else if (data.type === "error") {
+                try { ws.close(); } catch {}
+                reject(new Error(data.error || "Upload failed"));
+              }
+            } catch (parseErr) {
+              console.error("[Upload WS Parse Error]:", parseErr);
+            }
+          };
+
+          ws.onerror = () => {
+            reject(new Error("WebSocket upload connection failed"));
+          };
+
+          ws.onclose = (ev) => {
+            if (!ev.wasClean && currentChunk < totalChunks) {
+              reject(new Error(`WebSocket connection closed unexpectedly (Code: ${ev.code})`));
+            }
+          };
+        });
+
+        if (!completeData.success) {
+          throw new Error(completeData.error || "Failed finalizing upload");
         }
 
+        const mediaId = completeData.item?.id || completeData.mediaId;
+
         // Attach EXIF Location Tag if present
-        if (exif.latitude && exif.longitude && responseData.mediaId) {
+        if (exif.latitude && exif.longitude && mediaId) {
           try {
             await fetch("/api/tags/media-location", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
-                media_item_id: responseData.mediaId,
+                media_item_id: mediaId,
                 name: `GPS (${exif.latitude.toFixed(4)}, ${exif.longitude.toFixed(4)})`,
                 latitude: exif.latitude,
                 longitude: exif.longitude,

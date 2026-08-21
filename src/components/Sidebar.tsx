@@ -105,6 +105,26 @@ export function Sidebar({
         </div>
       </div>
 
+      {/* Backend Environment Indicator Badge */}
+      <div className="px-5 pb-2 -mt-2">
+        <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-medium bg-[var(--bg-secondary)] border border-[var(--border-color)] text-[var(--text-secondary)]">
+          <span
+            className={`w-1.5 h-1.5 rounded-full ${
+              (process.env.NEXT_PUBLIC_BACKEND_MODE || "dev").toLowerCase() === "prod" ||
+              (process.env.NEXT_PUBLIC_BACKEND_MODE || "dev").toLowerCase() === "remote"
+                ? "bg-emerald-500 animate-pulse"
+                : "bg-amber-500"
+            }`}
+          />
+          <span>
+            {(process.env.NEXT_PUBLIC_BACKEND_MODE || "dev").toLowerCase() === "prod" ||
+            (process.env.NEXT_PUBLIC_BACKEND_MODE || "dev").toLowerCase() === "remote"
+              ? "Remote (Cloudflare Worker)"
+              : "Local (Node + SQLite)"}
+          </span>
+        </div>
+      </div>
+
       {/* Navigation Scrollable Content */}
       <div className="flex-1 overflow-y-auto px-3 py-2 space-y-5">
         {/* Main Section */}

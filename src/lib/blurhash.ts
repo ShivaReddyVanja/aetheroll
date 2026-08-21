@@ -82,6 +82,27 @@ export async function generateVideoThumbnailAndMetadata(file: File): Promise<{
   thumbnailBase64: string;
 }> {
   return new Promise((resolve) => {
+    let resolved = false;
+    const finish = (res: { blurHash: string; width: number; height: number; duration: number; thumbnailBase64: string }) => {
+      if (!resolved) {
+        resolved = true;
+        try {
+          URL.revokeObjectURL(url);
+        } catch {}
+        resolve(res);
+      }
+    };
+
+    const timer = setTimeout(() => {
+      finish({
+        blurHash: "LEHV6nWB2yk8pyo0adR*.7kCMdnj",
+        width: 1920,
+        height: 1080,
+        duration: 0,
+        thumbnailBase64: "",
+      });
+    }, 2500);
+
     const video = document.createElement("video");
     video.preload = "auto";
     video.muted = true;
@@ -89,10 +110,22 @@ export async function generateVideoThumbnailAndMetadata(file: File): Promise<{
     const url = URL.createObjectURL(file);
 
     video.onloadeddata = () => {
-      video.currentTime = Math.min(0.3, (video.duration || 1) / 2);
+      try {
+        video.currentTime = Math.min(0.3, (video.duration || 1) / 2);
+      } catch {
+        clearTimeout(timer);
+        finish({
+          blurHash: "LEHV6nWB2yk8pyo0adR*.7kCMdnj",
+          width: 1920,
+          height: 1080,
+          duration: 0,
+          thumbnailBase64: "",
+        });
+      }
     };
 
     video.onseeked = () => {
+      clearTimeout(timer);
       const width = video.videoWidth || 1920;
       const height = video.videoHeight || 1080;
       const duration = Math.round(video.duration) || 0;
@@ -105,9 +138,11 @@ export async function generateVideoThumbnailAndMetadata(file: File): Promise<{
 
       let blurHash = "LEHV6nWB2yk8pyo0adR*.7kCMdnj";
       if (bhCtx) {
-        bhCtx.drawImage(video, 0, 0, 32, 32);
-        const imageData = bhCtx.getImageData(0, 0, 32, 32);
-        blurHash = encode(imageData.data, 32, 32, 4, 4);
+        try {
+          bhCtx.drawImage(video, 0, 0, 32, 32);
+          const imageData = bhCtx.getImageData(0, 0, 32, 32);
+          blurHash = encode(imageData.data, 32, 32, 4, 4);
+        } catch {}
       }
 
       // 2. 360px WebP Thumbnail
@@ -123,12 +158,13 @@ export async function generateVideoThumbnailAndMetadata(file: File): Promise<{
 
       let thumbnailBase64 = "";
       if (thumbCtx) {
-        thumbCtx.drawImage(video, 0, 0, thumbW, thumbH);
-        thumbnailBase64 = thumbCanvas.toDataURL("image/webp", 0.75);
+        try {
+          thumbCtx.drawImage(video, 0, 0, thumbW, thumbH);
+          thumbnailBase64 = thumbCanvas.toDataURL("image/webp", 0.75);
+        } catch {}
       }
 
-      URL.revokeObjectURL(url);
-      resolve({
+      finish({
         blurHash,
         width,
         height,
@@ -138,8 +174,8 @@ export async function generateVideoThumbnailAndMetadata(file: File): Promise<{
     };
 
     video.onerror = () => {
-      URL.revokeObjectURL(url);
-      resolve({
+      clearTimeout(timer);
+      finish({
         blurHash: "LEHV6nWB2yk8pyo0adR*.7kCMdnj",
         width: 1920,
         height: 1080,

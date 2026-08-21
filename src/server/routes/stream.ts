@@ -1,10 +1,10 @@
 import { Hono } from "hono";
 import { getCookie } from "hono/cookie";
-import { Api } from "telegram";
+import { Api, utils } from "telegram";
 import bigInt from "big-integer";
 import { getDb } from "../lib/db";
 import { decryptSession } from "../lib/crypto";
-import { getConnectedClient } from "../lib/telegram";
+import { getConnectedClient, getDefaultTelegramConfig } from "../lib/telegram";
 
 export const streamRouter = new Hono();
 
@@ -19,8 +19,43 @@ function toBigInt(val: number | string) {
   return fn(val);
 }
 
+function getInputFileLocation(mediaObj: any): { location: any; dcId?: number } | null {
+  if (!mediaObj) return null;
+
+  const doc = mediaObj.document || (mediaObj instanceof Api.Document ? mediaObj : null) || (mediaObj.className === "MessageMediaDocument" ? mediaObj.document : null);
+  if (doc && doc.id && doc.accessHash && doc.fileReference) {
+    return {
+      dcId: doc.dcId,
+      location: new Api.InputDocumentFileLocation({
+        id: doc.id,
+        accessHash: doc.accessHash,
+        fileReference: doc.fileReference,
+        thumbSize: "",
+      }),
+    };
+  }
+
+  const photo = mediaObj.photo || (mediaObj instanceof Api.Photo ? mediaObj : null) || (mediaObj.className === "MessageMediaPhoto" ? mediaObj.photo : null);
+  if (photo && photo.id && photo.accessHash && photo.fileReference) {
+    const sizes = photo.sizes || [];
+    const largest = sizes[sizes.length - 1];
+    return {
+      dcId: photo.dcId,
+      location: new Api.InputPhotoFileLocation({
+        id: photo.id,
+        accessHash: photo.accessHash,
+        fileReference: photo.fileReference,
+        thumbSize: largest?.type || "x",
+      }),
+    };
+  }
+
+  return null;
+}
+
 /**
- * Downloads a precise slice of a Telegram document/photo using upload.GetFile
+ * Downloads a precise slice of a Telegram document/photo using direct Api.upload.GetFile RPC
+ * Zero background generator loops, zero worker hangs.
  */
 async function fetchTelegramChunk(
   client: any,
@@ -28,60 +63,85 @@ async function fetchTelegramChunk(
   offsetBytes: number,
   limitBytes: number
 ): Promise<Buffer> {
-  let fileLocation: any;
-  let dcId: number = (client.session as any).dcId || 2;
-
-  if (mediaObj.document || mediaObj instanceof Api.Document) {
-    const doc = (mediaObj.document || mediaObj) as any;
-    dcId = doc.dcId || dcId;
-    fileLocation = new Api.InputDocumentFileLocation({
-      id: doc.id,
-      accessHash: doc.accessHash,
-      fileReference: doc.fileReference,
-      thumbSize: "",
-    });
-  } else if (mediaObj.photo || mediaObj instanceof Api.Photo) {
-    const photo = (mediaObj.photo || mediaObj) as any;
-    dcId = photo.dcId || dcId;
-    const sizes = photo.sizes || [];
-    const largestSize = sizes[sizes.length - 1];
-    fileLocation = new Api.InputPhotoFileLocation({
-      id: photo.id,
-      accessHash: photo.accessHash,
-      fileReference: photo.fileReference,
-      thumbSize: largestSize?.type || "x",
-    });
-  } else {
-    throw new Error("Unsupported media type for chunk streaming");
-  }
-
-  const req = new Api.upload.GetFile({
-    location: fileLocation,
-    offset: toBigInt(offsetBytes),
-    limit: limitBytes,
-  });
-
   try {
-    const sender = await client.getSender(dcId);
-    const result = await client.invokeWithSender(req, sender);
-    return Buffer.from(result.bytes);
-  } catch (err: any) {
-    // Handle cross-DC migration if document lives on another DC
-    if (err?.errorMessage?.startsWith("FILE_MIGRATE_")) {
-      const targetDc = parseInt(err.errorMessage.replace("FILE_MIGRATE_", ""), 10);
-      const newSender = await client.getSender(targetDc);
-      const retryResult = await client.invokeWithSender(req, newSender);
-      return Buffer.from(retryResult.bytes);
+    const fileInfo = getInputFileLocation(mediaObj);
+    if (fileInfo && fileInfo.location) {
+      const req = new Api.upload.GetFile({
+        location: fileInfo.location,
+        offset: toBigInt(offsetBytes),
+        limit: limitBytes,
+      });
+
+      const invokePromise = (async () => {
+        try {
+          const res: any = await client.invoke(req);
+          if (res && res.bytes) return Buffer.from(res.bytes);
+        } catch (invokeErr: any) {
+          console.warn("[Stream] Direct GetFile invoke error:", invokeErr?.errorMessage || invokeErr?.message);
+        }
+        return null;
+      })();
+
+      const chunk = await Promise.race([
+        invokePromise,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 3500)),
+      ]);
+
+      if (chunk && chunk.length > 0) {
+        return chunk;
+      }
     }
-    throw err;
+  } catch (err: any) {
+    console.warn("[Stream] Direct GetFile invoke warning:", err?.message || err);
   }
+
+  // Fallback to client.downloadMedia for cross-DC migration or small media
+  try {
+    const dlPromise = client.downloadMedia(mediaObj, {});
+    const fullBuffer = await Promise.race([
+      dlPromise,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 3500)),
+    ]);
+    if (fullBuffer && fullBuffer.length > 0) {
+      const buf = Buffer.from(fullBuffer);
+      return buf.subarray(offsetBytes, offsetBytes + limitBytes);
+    }
+  } catch (dlErr) {
+    console.warn("[Stream] downloadMedia fallback error:", dlErr);
+  }
+
+  return Buffer.alloc(0);
 }
 
-/**
- * GET /api/stream?media_id=...
- * High-performance HTTP 206 Range-enabled video streaming proxy
- */
 streamRouter.get("/", async (c) => {
+  // 1. Fast Path: Route to Cloudflare Durable Object (warm MTProto connection in RAM)
+  const authDo = (c.env as any)?.AUTH_DO;
+  if (authDo && typeof authDo.idFromName === "function") {
+    const token = getCookie(c, "tg_session") || c.req.query("session_token") || "default";
+    const doId = authDo.idFromName(token);
+    const stub = authDo.get(doId);
+
+    const envObj = (c.env as any) || {};
+    const headers = new Headers(c.req.raw.headers);
+    if (envObj.TELEGRAM_API_ID) headers.set("x-tg-api-id", String(envObj.TELEGRAM_API_ID));
+    if (envObj.TELEGRAM_API_HASH) headers.set("x-tg-api-hash", String(envObj.TELEGRAM_API_HASH));
+    if (envObj.TELEGRAM_TEST_MODE) headers.set("x-tg-test-mode", String(envObj.TELEGRAM_TEST_MODE));
+    if (envObj.SESSION_ENCRYPTION_KEY) headers.set("x-tg-enc-key", String(envObj.SESSION_ENCRYPTION_KEY));
+
+    const req = new Request(c.req.url, {
+      method: c.req.method,
+      headers,
+    });
+    const doRes = await stub.fetch(req);
+    const resHeaders = new Headers(doRes.headers);
+    const body = await doRes.arrayBuffer();
+    return new Response(body, {
+      status: doRes.status,
+      headers: resHeaders,
+    });
+  }
+
+  // 2. Fallback for local Node / SQLite dev environment
   try {
     const mediaId = c.req.query("media_id");
     if (!mediaId) return c.text("media_id required", 400);
@@ -112,7 +172,10 @@ streamRouter.get("/", async (c) => {
     const rangeHeader = c.req.header("range");
 
     // Reuse persistent MTProto client connection (0ms connection overhead!)
-    const client = await getConnectedClient(decryptSession(session.session_string));
+    const client = await getConnectedClient(
+      await decryptSession(session.session_string, (c.env as any)?.SESSION_ENCRYPTION_KEY),
+      getDefaultTelegramConfig(c.env)
+    );
 
     // Check message media cache to avoid redundant Telegram getMessages RPCs
     const now = Date.now();
@@ -137,7 +200,8 @@ streamRouter.get("/", async (c) => {
         }
       }
 
-      const messages = await client.getMessages(targetPeer, { ids: [item.telegram_message_id] });
+      const msgId = Number(item.telegram_message_id);
+      const messages = await client.getMessages(targetPeer, { ids: [msgId] });
       const msg = messages[0];
 
       if (!msg || !msg.media) {
@@ -159,8 +223,10 @@ streamRouter.get("/", async (c) => {
         status: 200,
         headers: {
           "Content-Type": item.mime_type || "application/octet-stream",
-          "Content-Length": totalSize.toString(),
+          "Content-Length": (fullBuffer?.length || totalSize).toString(),
           "Accept-Ranges": "bytes",
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges",
         },
       });
     }
@@ -180,6 +246,8 @@ streamRouter.get("/", async (c) => {
         status: 416,
         headers: {
           "Content-Range": `bytes */${totalSize}`,
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges",
         },
       });
     }
@@ -196,7 +264,8 @@ streamRouter.get("/", async (c) => {
       // Clear cache and retry with fresh message if file reference expired
       mediaObjectCache.delete(mediaId);
       console.warn("[Stream] Retrying with fresh message reference...", err);
-      const messages = await client.getMessages(targetPeer, { ids: [item.telegram_message_id] });
+      const msgId = Number(item.telegram_message_id);
+      const messages = await client.getMessages(targetPeer, { ids: [msgId] });
       const freshMsg = messages[0];
       if (!freshMsg?.media) throw err;
       mediaObj = freshMsg.media;
@@ -217,6 +286,8 @@ streamRouter.get("/", async (c) => {
         "Accept-Ranges": "bytes",
         "Content-Length": exactSlice.length.toString(),
         "Content-Type": item.mime_type || "video/mp4",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges",
       },
     });
   } catch (error: any) {

@@ -1,10 +1,11 @@
 import { Hono } from "hono";
 import { getCookie } from "hono/cookie";
 import crypto from "crypto";
-import { getDb } from "../lib/db";
+import { getDb, toSafeNumber, toSafeString } from "../lib/db";
 import { decryptSession } from "../lib/crypto";
-import { createTelegramClient, getUserChannels, getConnectedClient } from "../lib/telegram";
+import { createTelegramClient, getUserChannels, getConnectedClient, getDefaultTelegramConfig } from "../lib/telegram";
 import { parseGalleryEvent, applyGalleryEventsToDb, GalleryEvent } from "../lib/ledger";
+import { getR2Storage } from "../lib/r2";
 
 export const channelsRouter = new Hono();
 
@@ -25,8 +26,8 @@ async function getAuthUserClient(c: any) {
 
   if (!session) throw new Error("Unauthorized");
 
-  const plainSession = decryptSession(session.session_string);
-  const client = createTelegramClient(plainSession);
+  const plainSession = await decryptSession(session.session_string, (c.env as any)?.SESSION_ENCRYPTION_KEY);
+  const client = createTelegramClient(plainSession, getDefaultTelegramConfig(c.env));
   return { user: session, client, db };
 }
 
@@ -41,68 +42,72 @@ channelsRouter.get("/", async (c) => {
     const { user, client, db } = await getAuthUserClient(c);
     const returnAll = c.req.query("all") === "true";
 
-    // 1. Fetch live channels from Telegram
-    let tgChannels: any[] = [];
-    try {
-      tgChannels = await getUserChannels(client);
-
-      for (const ch of tgChannels) {
-        // Find or create channel in D1
-        let channelRow = await db.get("SELECT * FROM channels WHERE telegram_channel_id = ?", [ch.id]);
-        const channelId = channelRow?.id || crypto.randomUUID();
-
-        if (!channelRow) {
-          await db.run(
-            "INSERT INTO channels (id, telegram_channel_id, name) VALUES (?, ?, ?)",
-            [channelId, ch.id, ch.title]
-          );
-        } else {
-          await db.run("UPDATE channels SET name = ? WHERE id = ?", [ch.title, channelId]);
-        }
-
-        // Ensure user_channels mapping exists
-        await db.run(
-          `INSERT INTO user_channels (user_id, channel_id, role)
-           VALUES (?, ?, 'owner')
-           ON CONFLICT(user_id, channel_id) DO NOTHING`,
-          [user.id, channelId]
-        );
-      }
-    } catch (tgErr) {
-      console.warn("Failed live TG channel sync, using cached D1 channels:", tgErr);
+    // Ensure 'me' (Saved Messages) exists in channels and gallery_channels
+    let meChannel = await db.get("SELECT * FROM channels WHERE telegram_channel_id = 'me'");
+    const meChannelId = meChannel?.id || crypto.randomUUID();
+    if (!meChannel) {
+      await db.run(
+        "INSERT INTO channels (id, telegram_channel_id, name) VALUES (?, 'me', 'Saved Messages (Private Cloud)')",
+        [meChannelId]
+      );
     }
+    await db.run(
+      `INSERT INTO gallery_channels (user_id, channel_id)
+       VALUES (?, ?)
+       ON CONFLICT(user_id, channel_id) DO NOTHING`,
+      [user.id, meChannelId]
+    );
 
     if (returnAll) {
-      // Return all channels for the picker modal
+      // 1. Fetch live channels from Telegram for the picker modal
+      try {
+        const tgChannels = await getUserChannels(client);
+
+        for (const ch of tgChannels) {
+          let channelRow = await db.get("SELECT * FROM channels WHERE telegram_channel_id = ?", [ch.id]);
+          const channelId = channelRow?.id || crypto.randomUUID();
+
+          if (!channelRow) {
+            await db.run(
+              "INSERT INTO channels (id, telegram_channel_id, name) VALUES (?, ?, ?)",
+              [channelId, ch.id, ch.title]
+            );
+          } else {
+            await db.run("UPDATE channels SET name = ? WHERE id = ?", [ch.title, channelId]);
+          }
+        }
+      } catch (tgErr) {
+        console.warn("Failed live TG channel sync, using cached D1 channels:", tgErr);
+      }
+
+      // Return all available Telegram channels for the picker modal
       const allChannels = await db.all(
         `SELECT c.id, c.telegram_channel_id, c.name, c.cover_media_id, c.last_synced_at,
-                COUNT(m.id) as media_count
+                COUNT(m.id) as media_count,
+                EXISTS(SELECT 1 FROM gallery_channels gc WHERE gc.channel_id = c.id AND gc.user_id = ?) as is_added
          FROM channels c
-         JOIN user_channels uc ON uc.channel_id = c.id
          LEFT JOIN media_items m ON m.channel_id = c.id AND m.deleted_at IS NULL
-         WHERE uc.user_id = ?
          GROUP BY c.id
-         ORDER BY (c.telegram_channel_id = 'me') DESC, media_count DESC, c.name ASC`,
+         ORDER BY (c.telegram_channel_id = 'me') DESC, c.name ASC`,
         [user.id]
       );
       return c.json({ channels: allChannels });
     }
 
-    // Default: Return only active channels (with media or 'me')
-    const activeChannels = await db.all(
+    // Default: Return ONLY channels explicitly added to the user's gallery
+    const userChannels = await db.all(
       `SELECT c.id, c.telegram_channel_id, c.name, c.cover_media_id, c.last_synced_at,
               COUNT(m.id) as media_count
        FROM channels c
-       JOIN user_channels uc ON uc.channel_id = c.id
+       JOIN gallery_channels gc ON gc.channel_id = c.id
        LEFT JOIN media_items m ON m.channel_id = c.id AND m.deleted_at IS NULL
-       WHERE uc.user_id = ?
+       WHERE gc.user_id = ?
        GROUP BY c.id
-       HAVING media_count > 0 OR c.telegram_channel_id = 'me'
        ORDER BY (c.telegram_channel_id = 'me') DESC, media_count DESC, c.name ASC`,
       [user.id]
     );
 
-    return c.json({ channels: activeChannels });
+    return c.json({ channels: userChannels });
   } catch (error: any) {
     return c.json({ error: error.message || "Failed to fetch channels" }, error.message === "Unauthorized" ? 401 : 500);
   }
@@ -131,16 +136,83 @@ channelsRouter.post("/add", async (c) => {
       );
     }
 
+    // Explicitly add to gallery_channels table
     await db.run(
-      `INSERT INTO user_channels (user_id, channel_id, role)
-       VALUES (?, ?, 'owner')
+      `INSERT INTO gallery_channels (user_id, channel_id)
+       VALUES (?, ?)
        ON CONFLICT(user_id, channel_id) DO NOTHING`,
       [user.id, channelId]
     );
 
+    // Initial background sync for newly added channel
+    try {
+      if (!client.connected) await client.connect();
+      let targetPeer: any = telegram_channel_id;
+      if (telegram_channel_id !== "me") {
+        try { targetPeer = await client.getInputEntity(telegram_channel_id); }
+        catch { try { targetPeer = await client.getEntity(telegram_channel_id); } catch {} }
+      }
+      const messages = await client.getMessages(targetPeer, { limit: 100 });
+      for (const msg of messages) {
+        if (!msg.media) continue;
+        const isPhoto = !!msg.photo;
+        const isVideo = !!(msg.video || (msg.document && msg.document.mimeType?.startsWith("video/")));
+        if (!isPhoto && !isVideo) continue;
+        const fileType = isPhoto ? "photo" : "video";
+        const mimeType = isPhoto ? "image/jpeg" : (msg.document?.mimeType || "video/mp4");
+        const fileSize = toSafeNumber((msg.photo as any)?.sizes?.slice(-1)[0]?.size || (msg.document as any)?.size || 0);
+        const width = toSafeNumber((msg.photo as any)?.sizes?.slice(-1)[0]?.w || (msg.document as any)?.attributes?.find((a: any) => a.w)?.w || 1920);
+        const height = toSafeNumber((msg.photo as any)?.sizes?.slice(-1)[0]?.h || (msg.document as any)?.attributes?.find((a: any) => a.h)?.h || 1080);
+        const rawDuration = (msg.document as any)?.attributes?.find((a: any) => a.duration)?.duration;
+        const duration = rawDuration != null ? toSafeNumber(rawDuration) : null;
+        const dateSeconds = toSafeNumber(msg.date, Math.floor(Date.now() / 1000));
+        const capturedAt = new Date(dateSeconds * 1000).toISOString();
+        const tgMsgId = toSafeNumber(msg.id);
+
+        await db.run(
+          `INSERT INTO media_items (
+             id, channel_id, uploader_user_id, telegram_message_id, file_type,
+             mime_type, file_size_bytes, width, height, duration_seconds,
+             blur_hash, captured_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'LEHV6nWB2yk8pyo0adR*.7kCMdnj', ?)
+           ON CONFLICT(channel_id, telegram_message_id) DO NOTHING`,
+          [crypto.randomUUID(), channelId, user.id, tgMsgId, fileType, mimeType, fileSize, width, height, duration, capturedAt]
+        );
+      }
+      await db.run("UPDATE channels SET last_synced_at = CURRENT_TIMESTAMP WHERE id = ?", [channelId]);
+    } catch (syncErr) {
+      console.warn("Initial sync error on add:", syncErr);
+    }
+
     return c.json({ success: true, channelId });
   } catch (error: any) {
     return c.json({ error: error.message || "Failed to add channel" }, 500);
+  }
+});
+
+/**
+ * POST /api/channels/remove
+ * Removes a channel from active galleries
+ */
+channelsRouter.post("/remove", async (c) => {
+  try {
+    const { user, db } = await getAuthUserClient(c);
+    const { channel_id } = await c.req.json();
+
+    if (!channel_id) {
+      return c.json({ error: "channel_id required" }, 400);
+    }
+
+    // Protect 'me' (Saved Messages) from being removed
+    const channel = await db.get("SELECT telegram_channel_id FROM channels WHERE id = ?", [channel_id]);
+    if (channel?.telegram_channel_id === "me") {
+      return c.json({ error: "Cannot remove Saved Messages" }, 400);
+    }
+
+    await db.run("DELETE FROM gallery_channels WHERE user_id = ? AND channel_id = ?", [user.id, channel_id]);
+    return c.json({ success: true });
+  } catch (error: any) {
+    return c.json({ error: error.message || "Failed to remove channel" }, 500);
   }
 });
 
@@ -155,8 +227,8 @@ channelsRouter.post("/:id/sync", async (c) => {
 
     const channel = await db.get(
       `SELECT c.* FROM channels c
-       JOIN user_channels uc ON uc.channel_id = c.id
-       WHERE c.id = ? AND uc.user_id = ?`,
+       JOIN gallery_channels gc ON gc.channel_id = c.id
+       WHERE c.id = ? AND gc.user_id = ?`,
       [channelId, user.id]
     );
 
@@ -168,7 +240,7 @@ channelsRouter.post("/:id/sync", async (c) => {
       await client.connect();
     }
 
-    // Fetch last 100 messages from channel
+    // Fetch last 200 messages from channel
     let targetPeer: any = channel.telegram_channel_id;
     if (channel.telegram_channel_id === "me") {
       targetPeer = "me";
@@ -184,14 +256,23 @@ channelsRouter.post("/:id/sync", async (c) => {
 
     const messages = await client.getMessages(targetPeer, { limit: 200 });
     let indexedCount = 0;
-    const eventsToReplay: GalleryEvent[] = [];
+    let prunedCount = 0;
+    let cleanedOrphanEventsCount = 0;
 
-    // Pass 1: Index raw media messages
+    const activeTgMediaMsgIds = new Set<number>();
+    const scannedMsgIds: number[] = [];
+    const eventRecords: { event: GalleryEvent; msgId: number }[] = [];
+
+    // Pass 1: Index raw media messages & collect WAL events
     for (const msg of messages) {
+      if (!msg) continue;
+      const msgId = toSafeNumber(msg.id);
+      scannedMsgIds.push(msgId);
+
       // Check if this message is a WAL event
       const event = parseGalleryEvent(msg.message);
       if (event) {
-        eventsToReplay.push(event);
+        eventRecords.push({ event, msgId });
         continue;
       }
 
@@ -202,20 +283,24 @@ channelsRouter.post("/:id/sync", async (c) => {
 
       if (!isPhoto && !isVideo) continue;
 
+      activeTgMediaMsgIds.add(msgId);
+
       const fileType = isPhoto ? "photo" : "video";
       const mimeType = isPhoto ? "image/jpeg" : (msg.document?.mimeType || "video/mp4");
-      const fileSize = (msg.photo as any)?.sizes?.slice(-1)[0]?.size || (msg.document as any)?.size || 0;
+      const fileSize = toSafeNumber((msg.photo as any)?.sizes?.slice(-1)[0]?.size || (msg.document as any)?.size || 0);
       
       // Default dimensions or extracted
-      const width = (msg.photo as any)?.sizes?.slice(-1)[0]?.w || (msg.document as any)?.attributes?.find((a: any) => a.w)?.w || 1920;
-      const height = (msg.photo as any)?.sizes?.slice(-1)[0]?.h || (msg.document as any)?.attributes?.find((a: any) => a.h)?.h || 1080;
-      const duration = (msg.document as any)?.attributes?.find((a: any) => a.duration)?.duration || null;
+      const width = toSafeNumber((msg.photo as any)?.sizes?.slice(-1)[0]?.w || (msg.document as any)?.attributes?.find((a: any) => a.w)?.w || 1920);
+      const height = toSafeNumber((msg.photo as any)?.sizes?.slice(-1)[0]?.h || (msg.document as any)?.attributes?.find((a: any) => a.h)?.h || 1080);
+      const rawDuration = (msg.document as any)?.attributes?.find((a: any) => a.duration)?.duration;
+      const duration = rawDuration != null ? toSafeNumber(rawDuration) : null;
 
       // Safe placeholder BlurHash
       const defaultBlurHash = "LEHV6nWB2yk8pyo0adR*.7kCMdnj";
 
       const mediaId = crypto.randomUUID();
-      const capturedAt = new Date(msg.date * 1000).toISOString();
+      const dateSeconds = toSafeNumber(msg.date, Math.floor(Date.now() / 1000));
+      const capturedAt = new Date(dateSeconds * 1000).toISOString();
 
       await db.run(
         `INSERT INTO media_items (
@@ -229,7 +314,7 @@ channelsRouter.post("/:id/sync", async (c) => {
            height = excluded.height,
            duration_seconds = excluded.duration_seconds`,
         [
-          mediaId, channel.id, user.id, msg.id, fileType,
+          mediaId, channel.id, user.id, msgId, fileType,
           mimeType, fileSize, width, height, duration,
           defaultBlurHash, capturedAt
         ]
@@ -237,16 +322,72 @@ channelsRouter.post("/:id/sync", async (c) => {
       indexedCount++;
     }
 
-    // Pass 2: Replay Event Sourcing Ledger (restores tags, favorites, GPS, custom dates)
+    // Pass 2: 2-Way Sync - Prune ghost media items from D1 deleted directly in Telegram
+    if (scannedMsgIds.length > 0) {
+      const minScannedId = Math.min(...scannedMsgIds);
+      const maxScannedId = Math.max(...scannedMsgIds);
+
+      const existingItems = await db.all(
+        `SELECT id, telegram_message_id, thumbnail_r2_key FROM media_items
+         WHERE channel_id = ? AND telegram_message_id >= ? AND telegram_message_id <= ?`,
+        [channel.id, minScannedId, maxScannedId]
+      );
+
+      const r2 = getR2Storage((c.env as any)?.R2_BUCKET);
+      for (const item of existingItems) {
+        const itemTgId = Number(item.telegram_message_id);
+        if (!activeTgMediaMsgIds.has(itemTgId)) {
+          // Item was deleted outside our web app (in Telegram client)
+          await db.run("DELETE FROM media_favorites WHERE media_item_id = ?", [item.id]);
+          await db.run("DELETE FROM media_items WHERE id = ?", [item.id]);
+          if (item.thumbnail_r2_key) {
+            try { await r2.delete(item.thumbnail_r2_key); } catch {}
+          }
+          try { await r2.delete(`cache/${channel.id}/${item.id}.bin`); } catch {}
+          prunedCount++;
+        }
+      }
+    }
+
+    // Pass 3: Auto-clean orphaned [GP_EVENT:v1] text messages from Telegram
+    const orphanedEventIds: number[] = [];
+    const validEvents: GalleryEvent[] = [];
+
+    for (const rec of eventRecords) {
+      if (activeTgMediaMsgIds.has(rec.event.ref)) {
+        validEvents.push(rec.event);
+      } else {
+        // Target media message is no longer in Telegram! Mark event text message for cleanup
+        orphanedEventIds.push(rec.msgId);
+      }
+    }
+
+    if (orphanedEventIds.length > 0) {
+      try {
+        await client.deleteMessages(targetPeer, orphanedEventIds, { revoke: true });
+        cleanedOrphanEventsCount = orphanedEventIds.length;
+        console.log(`[EventLedger] Cleaned ${cleanedOrphanEventsCount} orphaned event messages from channel ${channel.name}`);
+      } catch (delErr) {
+        console.warn("[EventLedger] Orphaned event cleanup warning:", delErr);
+      }
+    }
+
+    // Pass 4: Replay valid Event Sourcing Ledger (restores tags, favorites, GPS, custom dates)
     let appliedEventsCount = 0;
-    if (eventsToReplay.length > 0) {
-      appliedEventsCount = await applyGalleryEventsToDb(db, channel.id, user.id, eventsToReplay);
+    if (validEvents.length > 0) {
+      appliedEventsCount = await applyGalleryEventsToDb(db, channel.id, user.id, validEvents);
       console.log(`[EventLedger] Replayed ${appliedEventsCount} events for channel ${channel.name}`);
     }
 
     await db.run("UPDATE channels SET last_synced_at = CURRENT_TIMESTAMP WHERE id = ?", [channelId]);
 
-    return c.json({ success: true, indexedCount, appliedEventsCount });
+    return c.json({
+      success: true,
+      indexedCount,
+      prunedCount,
+      cleanedOrphanEventsCount,
+      appliedEventsCount,
+    });
   } catch (error: any) {
     console.error("Sync Error:", error);
     return c.json({ error: error.message || "Failed to sync channel" }, 500);

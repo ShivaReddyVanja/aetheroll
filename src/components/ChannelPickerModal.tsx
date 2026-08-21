@@ -7,6 +7,7 @@ import { Channel } from "./Sidebar";
 interface ChannelPickerModalProps {
   onClose: () => void;
   onSelectAndAddChannel: (channel: Channel) => void;
+  onRemoveChannel?: (channelId: string) => void;
   activeChannelIds: Set<string>;
 }
 
@@ -22,6 +23,7 @@ const AVATAR_COLORS = [
 export function ChannelPickerModal({
   onClose,
   onSelectAndAddChannel,
+  onRemoveChannel,
   activeChannelIds,
 }: ChannelPickerModalProps) {
   const [allChannels, setAllChannels] = useState<Channel[]>([]);
@@ -95,20 +97,20 @@ export function ChannelPickerModal({
             </div>
           ) : (
             filteredChannels.map((ch, idx) => {
-              const isActive = activeChannelIds.has(ch.id);
+              const isActive = activeChannelIds.has(ch.id) || (ch as any).is_added === 1;
+              const isSavedMessages = ch.telegram_channel_id === "me";
               const colorGradient = AVATAR_COLORS[idx % AVATAR_COLORS.length];
 
               return (
                 <div
                   key={ch.id}
-                  onClick={() => onSelectAndAddChannel(ch)}
-                  className={`flex items-center justify-between p-3 rounded-2xl cursor-pointer transition-all border ${
+                  className={`flex items-center justify-between p-3 rounded-2xl transition-all border ${
                     isActive
                       ? "bg-[var(--bg-active-pill)]/20 border-blue-500/30"
                       : "bg-[var(--bg-secondary)] border-transparent hover:border-[var(--border-color)] hover:bg-[var(--bg-hover)]"
                   }`}
                 >
-                  <div className="flex items-center gap-3 overflow-hidden">
+                  <div className="flex items-center gap-3 overflow-hidden flex-1 mr-2">
                     <div
                       className={`w-9 h-9 rounded-full bg-gradient-to-tr ${colorGradient} text-white flex items-center justify-center text-xs font-bold flex-shrink-0 shadow-sm`}
                     >
@@ -122,22 +124,32 @@ export function ChannelPickerModal({
                         {ch.media_count !== undefined && (
                           <span>{ch.media_count} indexed items</span>
                         )}
-                        {ch.telegram_channel_id === "me" && (
+                        {isSavedMessages && (
                           <span className="text-blue-500 font-semibold">Private Cloud Vault</span>
                         )}
                       </div>
                     </div>
                   </div>
 
-                  <button
-                    className={`px-3 py-1 rounded-full text-xs font-medium transition-all ${
-                      isActive
-                        ? "bg-blue-600 text-white"
-                        : "bg-[var(--bg-hover)] text-[var(--text-primary)] hover:bg-blue-600 hover:text-white"
-                    }`}
-                  >
-                    {isActive ? "Active" : "+ Add"}
-                  </button>
+                  {!isSavedMessages && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (isActive && onRemoveChannel) {
+                          onRemoveChannel(ch.id);
+                        } else {
+                          onSelectAndAddChannel(ch);
+                        }
+                      }}
+                      className={`px-3 py-1 rounded-full text-xs font-medium transition-all ${
+                        isActive
+                          ? "bg-red-500/10 text-red-500 hover:bg-red-500 hover:text-white"
+                          : "bg-blue-600 text-white hover:bg-blue-700"
+                      }`}
+                    >
+                      {isActive ? "Remove" : "+ Add"}
+                    </button>
+                  )}
                 </div>
               );
             })

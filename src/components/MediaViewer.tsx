@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { X, ChevronLeft, ChevronRight, Heart, Download, Info, Play, Pause } from "lucide-react";
+import { X, ChevronLeft, ChevronRight, Heart, Download, Info, Trash2, Play, Pause } from "lucide-react";
 import { MediaItem } from "./MediaCard";
 import { TagDrawer } from "./TagDrawer";
 
@@ -13,6 +13,7 @@ interface MediaViewerProps {
   onNavigate: (item: MediaItem) => void;
   onToggleFavorite: (id: string, e: React.MouseEvent) => void;
   onItemUpdated: () => void;
+  onDelete?: (id: string) => void;
 }
 
 export function MediaViewer({
@@ -23,6 +24,7 @@ export function MediaViewer({
   onNavigate,
   onToggleFavorite,
   onItemUpdated,
+  onDelete,
 }: MediaViewerProps) {
   const [showTagDrawer, setShowTagDrawer] = useState(false);
 
@@ -106,6 +108,17 @@ export function MediaViewer({
             >
               <Info className="w-5 h-5" />
             </button>
+
+            {/* Delete Button */}
+            {onDelete && (
+              <button
+                onClick={() => onDelete(item.id)}
+                title="Delete photo / video"
+                className="p-2 rounded-full text-slate-300 hover:text-rose-400 hover:bg-rose-500/20 transition-colors"
+              >
+                <Trash2 className="w-5 h-5" />
+              </button>
+            )}
           </div>
         </header>
 
