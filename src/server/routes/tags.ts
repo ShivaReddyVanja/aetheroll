@@ -1,11 +1,9 @@
 import { Hono } from "hono";
-import { getCookie } from "hono/cookie";
 import crypto from "crypto";
 import { getDb } from "../lib/db";
-import { decryptSession } from "../lib/crypto";
 import { resolveUserAuth } from "../lib/auth";
 import { getConnectedClient, getDefaultTelegramConfig } from "../lib/telegram";
-import { emitGalleryEvent } from "../lib/ledger";
+import { emitGalleryEvent, emitGalleryBatch, GalleryOp } from "../lib/ledger";
 
 export const tagsRouter = new Hono();
 
@@ -27,9 +25,24 @@ async function getAuthContext(c: any) {
   };
 }
 
-// -------------------------------------------------------------
-// PEOPLE TAGS
-// -------------------------------------------------------------
+async function getTargetPeer(client: any, channelIdStr: string) {
+  if (channelIdStr === "me" || channelIdStr.startsWith("me_")) {
+    return "me";
+  }
+  try {
+    return await client.getInputEntity(channelIdStr);
+  } catch {
+    try {
+      return await client.getEntity(channelIdStr);
+    } catch {
+      return channelIdStr;
+    }
+  }
+}
+
+// =============================================================
+// 1. PEOPLE TAGS
+// =============================================================
 
 /**
  * GET /api/tags/people?channel_id=...
@@ -41,7 +54,7 @@ tagsRouter.get("/people", async (c) => {
 
     const db = getDb((c.env as any)?.DB);
     const people = await db.all(
-      `SELECT p.*, COUNT(t.id) as media_count
+      `SELECT p.*, COUNT(t.media_item_id) as media_count
        FROM people p
        LEFT JOIN media_person_tags t ON t.person_id = p.id
        WHERE p.channel_id = ?
@@ -68,8 +81,8 @@ tagsRouter.post("/people", async (c) => {
     const personId = crypto.randomUUID();
 
     await db.run(
-      "INSERT INTO people (id, channel_id, name, created_by) VALUES (?, ?, ?, ?)",
-      [personId, channel_id, name.trim(), user.id]
+      "INSERT INTO people (id, channel_id, name, created_by, user_id) VALUES (?, ?, ?, ?, ?)",
+      [personId, channel_id, name.trim(), user.id, user.id]
     );
 
     return c.json({ success: true, person: { id: personId, name: name.trim(), channel_id } });
@@ -79,158 +92,242 @@ tagsRouter.post("/people", async (c) => {
 });
 
 /**
- * POST /api/tags/media-person (Tag or untag person on media item)
+ * POST /api/tags/media-person (Tag or untag person on media items)
  */
 tagsRouter.post("/media-person", async (c) => {
   try {
     const { user, auth, db } = await getAuthContext(c);
-    const { media_item_id, person_id, bbox, remove } = await c.req.json();
+    const body = await c.req.json();
+    const { person_id, bbox, remove } = body;
+    const mediaItemIds: string[] = Array.isArray(body.media_item_ids)
+      ? body.media_item_ids
+      : body.media_item_id
+      ? [body.media_item_id]
+      : [];
+
+    if (mediaItemIds.length === 0 || !person_id) {
+      return c.json({ error: "media_item_ids and person_id are required" }, 400);
+    }
+
+    const person = await db.get("SELECT name, channel_id FROM people WHERE id = ?", [person_id]);
+    if (!person) return c.json({ error: "Person not found" }, 404);
 
     if (remove) {
-      await db.run("DELETE FROM media_person_tags WHERE media_item_id = ? AND person_id = ?", [media_item_id, person_id]);
+      for (const mId of mediaItemIds) {
+        await db.run("DELETE FROM media_person_tags WHERE media_item_id = ? AND person_id = ?", [mId, person_id]);
+      }
     } else {
-      const tagId = crypto.randomUUID();
-      await db.run(
-        `INSERT INTO media_person_tags (id, media_item_id, person_id, bbox_x, bbox_y, bbox_w, bbox_h, tagged_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(media_item_id, person_id) DO UPDATE SET
-           bbox_x = excluded.bbox_x,
-           bbox_y = excluded.bbox_y,
-           bbox_w = excluded.bbox_w,
-           bbox_h = excluded.bbox_h`,
-        [tagId, media_item_id, person_id, bbox?.x || null, bbox?.y || null, bbox?.w || null, bbox?.h || null, user.id]
-      );
+      for (const mId of mediaItemIds) {
+        const tagId = crypto.randomUUID();
+        await db.run(
+          `INSERT INTO media_person_tags (id, media_item_id, person_id, bbox_x, bbox_y, bbox_w, bbox_h, tagged_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(media_item_id, person_id) DO UPDATE SET
+             bbox_x = excluded.bbox_x,
+             bbox_y = excluded.bbox_y,
+             bbox_w = excluded.bbox_w,
+             bbox_h = excluded.bbox_h`,
+          [tagId, mId, person_id, bbox?.x || null, bbox?.y || null, bbox?.w || null, bbox?.h || null, user.id]
+        );
+      }
     }
 
-    // Emit Telegram WAL Event
+    // Telegram WAL / Batch ledger emit
     try {
-      const mediaItem = await db.get(
-        `SELECT m.telegram_message_id, c.telegram_channel_id FROM media_items m
-         JOIN channels c ON c.id = m.channel_id WHERE m.id = ?`,
-        [media_item_id]
-      );
-      const allPeople = await db.all(
-        `SELECT p.name FROM people p
-         JOIN media_person_tags t ON t.person_id = p.id
-         WHERE t.media_item_id = ?`,
-        [media_item_id]
-      );
+      if (auth.sessionString && !remove) {
+        const placeholders = mediaItemIds.map(() => "?").join(",");
+        const mediaItems = await db.all(
+          `SELECT m.id, m.telegram_message_id, c.telegram_channel_id FROM media_items m
+           JOIN channels c ON c.id = m.channel_id WHERE m.id IN (${placeholders})`,
+          mediaItemIds
+        );
 
-      if (mediaItem && auth.sessionString) {
-        const client = await getConnectedClient(auth.sessionString, auth.telegramConfig);
-        let targetPeer: any = mediaItem.telegram_channel_id;
-        if (targetPeer !== "me" && !targetPeer.startsWith("me_")) {
-          try { targetPeer = await client.getInputEntity(targetPeer); } catch {}
-        } else {
-          targetPeer = "me";
+        if (mediaItems.length > 0) {
+          const client = await getConnectedClient(auth.sessionString, auth.telegramConfig);
+          const channelTgId = mediaItems[0].telegram_channel_id;
+          const targetPeer = await getTargetPeer(client, channelTgId);
+
+          if (mediaItems.length >= 5) {
+            // Batch document upload for >= 5 photos
+            const ops: GalleryOp[] = [
+              {
+                op: "TAG_PEOPLE",
+                refs: mediaItems.map((m: any) => m.telegram_message_id),
+                data: { people: [person.name] },
+              },
+            ];
+            await emitGalleryBatch(client, targetPeer, channelTgId, ops, (c.env as any)?.MASTER_ENCRYPTION_KEY);
+          } else {
+            // Threaded reply for < 5 photos
+            for (const item of mediaItems) {
+              await emitGalleryEvent(client, targetPeer, item.telegram_message_id, "TAG_PEOPLE", {
+                people: [person.name],
+              }, (c.env as any)?.MASTER_ENCRYPTION_KEY);
+            }
+          }
         }
-        await emitGalleryEvent(client, targetPeer, mediaItem.telegram_message_id, "TAG_PEOPLE", {
-          people: allPeople.map((p) => p.name),
-        });
       }
     } catch (e) {
-      console.warn("[EventLedger] Failed emitting tag_people event:", e);
+      console.warn("[EventLedger] Failed emitting person tag WAL:", e);
     }
 
-    return c.json({ success: true, action: remove ? "removed" : "tagged" });
+    return c.json({ success: true, action: remove ? "removed" : "tagged", count: mediaItemIds.length });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
   }
 });
 
-// -------------------------------------------------------------
-// LOCATION TAGS
-// -------------------------------------------------------------
+// =============================================================
+// 2. USER-DEFINED TAGS
+// =============================================================
 
 /**
- * GET /api/tags/locations
+ * GET /api/tags/user-tags?channel_id=...
  */
-tagsRouter.get("/locations", async (c) => {
+tagsRouter.get("/user-tags", async (c) => {
   try {
+    const channelId = c.req.query("channel_id");
+    if (!channelId) return c.json({ error: "channel_id is required" }, 400);
+
     const db = getDb((c.env as any)?.DB);
-    const locations = await db.all(
-      `SELECT l.*, COUNT(t.id) as media_count
-       FROM locations l
-       LEFT JOIN media_location_tags t ON t.location_id = l.id
-       GROUP BY l.id
-       ORDER BY media_count DESC, l.name ASC`
+    const tags = await db.all(
+      `SELECT t.*, COUNT(mt.media_item_id) as media_count
+       FROM tags t
+       LEFT JOIN media_tags mt ON mt.tag_id = t.id
+       WHERE t.channel_id = ?
+       GROUP BY t.id
+       ORDER BY t.name ASC`,
+      [channelId]
     );
-    return c.json({ locations });
+
+    return c.json({ tags });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
   }
 });
 
 /**
- * POST /api/tags/media-location (Attach location to media item)
+ * POST /api/tags/user-tags (Create a user-defined tag)
  */
-tagsRouter.post("/media-location", async (c) => {
+tagsRouter.post("/user-tags", async (c) => {
   try {
-    const { user, auth, db } = await getAuthContext(c);
-    const { media_item_id, name, latitude, longitude, place_type, source, location_id, remove } = await c.req.json();
-
-    if (remove && location_id) {
-      await db.run("DELETE FROM media_location_tags WHERE media_item_id = ? AND location_id = ?", [media_item_id, location_id]);
-      return c.json({ success: true, action: "removed" });
-    }
-
-    let targetLocationId = location_id;
-    let locName = name;
-    if (!targetLocationId && name) {
-      let loc = await db.get("SELECT id, name FROM locations WHERE name = ?", [name.trim()]);
-      if (!loc) {
-        targetLocationId = crypto.randomUUID();
-        locName = name.trim();
-        await db.run(
-          "INSERT INTO locations (id, name, latitude, longitude, place_type) VALUES (?, ?, ?, ?, ?)",
-          [targetLocationId, locName, latitude || null, longitude || null, place_type || "custom"]
-        );
-      } else {
-        targetLocationId = loc.id;
-        locName = loc.name;
-      }
-    }
-
-    if (!targetLocationId) return c.json({ error: "Invalid location" }, 400);
+    const { user, db } = await getAuthContext(c);
+    const { channel_id, name, color } = await c.req.json();
+    if (!channel_id || !name?.trim()) return c.json({ error: "channel_id and name are required" }, 400);
 
     const tagId = crypto.randomUUID();
+
     await db.run(
-      `INSERT INTO media_location_tags (id, media_item_id, location_id, source, tagged_by)
+      `INSERT INTO tags (id, channel_id, user_id, name, color)
        VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(media_item_id, location_id) DO NOTHING`,
-      [tagId, media_item_id, targetLocationId, source || "manual", user.id]
+       ON CONFLICT(channel_id, name) DO UPDATE SET color = COALESCE(excluded.color, tags.color)`,
+      [tagId, channel_id, user.id, name.trim(), color || null]
     );
 
-    // Emit Telegram WAL Event
-    try {
-      const mediaItem = await db.get(
-        `SELECT m.telegram_message_id, c.telegram_channel_id FROM media_items m
-         JOIN channels c ON c.id = m.channel_id WHERE m.id = ?`,
-        [media_item_id]
-      );
-      if (mediaItem && latitude && longitude && auth.sessionString) {
-        const client = await getConnectedClient(auth.sessionString, auth.telegramConfig);
-        let targetPeer: any = mediaItem.telegram_channel_id;
-        if (targetPeer !== "me") {
-          try { targetPeer = await client.getInputEntity(targetPeer); } catch {}
-        }
-        await emitGalleryEvent(client, targetPeer, mediaItem.telegram_message_id, "SET_LOCATION", {
-          gps: { lat: latitude, lng: longitude, name: locName },
-        });
-      }
-    } catch (e) {
-      console.warn("[EventLedger] Failed emitting location event:", e);
-    }
-
-    return c.json({ success: true, action: "tagged", locationId: targetLocationId });
+    const tag = await db.get("SELECT * FROM tags WHERE channel_id = ? AND name = ?", [channel_id, name.trim()]);
+    return c.json({ success: true, tag });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
   }
 });
 
-// -------------------------------------------------------------
-// EVENT TAGS
-// -------------------------------------------------------------
+/**
+ * DELETE /api/tags/user-tags/:id (Delete a user tag)
+ */
+tagsRouter.delete("/user-tags/:id", async (c) => {
+  try {
+    const { db } = await getAuthContext(c);
+    const tagId = c.req.param("id");
+
+    await db.run("DELETE FROM media_tags WHERE tag_id = ?", [tagId]);
+    await db.run("DELETE FROM tags WHERE id = ?", [tagId]);
+
+    return c.json({ success: true });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+/**
+ * POST /api/tags/media-tag (Apply or remove tag on media items)
+ */
+tagsRouter.post("/media-tag", async (c) => {
+  try {
+    const { user, auth, db } = await getAuthContext(c);
+    const body = await c.req.json();
+    const { tag_id, remove } = body;
+    const mediaItemIds: string[] = Array.isArray(body.media_item_ids)
+      ? body.media_item_ids
+      : body.media_item_id
+      ? [body.media_item_id]
+      : [];
+
+    if (mediaItemIds.length === 0 || !tag_id) {
+      return c.json({ error: "media_item_ids and tag_id are required" }, 400);
+    }
+
+    const tag = await db.get("SELECT name, channel_id FROM tags WHERE id = ?", [tag_id]);
+    if (!tag) return c.json({ error: "Tag not found" }, 404);
+
+    if (remove) {
+      for (const mId of mediaItemIds) {
+        await db.run("DELETE FROM media_tags WHERE media_item_id = ? AND tag_id = ?", [mId, tag_id]);
+      }
+    } else {
+      for (const mId of mediaItemIds) {
+        await db.run(
+          "INSERT INTO media_tags (media_item_id, tag_id, tagged_by) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+          [mId, tag_id, user.id]
+        );
+      }
+    }
+
+    // Emit Telegram WAL / Batch ledger event
+    try {
+      if (auth.sessionString && !remove) {
+        const placeholders = mediaItemIds.map(() => "?").join(",");
+        const mediaItems = await db.all(
+          `SELECT m.id, m.telegram_message_id, c.telegram_channel_id FROM media_items m
+           JOIN channels c ON c.id = m.channel_id WHERE m.id IN (${placeholders})`,
+          mediaItemIds
+        );
+
+        if (mediaItems.length > 0) {
+          const client = await getConnectedClient(auth.sessionString, auth.telegramConfig);
+          const channelTgId = mediaItems[0].telegram_channel_id;
+          const targetPeer = await getTargetPeer(client, channelTgId);
+
+          if (mediaItems.length >= 5) {
+            const ops: GalleryOp[] = [
+              {
+                op: "ADD_TAG",
+                refs: mediaItems.map((m: any) => m.telegram_message_id),
+                data: { tags: [tag.name] },
+              },
+            ];
+            await emitGalleryBatch(client, targetPeer, channelTgId, ops, (c.env as any)?.MASTER_ENCRYPTION_KEY);
+          } else {
+            for (const item of mediaItems) {
+              await emitGalleryEvent(client, targetPeer, item.telegram_message_id, "ADD_TAG", {
+                tags: [tag.name],
+              }, (c.env as any)?.MASTER_ENCRYPTION_KEY);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("[EventLedger] Failed emitting media tag WAL:", e);
+    }
+
+    return c.json({ success: true, action: remove ? "removed" : "tagged", count: mediaItemIds.length });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// =============================================================
+// 3. EVENT TAGS
+// =============================================================
 
 /**
  * GET /api/tags/events?channel_id=...
@@ -242,7 +339,7 @@ tagsRouter.get("/events", async (c) => {
 
     const db = getDb((c.env as any)?.DB);
     const events = await db.all(
-      `SELECT e.*, COUNT(t.id) as media_count
+      `SELECT e.*, COUNT(t.media_item_id) as media_count
        FROM events e
        LEFT JOIN media_event_tags t ON t.event_id = e.id
        WHERE e.channel_id = ?
@@ -263,67 +360,173 @@ tagsRouter.get("/events", async (c) => {
 tagsRouter.post("/events", async (c) => {
   try {
     const { user, db } = await getAuthContext(c);
-    const { channel_id, name, description } = await c.req.json();
+    const { channel_id, name, description, event_date } = await c.req.json();
     if (!channel_id || !name?.trim()) return c.json({ error: "channel_id and name are required" }, 400);
 
     const eventId = crypto.randomUUID();
 
     await db.run(
-      "INSERT INTO events (id, channel_id, name, description, created_by) VALUES (?, ?, ?, ?, ?)",
-      [eventId, channel_id, name.trim(), description || null, user.id]
+      "INSERT INTO events (id, channel_id, name, description, event_date, created_by, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      [eventId, channel_id, name.trim(), description || null, event_date || null, user.id, user.id]
     );
 
-    return c.json({ success: true, event: { id: eventId, name: name.trim(), channel_id } });
+    return c.json({ success: true, event: { id: eventId, name: name.trim(), channel_id, event_date } });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
   }
 });
 
 /**
- * POST /api/tags/media-event (Tag or untag event on media item)
+ * POST /api/tags/media-event (Tag or untag event on media items)
  */
 tagsRouter.post("/media-event", async (c) => {
   try {
     const { user, auth, db } = await getAuthContext(c);
-    const { media_item_id, event_id, remove } = await c.req.json();
+    const body = await c.req.json();
+    const { event_id, remove } = body;
+    const mediaItemIds: string[] = Array.isArray(body.media_item_ids)
+      ? body.media_item_ids
+      : body.media_item_id
+      ? [body.media_item_id]
+      : [];
 
-    if (remove) {
-      await db.run("DELETE FROM media_event_tags WHERE media_item_id = ? AND event_id = ?", [media_item_id, event_id]);
-    } else {
-      const tagId = crypto.randomUUID();
-      await db.run(
-        `INSERT INTO media_event_tags (id, media_item_id, event_id, tagged_by)
-         VALUES (?, ?, ?, ?)
-         ON CONFLICT(media_item_id, event_id) DO NOTHING`,
-        [tagId, media_item_id, event_id, user.id]
-      );
+    if (mediaItemIds.length === 0 || !event_id) {
+      return c.json({ error: "media_item_ids and event_id are required" }, 400);
     }
 
-    // Emit Telegram WAL Event
+    const ev = await db.get("SELECT name, channel_id FROM events WHERE id = ?", [event_id]);
+    if (!ev) return c.json({ error: "Event not found" }, 404);
+
+    if (remove) {
+      for (const mId of mediaItemIds) {
+        await db.run("DELETE FROM media_event_tags WHERE media_item_id = ? AND event_id = ?", [mId, event_id]);
+      }
+    } else {
+      for (const mId of mediaItemIds) {
+        const tagId = crypto.randomUUID();
+        await db.run(
+          `INSERT INTO media_event_tags (id, media_item_id, event_id, tagged_by)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(media_item_id, event_id) DO NOTHING`,
+          [tagId, mId, event_id, user.id]
+        );
+      }
+    }
+
+    // Emit Telegram WAL / Batch ledger event
     try {
-      const mediaItem = await db.get(
-        `SELECT m.telegram_message_id, c.telegram_channel_id FROM media_items m
-         JOIN channels c ON c.id = m.channel_id WHERE m.id = ?`,
-        [media_item_id]
-      );
-      const ev = await db.get("SELECT name FROM events WHERE id = ?", [event_id]);
-      if (mediaItem && ev && auth.sessionString) {
-        const client = await getConnectedClient(auth.sessionString, auth.telegramConfig);
-        let targetPeer: any = mediaItem.telegram_channel_id;
-        if (targetPeer !== "me" && !targetPeer.startsWith("me_")) {
-          try { targetPeer = await client.getInputEntity(targetPeer); } catch {}
-        } else {
-          targetPeer = "me";
+      if (auth.sessionString && !remove) {
+        const placeholders = mediaItemIds.map(() => "?").join(",");
+        const mediaItems = await db.all(
+          `SELECT m.id, m.telegram_message_id, c.telegram_channel_id FROM media_items m
+           JOIN channels c ON c.id = m.channel_id WHERE m.id IN (${placeholders})`,
+          mediaItemIds
+        );
+
+        if (mediaItems.length > 0) {
+          const client = await getConnectedClient(auth.sessionString, auth.telegramConfig);
+          const channelTgId = mediaItems[0].telegram_channel_id;
+          const targetPeer = await getTargetPeer(client, channelTgId);
+
+          if (mediaItems.length >= 5) {
+            const ops: GalleryOp[] = [
+              {
+                op: "SET_EVENT",
+                refs: mediaItems.map((m: any) => m.telegram_message_id),
+                data: { event: ev.name },
+              },
+            ];
+            await emitGalleryBatch(client, targetPeer, channelTgId, ops, (c.env as any)?.MASTER_ENCRYPTION_KEY);
+          } else {
+            for (const item of mediaItems) {
+              await emitGalleryEvent(client, targetPeer, item.telegram_message_id, "SET_EVENT", {
+                event: ev.name,
+              }, (c.env as any)?.MASTER_ENCRYPTION_KEY);
+            }
+          }
         }
-        await emitGalleryEvent(client, targetPeer, mediaItem.telegram_message_id, "SET_EVENT", {
-          event: ev.name,
-        });
       }
     } catch (e) {
       console.warn("[EventLedger] Failed emitting event tag WAL:", e);
     }
 
-    return c.json({ success: true, action: remove ? "removed" : "tagged" });
+    return c.json({ success: true, action: remove ? "removed" : "tagged", count: mediaItemIds.length });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// =============================================================
+// 4. GEO LOCATION TAGS
+// =============================================================
+
+/**
+ * POST /api/tags/media-geo (Update GPS coordinates directly on media items)
+ */
+tagsRouter.post("/media-geo", async (c) => {
+  try {
+    const { auth, db } = await getAuthContext(c);
+    const body = await c.req.json();
+    const { latitude, longitude, altitude } = body;
+    const mediaItemIds: string[] = Array.isArray(body.media_item_ids)
+      ? body.media_item_ids
+      : body.media_item_id
+      ? [body.media_item_id]
+      : [];
+
+    if (mediaItemIds.length === 0 || latitude == null || longitude == null) {
+      return c.json({ error: "media_item_ids, latitude, and longitude are required" }, 400);
+    }
+
+    const lat = Number(latitude);
+    const lng = Number(longitude);
+    const alt = altitude != null ? Number(altitude) : null;
+
+    for (const mId of mediaItemIds) {
+      await db.run(
+        "UPDATE media_items SET latitude = ?, longitude = ?, altitude = ? WHERE id = ?",
+        [lat, lng, alt, mId]
+      );
+    }
+
+    // Emit Telegram WAL
+    try {
+      if (auth.sessionString) {
+        const placeholders = mediaItemIds.map(() => "?").join(",");
+        const mediaItems = await db.all(
+          `SELECT m.id, m.telegram_message_id, c.telegram_channel_id FROM media_items m
+           JOIN channels c ON c.id = m.channel_id WHERE m.id IN (${placeholders})`,
+          mediaItemIds
+        );
+
+        if (mediaItems.length > 0) {
+          const client = await getConnectedClient(auth.sessionString, auth.telegramConfig);
+          const channelTgId = mediaItems[0].telegram_channel_id;
+          const targetPeer = await getTargetPeer(client, channelTgId);
+
+          if (mediaItems.length >= 5) {
+            const ops: GalleryOp[] = [
+              {
+                op: "SET_LOCATION",
+                refs: mediaItems.map((m: any) => m.telegram_message_id),
+                data: { gps: { lat, lng, alt: alt || undefined } },
+              },
+            ];
+            await emitGalleryBatch(client, targetPeer, channelTgId, ops, (c.env as any)?.MASTER_ENCRYPTION_KEY);
+          } else {
+            for (const item of mediaItems) {
+              await emitGalleryEvent(client, targetPeer, item.telegram_message_id, "SET_LOCATION", {
+                gps: { lat, lng, alt: alt || undefined },
+              }, (c.env as any)?.MASTER_ENCRYPTION_KEY);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("[EventLedger] Failed emitting geo WAL:", e);
+    }
+
+    return c.json({ success: true, count: mediaItemIds.length });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
   }
