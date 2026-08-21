@@ -5,6 +5,7 @@ import bigInt from "big-integer";
 import { getDb } from "../lib/db";
 import { decryptSession } from "../lib/crypto";
 import { getConnectedClient, getDefaultTelegramConfig } from "../lib/telegram";
+import { isTelemetryEnabled } from "./logs";
 
 export const streamRouter = new Hono();
 
@@ -114,10 +115,60 @@ async function fetchTelegramChunk(
 }
 
 streamRouter.get("/", async (c) => {
-  // 1. Fast Path: Route to Cloudflare Durable Object (warm MTProto connection in RAM)
+  const mediaId = c.req.query("media_id");
+  if (!mediaId) return c.text("media_id required", 400);
+
+  const token = getCookie(c, "tg_session") || c.req.query("session_token") || "default";
+  const rangeHeader = c.req.header("range") || "full";
+
+  // 1. Check Cloudflare Edge Cache (Sub-3ms Local PoP Delivery)
+  const workerOrigin = new URL(c.req.url).origin;
+  const cacheKeyUrl = `${workerOrigin}/api/stream/cache/${encodeURIComponent(mediaId)}?range=${encodeURIComponent(rangeHeader)}`;
+  const cacheKey = new Request(cacheKeyUrl, { method: "GET" });
+  const cache = (caches as any)?.default;
+
+  if (cache) {
+    try {
+      const cachedRes = await cache.match(cacheKey);
+      if (cachedRes) {
+        const hitHeaders = new Headers(cachedRes.headers);
+        hitHeaders.set("x-edge-cache", "HIT");
+        const originalStatus = parseInt(hitHeaders.get("x-original-status") || "206", 10);
+        hitHeaders.delete("x-original-status");
+
+        // Log Edge HIT to DO telemetry in background only when enabled
+        const authDo = (c.env as any)?.AUTH_DO;
+        if (authDo && typeof authDo.idFromName === "function" && isTelemetryEnabled(c.env)) {
+          const doId = authDo.idFromName("global_telemetry");
+          const stub = authDo.get(doId);
+          const logReq = new Request(`${workerOrigin}/api/logs/log`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              category: "EDGE_CACHE",
+              level: "success",
+              message: `🟢 [Edge HIT ⚡ 2ms] ${mediaId.slice(0, 8)}... range=${rangeHeader}`,
+              meta: { mediaId, range: rangeHeader, hit: true },
+            }),
+          });
+          if ((c.executionCtx as any)?.waitUntil) {
+            c.executionCtx.waitUntil(stub.fetch(logReq).catch(() => {}));
+          }
+        }
+
+        return new Response(cachedRes.body, {
+          status: originalStatus,
+          headers: hitHeaders,
+        });
+      }
+    } catch (cacheErr) {
+      console.warn("[EdgeCache] Stream match error:", cacheErr);
+    }
+  }
+
+  // 2. Fast Path: Route to Cloudflare Durable Object (warm MTProto connection in RAM)
   const authDo = (c.env as any)?.AUTH_DO;
   if (authDo && typeof authDo.idFromName === "function") {
-    const token = getCookie(c, "tg_session") || c.req.query("session_token") || "default";
     const doId = authDo.idFromName(token);
     const stub = authDo.get(doId);
 
@@ -127,6 +178,7 @@ streamRouter.get("/", async (c) => {
     if (envObj.TELEGRAM_API_HASH) headers.set("x-tg-api-hash", String(envObj.TELEGRAM_API_HASH));
     if (envObj.TELEGRAM_TEST_MODE) headers.set("x-tg-test-mode", String(envObj.TELEGRAM_TEST_MODE));
     if (envObj.SESSION_ENCRYPTION_KEY) headers.set("x-tg-enc-key", String(envObj.SESSION_ENCRYPTION_KEY));
+    if (envObj.ENABLE_TELEMETRY) headers.set("x-enable-telemetry", String(envObj.ENABLE_TELEMETRY));
 
     const req = new Request(c.req.url, {
       method: c.req.method,
@@ -135,9 +187,41 @@ streamRouter.get("/", async (c) => {
     const doRes = await stub.fetch(req);
     const resHeaders = new Headers(doRes.headers);
     const body = await doRes.arrayBuffer();
-    return new Response(body, {
+    const response = new Response(body, {
       status: doRes.status,
       headers: resHeaders,
+    });
+
+    // 3. Save Successful 200/206 Partial Content Response to Edge Cache in Background
+    if (cache && (response.status === 200 || response.status === 206)) {
+      try {
+        const resToCache = response.clone();
+        const edgeHeaders = new Headers(resToCache.headers);
+        edgeHeaders.set("Cache-Control", "public, max-age=31536000, immutable");
+        edgeHeaders.set("x-original-status", response.status.toString());
+
+        // Cloudflare Cache API strictly requires 200 OK status on cache.put()
+        const edgeResponse = new Response(resToCache.body, {
+          status: 200,
+          headers: edgeHeaders,
+        });
+
+        const putPromise = cache.put(cacheKey, edgeResponse).catch((err: any) => {
+          console.warn("[EdgeCache] Put error:", err?.message);
+        });
+        if ((c.executionCtx as any)?.waitUntil) {
+          c.executionCtx.waitUntil(putPromise);
+        }
+      } catch (putErr) {
+        console.warn("[EdgeCache] Save error:", putErr);
+      }
+    }
+
+    const outHeaders = new Headers(response.headers);
+    outHeaders.set("x-edge-cache", "MISS");
+    return new Response(response.body, {
+      status: response.status,
+      headers: outHeaders,
     });
   }
 

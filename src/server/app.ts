@@ -7,6 +7,7 @@ import { channelsRouter } from "./routes/channels";
 import { mediaRouter } from "./routes/media";
 import { tagsRouter } from "./routes/tags";
 import { streamRouter } from "./routes/stream";
+import { logsRouter } from "./routes/logs";
 
 export const app = new Hono().basePath("/api");
 
@@ -48,6 +49,7 @@ app.route("/channels", channelsRouter);
 app.route("/media", mediaRouter);
 app.route("/tags", tagsRouter);
 app.route("/stream", streamRouter);
+app.route("/logs", logsRouter);
 
 // Health check
 app.get("/health", (c) => {
