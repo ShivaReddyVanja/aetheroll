@@ -570,7 +570,7 @@ export class TelegramAuthDO {
           [sessionId, userId, expiresAt]
         );
 
-        const cookieValue = `tg_session=${sessionToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`;
+        const cookieValue = `tg_session=${sessionToken}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=2592000; Domain=.builtbyshiva.com`;
         const response = new Response(
           JSON.stringify({
             success: true,

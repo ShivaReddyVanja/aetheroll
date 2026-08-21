@@ -4,7 +4,7 @@ import React, { useState, useEffect } from "react";
 import { X, ChevronLeft, ChevronRight, Heart, Download, Info, Trash2, Play, Pause } from "lucide-react";
 import { MediaItem } from "./MediaCard";
 import { TagDrawer } from "./TagDrawer";
-import { getApiBaseUrl } from "@/lib/config";
+import { getApiBaseUrl, getMediaStreamUrl, getMediaThumbnailUrl } from "@/lib/config";
 
 interface MediaViewerProps {
   item: MediaItem;
@@ -128,8 +128,8 @@ export function MediaViewer({
           {isVideo ? (
             <video
               key={item.id}
-              src={`${getApiBaseUrl()}/api/stream?media_id=${item.id}`}
-              poster={`${getApiBaseUrl()}/api/media/${item.id}/thumbnail`}
+              src={getMediaStreamUrl(item.id)}
+              poster={getMediaThumbnailUrl(item.id)}
               controls
               autoPlay
               playsInline
@@ -145,7 +145,7 @@ export function MediaViewer({
           ) : (
             <img
               key={item.id}
-              src={`${getApiBaseUrl()}/api/stream?media_id=${item.id}`}
+              src={getMediaStreamUrl(item.id)}
               alt="Full Media"
               className="max-h-[85vh] max-w-[90vw] rounded-lg shadow-2xl object-contain transition-opacity duration-300"
             />

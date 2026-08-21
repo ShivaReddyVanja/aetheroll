@@ -3,7 +3,7 @@
 import React, { useRef, useEffect, useState } from "react";
 import { Play, Check, Star, MapPin, User, Loader2, Image as ImageIcon } from "lucide-react";
 import { drawBlurHashToCanvas } from "@/lib/blurhash";
-import { getApiBaseUrl } from "@/lib/config";
+import { getApiBaseUrl, getMediaStreamUrl, getMediaThumbnailUrl } from "@/lib/config";
 
 export interface MediaItem {
   id: string;
@@ -165,7 +165,7 @@ export function MediaCard({
       {/* 2. Static Thumbnail Image */}
       {!imageError ? (
         <img
-          src={customThumb || `${getApiBaseUrl()}/api/media/${item.id}/thumbnail`}
+          src={customThumb || getMediaThumbnailUrl(item.id)}
           alt="Media"
           loading="lazy"
           onLoad={() => setImageLoaded(true)}
@@ -207,8 +207,8 @@ export function MediaCard({
               el.defaultMuted = true;
             }
           }}
-          src={`${getApiBaseUrl()}/api/stream?media_id=${item.id}`}
-          poster={customThumb || `${getApiBaseUrl()}/api/media/${item.id}/thumbnail`}
+          src={getMediaStreamUrl(item.id)}
+          poster={customThumb || getMediaThumbnailUrl(item.id)}
           autoPlay
           muted
           loop

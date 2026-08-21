@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { streamSSE } from "hono/streaming";
 import QRCode from "qrcode";
@@ -164,18 +164,35 @@ authRouter.get("/qr-stream", async (c) => {
   });
 });
 
+function getAuthCookieOptions(c: Context) {
+  const host = c.req.header("host") || "";
+  const origin = c.req.header("origin") || "";
+  const isProd = process.env.NODE_ENV === "production" || host.includes("builtbyshiva.com") || host.includes("workers.dev");
+  const isBuiltByShiva = host.includes("builtbyshiva.com") || origin.includes("builtbyshiva.com");
+
+  return {
+    path: "/",
+    httpOnly: true,
+    secure: isProd,
+    sameSite: "None" as const,
+    domain: isBuiltByShiva ? ".builtbyshiva.com" : undefined,
+    maxAge: 30 * 24 * 60 * 60,
+  };
+}
+
 /**
  * POST /api/auth/session
- * Sets the HttpOnly session cookie after WebSocket / SSE authentication
+ * Establishes an HttpOnly session cookie from client-provided session token
  */
 authRouter.post("/session", async (c) => {
   try {
-    const body = await c.req.json().catch(() => ({}));
-    const sessionToken = body?.sessionToken;
-    if (!sessionToken) return c.json({ error: "sessionToken required" }, 400);
+    const { sessionToken } = await c.req.json();
+    if (!sessionToken) {
+      return c.json({ error: "sessionToken required" }, 400);
+    }
 
     const parsed = extractSessionToken(sessionToken);
-    if (!parsed || !parsed.sessionId) {
+    if (!parsed) {
       return c.json({ error: "Invalid session token format" }, 400);
     }
 
@@ -190,13 +207,7 @@ authRouter.post("/session", async (c) => {
       return c.json({ error: "Invalid or expired session token" }, 401);
     }
 
-    setCookie(c, "tg_session", sessionToken, {
-      path: "/",
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "Lax",
-      maxAge: 30 * 24 * 60 * 60,
-    });
+    setCookie(c, "tg_session", sessionToken, getAuthCookieOptions(c));
 
     return c.json({ success: true });
   } catch (error: any) {
@@ -238,9 +249,8 @@ authRouter.get("/qr", async (c) => {
     return forwardToAuthDO(c);
   }
 
-  // Local development fallback
+  // Local development fallback using long-poll SSE / Memory Session
   try {
-    cleanupExpiredLoginSessions();
     const { token, expires, client, tokenBuffer } = await startQrLogin(c.env);
     const qrId = crypto.randomUUID();
 
@@ -250,22 +260,18 @@ authRouter.get("/qr", async (c) => {
       expires,
     });
 
-    // Generate pure SVG QR code (zero canvas dependencies, 100% Cloudflare Worker compatible)
     const qrSvg = await QRCode.toString(token, {
       type: "svg",
       width: 280,
       margin: 2,
-      color: {
-        dark: "#000000",
-        light: "#ffffff",
-      },
+      color: { dark: "#000000", light: "#ffffff" },
     });
-    const qrImageDataUrl = `data:image/svg+xml;utf8,${encodeURIComponent(qrSvg)}`;
+    const qrImage = `data:image/svg+xml;utf8,${encodeURIComponent(qrSvg)}`;
 
     return c.json({
       qrId,
       qrUrl: token,
-      qrImage: qrImageDataUrl,
+      qrImage,
       expires,
     });
   } catch (error: any) {
@@ -334,13 +340,7 @@ authRouter.post("/qr/check", async (c) => {
       );
 
       // Set HttpOnly cookie with composite token
-      setCookie(c, "tg_session", sessionToken, {
-        path: "/",
-        httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: "Lax",
-        maxAge: 30 * 24 * 60 * 60,
-      });
+      setCookie(c, "tg_session", sessionToken, getAuthCookieOptions(c));
 
       // Cleanup memory session
       activeLoginSessions.delete(qrId);
@@ -373,8 +373,11 @@ authRouter.get("/me", async (c) => {
     return c.json({ authenticated: false }, 401);
   }
 
+  const parsed = extractSessionToken(c);
+
   return c.json({
     authenticated: true,
+    sessionToken: parsed?.fullToken || undefined,
     user: {
       id: auth.userId,
       telegramUserId: auth.telegramUserId,
