@@ -3,6 +3,7 @@
 import React, { useRef, useEffect, useState } from "react";
 import { Play, Check, Star, MapPin, User, Loader2, Image as ImageIcon } from "lucide-react";
 import { drawBlurHashToCanvas } from "@/lib/blurhash";
+import { getApiBaseUrl } from "@/lib/config";
 
 export interface MediaItem {
   id: string;
@@ -164,7 +165,7 @@ export function MediaCard({
       {/* 2. Static Thumbnail Image */}
       {!imageError ? (
         <img
-          src={customThumb || `/api/media/${item.id}/thumbnail`}
+          src={customThumb || `${getApiBaseUrl()}/api/media/${item.id}/thumbnail`}
           alt="Media"
           loading="lazy"
           onLoad={() => setImageLoaded(true)}
@@ -199,9 +200,15 @@ export function MediaCard({
       {/* 3. Live Video Hover Stream (4 seconds loop with zero black flash) */}
       {isVideo && isPlayingPreview && (
         <video
-          ref={videoRef}
-          src={`/api/stream?media_id=${item.id}`}
-          poster={customThumb || `/api/media/${item.id}/thumbnail`}
+          ref={(el) => {
+            (videoRef as any).current = el;
+            if (el) {
+              el.muted = true;
+              el.defaultMuted = true;
+            }
+          }}
+          src={`${getApiBaseUrl()}/api/stream?media_id=${item.id}`}
+          poster={customThumb || `${getApiBaseUrl()}/api/media/${item.id}/thumbnail`}
           autoPlay
           muted
           loop
