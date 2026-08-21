@@ -35,6 +35,18 @@ export class TelegramAuthDO {
     mimeType: string;
     expiresAt: number;
   }>;
+  mediaLocationCache: Map<string, { fileLocation: any; dcId?: number; expires: number }>;
+  inFlightPrefetches: Map<string, Promise<Buffer | null>>;
+  prefetchedChunks: Map<string, { buffer: Buffer; expires: number }>;
+  recentLogs: Array<{
+    id: string;
+    timestamp: number;
+    category: "EDGE_CACHE" | "STREAM" | "PREFETCH" | "UPLOAD" | "MTPROTO" | "RAM" | "AUTH";
+    level: "info" | "success" | "warn" | "error";
+    message: string;
+    meta?: any;
+  }>;
+  logStreamControllers: Set<ReadableStreamDefaultController>;
 
   constructor(state: any, env: any) {
     this.state = state;
@@ -42,6 +54,79 @@ export class TelegramAuthDO {
     this.activeSessions = new Map();
     this.userClients = new Map();
     this.uploadSessions = new Map();
+    this.mediaLocationCache = new Map();
+    this.inFlightPrefetches = new Map();
+    this.prefetchedChunks = new Map();
+    this.recentLogs = [];
+    this.logStreamControllers = new Set();
+  }
+
+  isTelemetryActive(envObj?: any): boolean {
+    const flag =
+      envObj?.ENABLE_TELEMETRY ??
+      this.env?.ENABLE_TELEMETRY ??
+      process.env?.ENABLE_TELEMETRY ??
+      process.env?.NEXT_PUBLIC_ENABLE_TELEMETRY;
+    if (flag === true || flag === 1) return true;
+    if (typeof flag === "string") {
+      const lower = flag.trim().toLowerCase();
+      return lower === "true" || lower === "1" || lower === "yes" || lower === "enabled";
+    }
+    return false;
+  }
+
+  logEvent(
+    category: "EDGE_CACHE" | "STREAM" | "PREFETCH" | "UPLOAD" | "MTPROTO" | "RAM" | "AUTH",
+    level: "info" | "success" | "warn" | "error",
+    message: string,
+    meta?: any,
+    forwardToCentral: boolean = true
+  ) {
+    if (!this.isTelemetryActive(this.env)) {
+      return; // 0 memory allocation, 0 CPU overhead, 0 data leakage
+    }
+
+    const entry = {
+      id: Math.random().toString(36).substring(2, 9),
+      timestamp: Date.now(),
+      category,
+      level,
+      message,
+      meta,
+    };
+    this.recentLogs.push(entry);
+    if (this.recentLogs.length > 250) {
+      this.recentLogs.shift();
+    }
+    const data = `data: ${JSON.stringify(entry)}\n\n`;
+    const encoded = new TextEncoder().encode(data);
+    for (const controller of Array.from(this.logStreamControllers)) {
+      try {
+        controller.enqueue(encoded);
+      } catch {
+        this.logStreamControllers.delete(controller);
+      }
+    }
+
+    // Only forward to central global_telemetry DO if forwardToCentral is true AND we are not already global_telemetry
+    if (forwardToCentral) {
+      try {
+        const authDo = this.env?.AUTH_DO;
+        if (authDo && typeof authDo.idFromName === "function") {
+          const centralId = authDo.idFromName("global_telemetry");
+          if (this.state?.id && this.state.id.toString() !== centralId.toString()) {
+            const telemetryDo = authDo.get(centralId);
+            telemetryDo
+              .fetch("https://telegram-gallery.cache/log", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(entry),
+              })
+              .catch(() => {});
+          }
+        }
+      } catch {}
+    }
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -51,6 +136,7 @@ export class TelegramAuthDO {
     const headerApiHash = request.headers.get("x-tg-api-hash");
     const headerTestMode = request.headers.get("x-tg-test-mode");
     const headerEncKey = request.headers.get("x-tg-enc-key");
+    const headerTelemetry = request.headers.get("x-enable-telemetry");
 
     const effectiveEnv = {
       ...this.env,
@@ -58,7 +144,69 @@ export class TelegramAuthDO {
       TELEGRAM_API_HASH: headerApiHash || this.env?.TELEGRAM_API_HASH || process.env?.TELEGRAM_API_HASH,
       TELEGRAM_TEST_MODE: headerTestMode || this.env?.TELEGRAM_TEST_MODE || process.env?.TELEGRAM_TEST_MODE,
       SESSION_ENCRYPTION_KEY: headerEncKey || this.env?.SESSION_ENCRYPTION_KEY || process.env?.SESSION_ENCRYPTION_KEY,
+      ENABLE_TELEMETRY: headerTelemetry || this.env?.ENABLE_TELEMETRY || process.env?.ENABLE_TELEMETRY,
     };
+
+    // 0. Live Log Stream (Server-Sent Events) - Strictly gated behind isTelemetryActive
+    if (url.pathname.includes("/logs/stream") || url.pathname.endsWith("/stream-logs")) {
+      if (!this.isTelemetryActive(effectiveEnv)) {
+        return new Response("Not Found", { status: 404 });
+      }
+
+      const stream = new ReadableStream({
+        start: (controller) => {
+          this.logStreamControllers.add(controller);
+          // Immediately flush recent backlog
+          for (const log of this.recentLogs) {
+            controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(log)}\n\n`));
+          }
+
+          // Initial welcome event
+          if (this.recentLogs.length === 0) {
+            controller.enqueue(
+              new TextEncoder().encode(
+                `data: ${JSON.stringify({
+                  id: "init",
+                  timestamp: Date.now(),
+                  category: "SYSTEM",
+                  level: "info",
+                  message: "Connected to Live Cloudflare Telemetry Stream",
+                })}\n\n`
+              )
+            );
+          }
+        },
+        cancel: (controller) => {
+          this.logStreamControllers.delete(controller);
+        },
+      });
+
+      const origin = request.headers.get("origin") || "*";
+      return new Response(stream, {
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          "Connection": "keep-alive",
+          "Access-Control-Allow-Origin": origin,
+          "Access-Control-Allow-Credentials": "true",
+        },
+      });
+    }
+
+    // 0b. External Log Ingestion - Strictly gated behind isTelemetryActive (non-recursive)
+    if (url.pathname.endsWith("/log") && request.method === "POST") {
+      if (!this.isTelemetryActive(effectiveEnv)) {
+        return new Response("Not Found", { status: 404 });
+      }
+
+      const body = (await request.json().catch(() => ({}))) as any;
+      if (body?.category && body?.message) {
+        this.logEvent(body.category, body.level || "info", body.message, body.meta, false);
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
 
     // 1. Upload WebSocket stream endpoint
     if (url.pathname.includes("/upload/ws") || (url.pathname.includes("/upload") && request.headers.get("Upgrade") === "websocket")) {
@@ -102,12 +250,12 @@ export class TelegramAuthDO {
       } as any);
     }
 
-    // 3. HTTP QR Generation endpoint
+    // 5. HTTP QR Generation endpoint
     if (url.pathname.endsWith("/qr") && request.method === "GET") {
       return this.handleQrHttp(effectiveEnv);
     }
 
-    // 4. HTTP QR Check polling endpoint
+    // 6. HTTP QR Check polling endpoint
     if (url.pathname.endsWith("/check") && request.method === "POST") {
       const body = (await request.json().catch(() => ({}))) as any;
       return this.handleCheckHttp(body?.qrId, effectiveEnv);
@@ -404,6 +552,157 @@ export class TelegramAuthDO {
     });
   }
 
+  private async resolveMediaLocation(client: any, item: any): Promise<any> {
+    const now = Date.now();
+    const cached = this.mediaLocationCache.get(item.id);
+    if (cached && cached.expires > now) {
+      return cached.fileLocation;
+    }
+
+    let targetPeer: any = item.telegram_channel_id;
+    if (item.telegram_channel_id !== "me") {
+      try { targetPeer = await client.getInputEntity(item.telegram_channel_id); }
+      catch { try { targetPeer = await client.getEntity(item.telegram_channel_id); } catch {} }
+    }
+
+    const msgId = Number(item.telegram_message_id);
+    const messages = await client.getMessages(targetPeer, { ids: [msgId] });
+    const msg = messages[0];
+    if (!msg || !msg.media) return null;
+
+    const doc = msg.media.document || (msg.media.className === "MessageMediaDocument" ? msg.media.document : null);
+    const photo = msg.media.photo || (msg.media.className === "MessageMediaPhoto" ? msg.media.photo : null);
+
+    let fileLocation: any = null;
+    if (doc && doc.id && doc.accessHash && doc.fileReference) {
+      fileLocation = new Api.InputDocumentFileLocation({
+        id: doc.id,
+        accessHash: doc.accessHash,
+        fileReference: doc.fileReference,
+        thumbSize: "",
+      });
+    } else if (photo && photo.id && photo.accessHash && photo.fileReference) {
+      const sizes = photo.sizes || [];
+      const largest = sizes[sizes.length - 1];
+      fileLocation = new Api.InputPhotoFileLocation({
+        id: photo.id,
+        accessHash: photo.accessHash,
+        fileReference: photo.fileReference,
+        thumbSize: largest?.type || "x",
+      });
+    }
+
+    if (fileLocation) {
+      this.mediaLocationCache.set(item.id, {
+        fileLocation,
+        expires: now + 60 * 60 * 1000, // 1 hour TTL
+      });
+    }
+
+    return fileLocation;
+  }
+
+  private storeChunkInRam(chunkKey: string, buffer: Buffer) {
+    const now = Date.now();
+    // Keep max 8 chunks in memory (~4MB max) to stay well within Cloudflare Worker memory limits
+    if (this.prefetchedChunks.size >= 8) {
+      const oldestKey = this.prefetchedChunks.keys().next().value;
+      if (oldestKey) this.prefetchedChunks.delete(oldestKey);
+    }
+    this.prefetchedChunks.set(chunkKey, {
+      buffer,
+      expires: now + 3 * 60 * 1000, // 3 minutes TTL
+    });
+  }
+
+  private async fetchSingleChunk(
+    client: any,
+    item: any,
+    fileLocation: any,
+    alignedOffset: number,
+    r2: any
+  ): Promise<Buffer | null> {
+    const chunkKey = `${item.id}:${alignedOffset}`;
+    const now = Date.now();
+
+    // 1. Check RAM Cache (0ms)
+    const ramCached = this.prefetchedChunks.get(chunkKey);
+    if (ramCached && ramCached.expires > now) {
+      this.logEvent("RAM", "success", `⚡ [RAM Hit 0ms] Chunk offset=${alignedOffset} (512KB)`);
+      return ramCached.buffer;
+    }
+
+    // 2. Check R2 Cache (sub-15ms)
+    const chunkR2Key = `chunks/${item.id}/${alignedOffset}.bin`;
+    try {
+      const r2Start = Date.now();
+      const r2Cached: any = await r2.get(chunkR2Key);
+      if (r2Cached) {
+        const buf = Buffer.isBuffer(r2Cached)
+          ? r2Cached
+          : Buffer.from(typeof r2Cached.arrayBuffer === "function" ? await r2Cached.arrayBuffer() : r2Cached);
+        this.storeChunkInRam(chunkKey, buf);
+        this.logEvent("RAM", "info", `📦 [R2 Hit ${Date.now() - r2Start}ms] Chunk offset=${alignedOffset} (512KB)`);
+        return buf;
+      }
+    } catch {}
+
+    // 3. Check In-Flight Promise (deduplication of parallel requests)
+    const existingInFlight = this.inFlightPrefetches.get(chunkKey);
+    if (existingInFlight) {
+      this.logEvent("PREFETCH", "info", `🔗 [In-Flight Promise Share] Joining existing fetch for offset=${alignedOffset}`);
+      return existingInFlight;
+    }
+
+    // 4. Launch new MTProto GetFile RPC
+    const fetchPromise = (async (): Promise<Buffer | null> => {
+      const mtprotoStart = Date.now();
+      try {
+        const CHUNK_SIZE = 512 * 1024;
+        let chunkBuf: Buffer | null = null;
+
+        if (fileLocation) {
+          try {
+            this.logEvent("MTPROTO", "warn", `📡 [Telegram RPC] GetFile offset=${alignedOffset} (512KB)...`);
+            const req = new Api.upload.GetFile({
+              location: fileLocation,
+              offset: toBigInt(alignedOffset),
+              limit: CHUNK_SIZE,
+            });
+            const res: any = await Promise.race([
+              client.invoke(req),
+              new Promise((_, reject) => setTimeout(() => reject(new Error("GetFile MTProto timeout")), 8000)),
+            ]);
+            if (res && res.bytes) {
+              chunkBuf = Buffer.from(res.bytes);
+              this.logEvent("MTPROTO", "success", `✅ [Telegram RPC] Received 512KB in ${Date.now() - mtprotoStart}ms (offset=${alignedOffset})`);
+            }
+          } catch (invokeErr: any) {
+            this.logEvent("MTPROTO", "error", `❌ [Telegram RPC Error offset=${alignedOffset}]: ${invokeErr?.message}`);
+            // Invalidate location cache if Telegram file reference expired
+            if (invokeErr?.errorMessage === "FILE_REFERENCE_EXPIRED") {
+              this.mediaLocationCache.delete(item.id);
+            }
+          }
+        }
+
+        if (chunkBuf && chunkBuf.length > 0) {
+          this.storeChunkInRam(chunkKey, chunkBuf);
+          // Async background R2 write (0ms impact on stream)
+          r2.put(chunkR2Key, chunkBuf, "application/octet-stream").catch(() => {});
+          return chunkBuf;
+        }
+
+        return null;
+      } finally {
+        this.inFlightPrefetches.delete(chunkKey);
+      }
+    })();
+
+    this.inFlightPrefetches.set(chunkKey, fetchPromise);
+    return fetchPromise;
+  }
+
   private async handleStream(request: Request, envObj: any): Promise<Response> {
     try {
       const url = new URL(request.url);
@@ -435,11 +734,9 @@ export class TelegramAuthDO {
 
       const totalSize = Number(item.file_size_bytes) || 0;
       const rangeHeader = request.headers.get("range");
-
-      // 1. Check R2 Cache first for instant 0ms chunk streaming
       const r2 = getR2Storage(envObj?.R2_BUCKET);
 
-      // 2. Reuse warm, persistent MTProto client stored in Durable Object RAM
+      // Reuse warm MTProto client in DO RAM
       let clientRecord = this.userClients.get(session.user_id);
       let client = clientRecord?.client;
 
@@ -449,19 +746,24 @@ export class TelegramAuthDO {
         this.userClients.set(session.user_id, { client, lastUsed: Date.now() });
       }
 
-      let targetPeer: any = item.telegram_channel_id;
-      if (item.telegram_channel_id !== "me") {
-        try { targetPeer = await client.getInputEntity(item.telegram_channel_id); }
-        catch { try { targetPeer = await client.getEntity(item.telegram_channel_id); } catch {} }
+      // 1. Resolve Media Location (cached in RAM for 1 hour)
+      let fileLocation = await this.resolveMediaLocation(client, item);
+      if (!fileLocation) {
+        this.mediaLocationCache.delete(item.id);
+        fileLocation = await this.resolveMediaLocation(client, item);
+        if (!fileLocation) return new Response("Media not found in Telegram", { status: 404 });
       }
 
-      const msgId = Number(item.telegram_message_id);
-      const messages = await client.getMessages(targetPeer, { ids: [msgId] });
-      const msg = messages[0];
-      if (!msg || !msg.media) return new Response("Media not found in Telegram", { status: 404 });
-
       if (!rangeHeader) {
-        // Full media download
+        // Full media download fallback
+        const msgId = Number(item.telegram_message_id);
+        let targetPeer: any = item.telegram_channel_id;
+        if (item.telegram_channel_id !== "me") {
+          try { targetPeer = await client.getInputEntity(item.telegram_channel_id); }
+          catch { try { targetPeer = await client.getEntity(item.telegram_channel_id); } catch {} }
+        }
+        const messages = await client.getMessages(targetPeer, { ids: [msgId] });
+        const msg = messages[0];
         const fullBuffer = await client.downloadMedia(msg.media, {});
         return new Response(fullBuffer as any, {
           status: 200,
@@ -475,7 +777,7 @@ export class TelegramAuthDO {
         });
       }
 
-      // Parse Range header: `bytes=start-end`
+      // 2. Parse Range header: `bytes=start-end`
       const parts = rangeHeader.replace(/bytes=/, "").split("-");
       let start = parseInt(parts[0], 10);
       let requestedEnd = parts[1] ? parseInt(parts[1], 10) : undefined;
@@ -496,82 +798,50 @@ export class TelegramAuthDO {
       }
 
       const alignedStart = Math.floor(start / CHUNK_SIZE) * CHUNK_SIZE;
-      const chunkR2Key = `chunks/${item.id}/${alignedStart}.bin`;
+      this.logEvent("STREAM", "info", `🎬 [Stream Request] ${item.id.slice(0, 8)}... Range: ${start}-${end}/${totalSize} (${((end - start + 1) / 1024).toFixed(0)}KB)`);
 
-      // Fast Path: Fetch chunk from R2 if previously streamed
-      let chunkBuffer: Buffer | null = null;
-      try {
-        const r2Cached: any = await r2.get(chunkR2Key);
-        if (r2Cached) {
-          chunkBuffer = Buffer.isBuffer(r2Cached)
-            ? r2Cached
-            : Buffer.from(typeof r2Cached.arrayBuffer === "function" ? await r2Cached.arrayBuffer() : r2Cached);
+      // 3. Speculative Read-Ahead Prefetch
+      // Next chunk (K + 1)
+      const nextAlignedStart = alignedStart + CHUNK_SIZE;
+      if (nextAlignedStart < totalSize) {
+        this.logEvent("PREFETCH", "info", `🚀 [Read-Ahead] Prefetching Chunk K+1 (offset=${nextAlignedStart})`);
+        this.fetchSingleChunk(client, item, fileLocation, nextAlignedStart, r2).catch(() => {});
+      }
+
+      // Initial Playback Optimization: Speculatively prefetch Tail chunk(s) containing MP4 `moov` atom
+      if (alignedStart === 0 && totalSize > CHUNK_SIZE) {
+        const lastChunkOffset = Math.floor((totalSize - 1) / CHUNK_SIZE) * CHUNK_SIZE;
+        if (lastChunkOffset > 0 && lastChunkOffset !== nextAlignedStart) {
+          this.logEvent("PREFETCH", "success", `🎯 [Tail moov] Speculative prefetch for atom index (offset=${lastChunkOffset})`);
+          this.fetchSingleChunk(client, item, fileLocation, lastChunkOffset, r2).catch(() => {});
         }
-      } catch {}
-
-      if (!chunkBuffer) {
-        // Fetch 512KB slice from Telegram MTProto on warm persistent connection
-        const doc = msg.media.document || (msg.media.className === "MessageMediaDocument" ? msg.media.document : null);
-        const photo = msg.media.photo || (msg.media.className === "MessageMediaPhoto" ? msg.media.photo : null);
-
-        let fileLocation: any = null;
-        if (doc && doc.id && doc.accessHash && doc.fileReference) {
-          fileLocation = new Api.InputDocumentFileLocation({
-            id: doc.id,
-            accessHash: doc.accessHash,
-            fileReference: doc.fileReference,
-            thumbSize: "",
-          });
-        } else if (photo && photo.id && photo.accessHash && photo.fileReference) {
-          const sizes = photo.sizes || [];
-          const largest = sizes[sizes.length - 1];
-          fileLocation = new Api.InputPhotoFileLocation({
-            id: photo.id,
-            accessHash: photo.accessHash,
-            fileReference: photo.fileReference,
-            thumbSize: largest?.type || "x",
-          });
-        }
-
-        if (fileLocation) {
-          try {
-            const req = new Api.upload.GetFile({
-              location: fileLocation,
-              offset: toBigInt(alignedStart),
-              limit: CHUNK_SIZE,
-            });
-            const res: any = await client.invoke(req);
-            if (res && res.bytes) {
-              chunkBuffer = Buffer.from(res.bytes);
-            }
-          } catch (invokeErr) {
-            console.warn("[TelegramAuthDO Stream] Direct GetFile warning:", invokeErr);
-          }
-        }
-
-        // Fallback to client.downloadMedia if direct RPC failed
-        if (!chunkBuffer) {
-          try {
-            const fullBuf = await client.downloadMedia(msg.media, {});
-            if (fullBuf && fullBuf.length > 0) {
-              const b = Buffer.from(fullBuf);
-              chunkBuffer = b.subarray(alignedStart, alignedStart + CHUNK_SIZE);
-            }
-          } catch (dlErr) {
-            console.warn("[TelegramAuthDO Stream] downloadMedia fallback error:", dlErr);
-          }
-        }
-
-        if (chunkBuffer && chunkBuffer.length > 0) {
-          // Cache in R2 in background for 0ms future playback
-          r2.put(chunkR2Key, chunkBuffer, "application/octet-stream").catch(() => {});
+        // If file is large (> 5MB), also prefetch second-to-last chunk in case moov spans > 512KB
+        if (lastChunkOffset > CHUNK_SIZE * 2) {
+          const secondLastChunkOffset = lastChunkOffset - CHUNK_SIZE;
+          this.fetchSingleChunk(client, item, fileLocation, secondLastChunkOffset, r2).catch(() => {});
         }
       }
 
+      // 4. Fetch the requested chunk K
+      const chunkBuffer = await this.fetchSingleChunk(client, item, fileLocation, alignedStart, r2);
+      if (!chunkBuffer || chunkBuffer.length === 0) {
+        return new Response("Chunk unavailable", { status: 502 });
+      }
+
       const sliceStart = start - alignedStart;
-      const sliceEnd = Math.min(sliceStart + (end - start + 1), chunkBuffer?.length || 0);
-      const exactSlice = chunkBuffer ? chunkBuffer.subarray(sliceStart, sliceEnd) : Buffer.alloc(0);
+      const sliceEnd = Math.min(sliceStart + (end - start + 1), chunkBuffer.length);
+      const exactSlice = chunkBuffer.subarray(sliceStart, sliceEnd);
+      if (exactSlice.length === 0) {
+        return new Response(null, {
+          status: 416,
+          headers: { "Content-Range": `bytes */${totalSize}` },
+        });
+      }
       const actualEnd = start + exactSlice.length - 1;
+
+      const videoMimeType = item.file_type === "video"
+        ? (item.mime_type === "video/webm" ? "video/webm" : "video/mp4")
+        : (item.mime_type || "image/jpeg");
 
       return new Response(exactSlice as any, {
         status: 206,
@@ -579,7 +849,8 @@ export class TelegramAuthDO {
           "Content-Range": `bytes ${start}-${actualEnd}/${totalSize}`,
           "Accept-Ranges": "bytes",
           "Content-Length": exactSlice.length.toString(),
-          "Content-Type": item.mime_type || "video/mp4",
+          "Content-Type": videoMimeType,
+          "Cache-Control": "public, max-age=31536000, immutable",
           "Access-Control-Allow-Origin": "*",
           "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges",
         },

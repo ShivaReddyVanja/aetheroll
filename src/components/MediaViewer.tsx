@@ -133,6 +133,12 @@ export function MediaViewer({
               autoPlay
               playsInline
               preload="auto"
+              onCanPlay={(e) => {
+                const playPromise = e.currentTarget.play();
+                if (playPromise !== undefined) {
+                  playPromise.catch(() => {});
+                }
+              }}
               className="max-h-[85vh] max-w-[90vw] rounded-lg shadow-2xl object-contain bg-black"
             />
           ) : (

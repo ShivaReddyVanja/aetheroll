@@ -10,6 +10,7 @@ import { UploaderModal } from "@/components/UploaderModal";
 import { SettingsModal } from "@/components/SettingsModal";
 import { TimelineScrubber } from "@/components/TimelineScrubber";
 import { ChannelPickerModal } from "@/components/ChannelPickerModal";
+import { DevLogHUD } from "@/components/DevLogHUD";
 import {
   Search,
   Plus,
@@ -549,6 +550,9 @@ export default function GalleryPage() {
           activeChannelIds={new Set(channels.map((c) => c.id))}
         />
       )}
+
+      {/* Real-time Dev Engine Telemetry HUD */}
+      <DevLogHUD />
     </div>
   );
 }

@@ -9,6 +9,7 @@ import { getR2Storage } from "../lib/r2";
 import { createTelegramClient, getConnectedClient, getDefaultTelegramConfig } from "../lib/telegram";
 import { emitGalleryEvent } from "../lib/ledger";
 import { Api, utils } from "telegram";
+import { isTelemetryEnabled } from "./logs";
 
 export const mediaRouter = new Hono();
 
@@ -523,11 +524,56 @@ mediaRouter.post("/delete", async (c) => {
 
 /**
  * GET /api/media/:id/thumbnail
- * Serves cached thumbnail from R2 or decodes stripped bytes instantly from Telegram
+ * Serves cached thumbnail from Cloudflare Edge Cache, R2, or decodes stripped bytes instantly from Telegram
  */
 mediaRouter.get("/:id/thumbnail", async (c) => {
   try {
     const mediaId = c.req.param("id");
+    if (!mediaId) return c.text("Not Found", 404);
+
+    // 1. Check Cloudflare Edge Cache (Sub-2ms Delivery at local Edge PoP)
+    const workerOrigin = new URL(c.req.url).origin;
+    const cacheKeyUrl = `${workerOrigin}/api/media/cache/${encodeURIComponent(mediaId)}/thumbnail`;
+    const cacheKey = new Request(cacheKeyUrl, { method: "GET" });
+    const cache = (caches as any)?.default;
+
+    if (cache) {
+      try {
+        const cachedRes = await cache.match(cacheKey);
+        if (cachedRes) {
+          const hitHeaders = new Headers(cachedRes.headers);
+          hitHeaders.set("x-edge-cache", "HIT");
+
+          // Log Edge HIT to DO telemetry in background only when enabled
+          const authDo = (c.env as any)?.AUTH_DO;
+          if (authDo && typeof authDo.idFromName === "function" && isTelemetryEnabled(c.env)) {
+            const doId = authDo.idFromName("global_telemetry");
+            const stub = authDo.get(doId);
+            const logReq = new Request(`${workerOrigin}/api/logs/log`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                category: "EDGE_CACHE",
+                level: "success",
+                message: `🟢 [Thumbnail Edge HIT ⚡ 1ms] ${mediaId.slice(0, 8)}...`,
+                meta: { mediaId, hit: true },
+              }),
+            });
+            if ((c.executionCtx as any)?.waitUntil) {
+              c.executionCtx.waitUntil(stub.fetch(logReq).catch(() => {}));
+            }
+          }
+
+          return new Response(cachedRes.body, {
+            status: cachedRes.status,
+            headers: hitHeaders,
+          });
+        }
+      } catch (cacheErr) {
+        console.warn("[EdgeCache] Thumbnail match error:", cacheErr);
+      }
+    }
+
     const db = getDb((c.env as any)?.DB);
     const r2 = getR2Storage((c.env as any)?.R2_BUCKET);
 
@@ -540,11 +586,13 @@ mediaRouter.get("/:id/thumbnail", async (c) => {
 
     if (!item) return c.text("Not Found", 404);
 
-    // 1. Check R2 Cache
+    let response: Response | null = null;
+
+    // 2. Check R2 Cache
     if (item.thumbnail_r2_key) {
       const cached = await r2.get(item.thumbnail_r2_key);
       if (cached) {
-        return new Response(cached as any, {
+        response = new Response(cached as any, {
           headers: {
             "Content-Type": "image/jpeg",
             "Cache-Control": "public, max-age=31536000, immutable",
@@ -554,89 +602,121 @@ mediaRouter.get("/:id/thumbnail", async (c) => {
       }
     }
 
-    // 2. Fetch from Telegram on cache miss
-    const token = getCookie(c, "tg_session");
-    if (!token) return c.text("Unauthorized", 401);
+    // 3. Fallback: Fetch from Telegram on cache miss
+    if (!response) {
+      const token = getCookie(c, "tg_session");
+      if (!token) return c.text("Unauthorized", 401);
 
-    const userRow = await db.get(
-      `SELECT u.session_string FROM user_sessions s
-       JOIN users u ON u.id = s.user_id
-       WHERE s.id = ?`,
-      [token]
-    );
+      const userRow = await db.get(
+        `SELECT u.session_string FROM user_sessions s
+         JOIN users u ON u.id = s.user_id
+         WHERE s.id = ?`,
+        [token]
+      );
 
-    if (!userRow) return c.text("Unauthorized", 401);
+      if (!userRow) return c.text("Unauthorized", 401);
 
-    const client = await getConnectedClient(
-      await decryptSession(userRow.session_string, (c.env as any)?.SESSION_ENCRYPTION_KEY),
-      getDefaultTelegramConfig(c.env)
-    );
+      const client = await getConnectedClient(
+        await decryptSession(userRow.session_string, (c.env as any)?.SESSION_ENCRYPTION_KEY),
+        getDefaultTelegramConfig(c.env)
+      );
 
-    let targetPeer: any = item.telegram_channel_id;
-    if (item.telegram_channel_id === "me") {
-      targetPeer = "me";
-    } else {
-      try {
-        targetPeer = await client.getInputEntity(item.telegram_channel_id);
-      } catch {
+      let targetPeer: any = item.telegram_channel_id;
+      if (item.telegram_channel_id === "me") {
+        targetPeer = "me";
+      } else {
         try {
-          targetPeer = await client.getEntity(item.telegram_channel_id);
-        } catch {}
+          targetPeer = await client.getInputEntity(item.telegram_channel_id);
+        } catch {
+          try {
+            targetPeer = await client.getEntity(item.telegram_channel_id);
+          } catch {}
+        }
+      }
+
+      const msgId = Number(item.telegram_message_id);
+      const messages = await client.getMessages(targetPeer, { ids: [msgId] });
+      const msg = messages[0];
+
+      if (!msg || !msg.media) return c.text("Media not found on Telegram", 404);
+
+      let thumbBuffer: Buffer | null = null;
+
+      // Fast Path: Extract instant stripped thumbnail (0ms CPU, 0 network requests)
+      const photoSizes = (msg.media as any)?.photo?.sizes || [];
+      const docThumbs = (msg.media as any)?.document?.thumbs || [];
+      const stripped = [...photoSizes, ...docThumbs].find(
+        (s: any) => s instanceof Api.PhotoStrippedSize || s.className === "PhotoStrippedSize" || s.bytes
+      );
+
+      if (stripped && stripped.bytes) {
+        try {
+          thumbBuffer = Buffer.from(utils.strippedPhotoToJpg(stripped.bytes));
+        } catch (stripErr) {
+          console.warn("[Thumbnail] Stripped JPEG conversion fallback:", stripErr);
+        }
+      }
+
+      // Fallback: download small preview thumbnail
+      if (!thumbBuffer) {
+        const downloaded = await client.downloadMedia(msg.media, {
+          thumb: 1, // Small/Medium preview size
+        });
+        if (downloaded && Buffer.isBuffer(downloaded)) {
+          thumbBuffer = downloaded;
+        }
+      }
+
+      if (thumbBuffer && Buffer.isBuffer(thumbBuffer)) {
+        const key = `thumbnails/${item.channel_id}/${item.id}.jpg`;
+        try {
+          await r2.put(key, thumbBuffer, "image/jpeg");
+          await db.run("UPDATE media_items SET thumbnail_r2_key = ? WHERE id = ?", [key, item.id]);
+        } catch (r2Err) {
+          console.warn("[Thumbnail] R2 cache write non-fatal error:", r2Err);
+        }
+
+        response = new Response(thumbBuffer as any, {
+          headers: {
+            "Content-Type": "image/jpeg",
+            "Cache-Control": "public, max-age=31536000, immutable",
+            "Access-Control-Allow-Origin": "*",
+          },
+        });
       }
     }
 
-    const msgId = Number(item.telegram_message_id);
-    const messages = await client.getMessages(targetPeer, { ids: [msgId] });
-    const msg = messages[0];
+    if (!response) {
+      return c.text("Failed to download thumbnail", 500);
+    }
 
-    if (!msg || !msg.media) return c.text("Media not found on Telegram", 404);
-
-    let thumbBuffer: Buffer | null = null;
-
-    // Fast Path: Extract instant stripped thumbnail (0ms CPU, 0 network requests)
-    const photoSizes = (msg.media as any)?.photo?.sizes || [];
-    const docThumbs = (msg.media as any)?.document?.thumbs || [];
-    const stripped = [...photoSizes, ...docThumbs].find(
-      (s: any) => s instanceof Api.PhotoStrippedSize || s.className === "PhotoStrippedSize" || s.bytes
-    );
-
-    if (stripped && stripped.bytes) {
+    // 4. Save to Cloudflare Edge Cache in Background
+    if (cache && response.status === 200) {
       try {
-        thumbBuffer = Buffer.from(utils.strippedPhotoToJpg(stripped.bytes));
-      } catch (stripErr) {
-        console.warn("[Thumbnail] Stripped JPEG conversion fallback:", stripErr);
+        const resToCache = response.clone();
+        const edgeHeaders = new Headers(resToCache.headers);
+        edgeHeaders.set("Cache-Control", "public, max-age=31536000, immutable");
+
+        const edgeResponse = new Response(resToCache.body, {
+          status: 200,
+          headers: edgeHeaders,
+        });
+
+        const putPromise = cache.put(cacheKey, edgeResponse).catch(() => {});
+        if ((c.executionCtx as any)?.waitUntil) {
+          c.executionCtx.waitUntil(putPromise);
+        }
+      } catch (putErr) {
+        console.warn("[EdgeCache] Thumbnail save error:", putErr);
       }
     }
 
-    // Fallback: download small preview thumbnail
-    if (!thumbBuffer) {
-      const downloaded = await client.downloadMedia(msg.media, {
-        thumb: 1, // Small/Medium preview size
-      });
-      if (downloaded && Buffer.isBuffer(downloaded)) {
-        thumbBuffer = downloaded;
-      }
-    }
-
-    if (thumbBuffer && Buffer.isBuffer(thumbBuffer)) {
-      const key = `thumbnails/${item.channel_id}/${item.id}.jpg`;
-      try {
-        await r2.put(key, thumbBuffer, "image/jpeg");
-        await db.run("UPDATE media_items SET thumbnail_r2_key = ? WHERE id = ?", [key, item.id]);
-      } catch (r2Err) {
-        console.warn("[Thumbnail] R2 cache write non-fatal error:", r2Err);
-      }
-
-      return new Response(thumbBuffer as any, {
-        headers: {
-          "Content-Type": "image/jpeg",
-          "Cache-Control": "public, max-age=31536000, immutable",
-          "Access-Control-Allow-Origin": "*",
-        },
-      });
-    }
-
-    return c.text("Failed to download thumbnail", 500);
+    const outHeaders = new Headers(response.headers);
+    outHeaders.set("x-edge-cache", "MISS");
+    return new Response(response.body, {
+      status: response.status,
+      headers: outHeaders,
+    });
   } catch (error: any) {
     return c.text(error.message || "Thumbnail error", 500);
   }

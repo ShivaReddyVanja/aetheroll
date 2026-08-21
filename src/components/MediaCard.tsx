@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useRef, useEffect, useState } from "react";
-import { Play, Check, Star, MapPin, User } from "lucide-react";
+import { Play, Check, Star, MapPin, User, Loader2 } from "lucide-react";
 import { drawBlurHashToCanvas } from "@/lib/blurhash";
 
 export interface MediaItem {
@@ -46,6 +46,7 @@ export function MediaCard({
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
   const [isPlayingPreview, setIsPlayingPreview] = useState(false);
+  const [isVideoReady, setIsVideoReady] = useState(false);
 
   // Draw initial BlurHash canvas placeholder
   useEffect(() => {
@@ -62,6 +63,17 @@ export function MediaCard({
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (isPlayingPreview && videoRef.current) {
+      videoRef.current.muted = true;
+      videoRef.current.defaultMuted = true;
+      const playPromise = videoRef.current.play();
+      if (playPromise !== undefined) {
+        playPromise.catch(() => {});
+      }
+    }
+  }, [isPlayingPreview]);
 
   const handleMouseEnter = () => {
     if (item.file_type !== "video") return;
@@ -80,6 +92,7 @@ export function MediaCard({
 
     if (isPlayingPreview) {
       setIsPlayingPreview(false);
+      setIsVideoReady(false);
       if (videoRef.current) {
         videoRef.current.pause();
         videoRef.current.currentTime = 0;
@@ -119,7 +132,7 @@ export function MediaCard({
         }`}
       />
 
-      {/* 2. Static Thumbnail Image */}
+      {/* 2. Static Thumbnail Image (Always stays visible until video first frame renders) */}
       {!imageError && (
         <img
           src={`/api/media/${item.id}/thumbnail`}
@@ -127,29 +140,48 @@ export function MediaCard({
           loading="lazy"
           onLoad={() => setImageLoaded(true)}
           onError={() => setImageError(true)}
-          className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-200 ${
-            imageLoaded && !isPlayingPreview ? "opacity-100" : isPlayingPreview ? "opacity-0" : "opacity-0"
+          className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-300 ${
+            imageLoaded && (!isPlayingPreview || !isVideoReady) ? "opacity-100" : isVideoReady ? "opacity-0" : "opacity-100"
           }`}
         />
       )}
 
-      {/* 3. Live Video Hover Stream (4 seconds loop) */}
+      {/* 3. Live Video Hover Stream (4 seconds loop with zero black flash) */}
       {isVideo && isPlayingPreview && (
         <video
           ref={videoRef}
           src={`/api/stream?media_id=${item.id}`}
+          poster={`/api/media/${item.id}/thumbnail`}
           autoPlay
           muted
           loop
           playsInline
           preload="auto"
+          onCanPlay={(e) => {
+            e.currentTarget.muted = true;
+            e.currentTarget.play().catch(() => {});
+            setIsVideoReady(true);
+          }}
+          onPlaying={() => setIsVideoReady(true)}
+          onLoadedData={() => setIsVideoReady(true)}
           onTimeUpdate={(e) => {
             if (e.currentTarget.currentTime > 4) {
               e.currentTarget.currentTime = 0;
             }
           }}
-          className="absolute inset-0 w-full h-full object-cover z-0 transition-opacity duration-300"
+          className={`absolute inset-0 w-full h-full object-cover z-0 transition-opacity duration-300 ${
+            isVideoReady ? "opacity-100" : "opacity-0"
+          }`}
         />
+      )}
+
+      {/* 4. Loading Spinner while Video is Buffering on Hover */}
+      {isVideo && isPlayingPreview && !isVideoReady && (
+        <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
+          <div className="w-10 h-10 rounded-full bg-black/60 backdrop-blur-md flex items-center justify-center shadow-lg border border-white/10">
+            <Loader2 className="w-5 h-5 text-white animate-spin" />
+          </div>
+        </div>
       )}
 
       {/* Top Left Selection Checkmark (Google Photos Style) */}
@@ -189,15 +221,24 @@ export function MediaCard({
         </button>
       </div>
 
-      {/* Video Badge / Duration (Google Photos Top-Right / Bottom-Right) */}
+      {/* Video Badge / Duration / Loading Indicator */}
       {isVideo && (
         <div
           className={`absolute top-2.5 right-2.5 flex items-center gap-1 px-2 py-0.5 rounded-full bg-black/60 backdrop-blur-sm text-white text-[11px] font-medium tracking-wide transition-opacity z-10 ${
-            isPlayingPreview ? "opacity-30" : "opacity-100"
+            isPlayingPreview && isVideoReady ? "opacity-30" : "opacity-100"
           }`}
         >
-          <span>{item.duration_seconds ? formatDuration(item.duration_seconds) : "Video"}</span>
-          <Play className="w-3 h-3 fill-white" />
+          {isPlayingPreview && !isVideoReady ? (
+            <>
+              <span>Loading</span>
+              <Loader2 className="w-3 h-3 text-blue-400 animate-spin" />
+            </>
+          ) : (
+            <>
+              <span>{item.duration_seconds ? formatDuration(item.duration_seconds) : "Video"}</span>
+              <Play className="w-3 h-3 fill-white" />
+            </>
+          )}
         </div>
       )}
 
