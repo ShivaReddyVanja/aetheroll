@@ -140,8 +140,8 @@ export function UploaderModal({
         // 2. Client-Side EXIF Metadata
         const exif = await extractExifMetadata(file);
 
-        // 512KB chunks are strictly supported over Telegram WebSocket gateways and Cloudflare DO
-        const CHUNK_SIZE = 512 * 1024;
+        // 1MB binary WebSocket frames directly to Cloudflare Durable Object (which relays 512KB slices to MTProto)
+        const CHUNK_SIZE = 1024 * 1024;
         const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
         const sessionToken = getSessionToken();
 

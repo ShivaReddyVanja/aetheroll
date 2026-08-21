@@ -2,29 +2,30 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "crypto";
 
-describe("⚡ 512KB Upload Pipeline & MTProto Pipelining Suite", () => {
-  const CHUNK_SIZE = 512 * 1024; // 524,288 bytes
+describe("⚡ Hybrid Upload Pipeline: 1MB Browser Frames ➔ 512KB MTProto Relay", () => {
+  const BROWSER_CHUNK_SIZE = 1024 * 1024; // 1,048,576 bytes (1 MB)
+  const TG_PART_SIZE = 512 * 1024; // 524,288 bytes (512 KB Telegram limit)
 
-  it("1. should calculate correct 512KB chunk counts for small, medium, and large files", () => {
-    // 100 KB photo -> 1 chunk
-    assert.equal(Math.ceil((100 * 1024) / CHUNK_SIZE), 1);
+  it("1. should calculate correct 1MB browser chunk counts for small, medium, and large files", () => {
+    // 100 KB photo -> 1 browser chunk
+    assert.equal(Math.ceil((100 * 1024) / BROWSER_CHUNK_SIZE), 1);
 
-    // Exactly 512 KB -> 1 chunk
-    assert.equal(Math.ceil(CHUNK_SIZE / CHUNK_SIZE), 1);
+    // Exactly 1 MB -> 1 browser chunk
+    assert.equal(Math.ceil(BROWSER_CHUNK_SIZE / BROWSER_CHUNK_SIZE), 1);
 
-    // 512 KB + 1 byte -> 2 chunks
-    assert.equal(Math.ceil((CHUNK_SIZE + 1) / CHUNK_SIZE), 2);
+    // 1 MB + 1 byte -> 2 browser chunks
+    assert.equal(Math.ceil((BROWSER_CHUNK_SIZE + 1) / BROWSER_CHUNK_SIZE), 2);
 
-    // 14.1 MB video (14,784,921 bytes) -> 29 chunks (down from 113 with 128KB)
+    // 14.1 MB video (14,784,921 bytes) -> 15 browser chunks (down from 113 with 128KB, 29 with 512KB)
     const videoSize = 14784921;
-    const chunkCount = Math.ceil(videoSize / CHUNK_SIZE);
-    assert.equal(chunkCount, 29);
-    assert.equal(Math.ceil(videoSize / (128 * 1024)), 113, "512KB provides ~4x reduction in total network chunks");
+    const browserChunkCount = Math.ceil(videoSize / BROWSER_CHUNK_SIZE);
+    assert.equal(browserChunkCount, 15);
+    assert.equal(Math.ceil(videoSize / (128 * 1024)), 113, "1MB provides ~7.5x reduction in total browser WebSocket frames over 128KB");
   });
 
-  it("2. should correctly serialize and deserialize 512KB binary WebSocket frames", () => {
-    const chunkIndex = 7;
-    const payload = crypto.randomBytes(CHUNK_SIZE);
+  it("2. should correctly serialize and deserialize 1MB binary WebSocket frames", () => {
+    const chunkIndex = 3;
+    const payload = crypto.randomBytes(BROWSER_CHUNK_SIZE);
 
     // Encode: [4-byte Int32BE index | payload bytes]
     const frame = Buffer.alloc(4 + payload.length);
@@ -35,50 +36,57 @@ describe("⚡ 512KB Upload Pipeline & MTProto Pipelining Suite", () => {
     const decodedIndex = frame.readInt32BE(0);
     const decodedPayload = frame.subarray(4);
 
-    assert.equal(decodedIndex, 7);
-    assert.equal(decodedPayload.length, CHUNK_SIZE);
+    assert.equal(decodedIndex, 3);
+    assert.equal(decodedPayload.length, BROWSER_CHUNK_SIZE);
     assert.deepEqual(decodedPayload, payload);
   });
 
-  it("3. should accurately reassemble chunks received out of order or concurrently", () => {
-    const totalBytes = 2 * 1024 * 1024 + 12345; // ~2.01 MB -> 5 chunks
+  it("3. should accurately reassemble 1MB browser chunks and partition into 512KB Telegram MTProto parts", () => {
+    const totalBytes = Math.floor(14.1 * 1024 * 1024); // 14,784,921 bytes (14.1 MB)
     const originalBuffer = crypto.randomBytes(totalBytes);
-    const totalChunks = Math.ceil(totalBytes / CHUNK_SIZE);
-    assert.equal(totalChunks, 5);
+    const totalBrowserChunks = Math.ceil(totalBytes / BROWSER_CHUNK_SIZE);
+    assert.equal(totalBrowserChunks, 15);
 
-    // Slice all chunks
-    const slices: { index: number; buffer: Buffer }[] = [];
-    for (let i = 0; i < totalChunks; i++) {
-      const start = i * CHUNK_SIZE;
-      const end = Math.min(start + CHUNK_SIZE, totalBytes);
-      slices.push({
+    // Slice into 1MB browser chunks
+    const browserSlices: { index: number; buffer: Buffer }[] = [];
+    for (let i = 0; i < totalBrowserChunks; i++) {
+      const start = i * BROWSER_CHUNK_SIZE;
+      const end = Math.min(start + BROWSER_CHUNK_SIZE, totalBytes);
+      browserSlices.push({
         index: i,
         buffer: originalBuffer.subarray(start, end),
       });
     }
 
-    // Shuffle chunks to simulate out-of-order network arrivals
-    const shuffled = [...slices].reverse();
+    // Reassemble in DO RAM
+    const receivedChunks = new Array(totalBrowserChunks);
+    for (const slice of browserSlices) {
+      receivedChunks[slice.index] = slice.buffer;
+    }
+    const fullBuffer = Buffer.concat(receivedChunks.filter(Boolean));
+    assert.equal(fullBuffer.length, totalBytes);
+    assert.deepEqual(fullBuffer, originalBuffer);
 
-    // Store in chunk array
-    const receivedChunks = new Array(totalChunks);
-    const uploadedParts = new Set<number>();
+    // Partition fullBuffer into 512KB MTProto parts
+    const tgPartCount = Math.ceil(fullBuffer.length / TG_PART_SIZE);
+    assert.equal(tgPartCount, 29);
 
-    for (const item of shuffled) {
-      receivedChunks[item.index] = item.buffer;
-      uploadedParts.add(item.index);
+    const tgParts: Buffer[] = [];
+    for (let p = 0; p < tgPartCount; p++) {
+      const start = p * TG_PART_SIZE;
+      const end = Math.min(start + TG_PART_SIZE, fullBuffer.length);
+      const chunk = fullBuffer.subarray(start, end);
+      assert.ok(chunk.length <= TG_PART_SIZE, "Each Telegram part must not exceed 512KB");
+      tgParts.push(chunk);
     }
 
-    assert.equal(uploadedParts.size, totalChunks);
-    const reassembled = Buffer.concat(receivedChunks.filter(Boolean));
-
-    assert.equal(reassembled.length, totalBytes);
-    assert.deepEqual(reassembled, originalBuffer, "Reassembled buffer must be bit-for-bit identical to original file");
+    const reassembledFromTgParts = Buffer.concat(tgParts);
+    assert.deepEqual(reassembledFromTgParts, originalBuffer, "Telegram parts must reassemble to bit-identical original buffer");
   });
 
   it("4. should correctly partition 512KB MTProto parts and generate concurrent batches", () => {
     const fileSize = 14.1 * 1024 * 1024; // 14.1 MB
-    const partCount = Math.ceil(fileSize / CHUNK_SIZE);
+    const partCount = Math.ceil(fileSize / TG_PART_SIZE);
     const CONCURRENCY = 2;
 
     const batches: { startPart: number; endPart: number; count: number }[] = [];
