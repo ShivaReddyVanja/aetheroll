@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useRef, useEffect, useState } from "react";
-import { Play, Check, Star, MapPin, User, Loader2 } from "lucide-react";
+import { Play, Check, Star, MapPin, User, Loader2, Image as ImageIcon } from "lucide-react";
 import { drawBlurHashToCanvas } from "@/lib/blurhash";
 
 export interface MediaItem {
@@ -45,8 +45,37 @@ export function MediaCard({
 
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
+  const [customThumb, setCustomThumb] = useState<string | null>(null);
   const [isPlayingPreview, setIsPlayingPreview] = useState(false);
   const [isVideoReady, setIsVideoReady] = useState(false);
+  const hasCapturedRef = useRef(false);
+
+  // Capture video frame on hardware GPU and backfill to R2
+  const captureAndBackfill = (videoEl: HTMLVideoElement) => {
+    if (hasCapturedRef.current || !videoEl || videoEl.videoWidth === 0) return;
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = videoEl.videoWidth || 400;
+      canvas.height = videoEl.videoHeight || 300;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+      const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+      if (dataUrl && dataUrl.length > 100) {
+        hasCapturedRef.current = true;
+        setCustomThumb(dataUrl);
+        setImageLoaded(true);
+        setImageError(false);
+
+        // Fire-and-forget backfill to R2 & Edge Cache
+        fetch(`/api/media/${item.id}/thumbnail`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ imageBase64: dataUrl }),
+        }).catch(() => {});
+      }
+    } catch {}
+  };
 
   // Draw initial BlurHash canvas placeholder
   useEffect(() => {
@@ -132,10 +161,10 @@ export function MediaCard({
         }`}
       />
 
-      {/* 2. Static Thumbnail Image (Always stays visible until video first frame renders) */}
-      {!imageError && (
+      {/* 2. Static Thumbnail Image */}
+      {!imageError ? (
         <img
-          src={`/api/media/${item.id}/thumbnail`}
+          src={customThumb || `/api/media/${item.id}/thumbnail`}
           alt="Media"
           loading="lazy"
           onLoad={() => setImageLoaded(true)}
@@ -144,6 +173,27 @@ export function MediaCard({
             imageLoaded && (!isPlayingPreview || !isVideoReady) ? "opacity-100" : isVideoReady ? "opacity-0" : "opacity-100"
           }`}
         />
+      ) : (
+        /* Fallback UI when thumbnail image failed */
+        <div className="absolute inset-0 w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-slate-400 p-3 select-none">
+          {isVideo ? (
+            <div className="flex flex-col items-center gap-2">
+              <div className="w-11 h-11 rounded-full bg-blue-600/20 border border-blue-500/30 text-blue-400 flex items-center justify-center shadow-lg">
+                <Play className="w-5 h-5 ml-0.5 fill-current" />
+              </div>
+              <span className="text-[11px] font-medium text-slate-300">
+                {item.duration_seconds ? formatDuration(item.duration_seconds) : "Video"}
+              </span>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center gap-2">
+              <div className="w-11 h-11 rounded-full bg-emerald-600/20 border border-emerald-500/30 text-emerald-400 flex items-center justify-center shadow-lg">
+                <ImageIcon className="w-5 h-5" />
+              </div>
+              <span className="text-[11px] font-medium text-slate-300">Photo</span>
+            </div>
+          )}
+        </div>
       )}
 
       {/* 3. Live Video Hover Stream (4 seconds loop with zero black flash) */}
@@ -151,7 +201,7 @@ export function MediaCard({
         <video
           ref={videoRef}
           src={`/api/stream?media_id=${item.id}`}
-          poster={`/api/media/${item.id}/thumbnail`}
+          poster={customThumb || `/api/media/${item.id}/thumbnail`}
           autoPlay
           muted
           loop
@@ -161,9 +211,16 @@ export function MediaCard({
             e.currentTarget.muted = true;
             e.currentTarget.play().catch(() => {});
             setIsVideoReady(true);
+            captureAndBackfill(e.currentTarget);
           }}
-          onPlaying={() => setIsVideoReady(true)}
-          onLoadedData={() => setIsVideoReady(true)}
+          onPlaying={(e) => {
+            setIsVideoReady(true);
+            captureAndBackfill(e.currentTarget);
+          }}
+          onLoadedData={(e) => {
+            setIsVideoReady(true);
+            captureAndBackfill(e.currentTarget);
+          }}
           onTimeUpdate={(e) => {
             if (e.currentTarget.currentTime > 4) {
               e.currentTarget.currentTime = 0;

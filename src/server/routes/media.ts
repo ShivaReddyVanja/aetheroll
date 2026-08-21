@@ -488,6 +488,84 @@ mediaRouter.post("/delete", async (c) => {
 });
 
 /**
+ * POST /api/media/:id/thumbnail
+ * Ingests a client-captured video frame or custom thumbnail, saves it to R2 and Edge Cache, and updates D1
+ */
+mediaRouter.post("/:id/thumbnail", async (c) => {
+  try {
+    const auth = await resolveUserAuth(c);
+    if (!auth.authenticated || !auth.userId) return c.json({ error: "Unauthorized" }, 401);
+
+    const mediaId = c.req.param("id");
+    const db = getDb((c.env as any)?.DB);
+    const r2 = getR2Storage((c.env as any)?.R2_BUCKET);
+
+    const item = await db.get(
+      `SELECT m.*, c.telegram_channel_id FROM media_items m
+       JOIN channels c ON c.id = m.channel_id
+       WHERE m.id = ?`,
+      [mediaId]
+    );
+
+    if (!item) return c.json({ error: "Media item not found" }, 404);
+
+    let imageBuffer: Buffer | null = null;
+    const contentType = c.req.header("content-type") || "";
+
+    if (contentType.includes("application/json")) {
+      const body = await c.req.json();
+      if (body.imageBase64) {
+        imageBuffer = Buffer.from(body.imageBase64.replace(/^data:image\/\w+;base64,/, ""), "base64");
+      }
+    } else if (contentType.includes("multipart/form-data")) {
+      const form = await c.req.formData();
+      const file = form.get("thumbnail") as File;
+      if (file) {
+        const ab = await file.arrayBuffer();
+        imageBuffer = Buffer.from(ab);
+      }
+    } else {
+      const ab = await c.req.arrayBuffer();
+      if (ab.byteLength > 0) {
+        imageBuffer = Buffer.from(ab);
+      }
+    }
+
+    if (!imageBuffer || imageBuffer.length === 0) {
+      return c.json({ error: "No image payload provided" }, 400);
+    }
+
+    const key = `thumbnails/${item.channel_id}/${item.id}.jpg`;
+    await r2.put(key, imageBuffer, "image/jpeg");
+    await db.run("UPDATE media_items SET thumbnail_r2_key = ? WHERE id = ?", [key, item.id]);
+
+    // Cache into Cloudflare Edge Cache
+    const workerOrigin = new URL(c.req.url).origin;
+    const cacheKeyUrl = `${workerOrigin}/api/media/cache/${encodeURIComponent(mediaId)}/thumbnail`;
+    const cacheKey = new Request(cacheKeyUrl, { method: "GET" });
+    const cache = (caches as any)?.default;
+    if (cache) {
+      const edgeHeaders = new Headers();
+      edgeHeaders.set("Content-Type", "image/jpeg");
+      edgeHeaders.set("Cache-Control", "public, max-age=31536000, immutable");
+      edgeHeaders.set("Access-Control-Allow-Origin", "*");
+      const edgeResponse = new Response(imageBuffer as any, {
+        status: 200,
+        headers: edgeHeaders,
+      });
+      const putPromise = cache.put(cacheKey, edgeResponse).catch(() => {});
+      if ((c.executionCtx as any)?.waitUntil) {
+        c.executionCtx.waitUntil(putPromise);
+      }
+    }
+
+    return c.json({ success: true, thumbnail_r2_key: key });
+  } catch (error: any) {
+    return c.json({ error: error.message || "Failed saving thumbnail" }, 500);
+  }
+});
+
+/**
  * GET /api/media/:id/thumbnail
  * Serves cached thumbnail from Cloudflare Edge Cache, R2, or decodes stripped bytes instantly from Telegram
  */
@@ -591,59 +669,91 @@ mediaRouter.get("/:id/thumbnail", async (c) => {
       const messages = await client.getMessages(targetPeer, { ids: [msgId] });
       const msg = messages[0];
 
-      if (!msg || !msg.media) return c.text("Media not found on Telegram", 404);
+      if (msg && msg.media) {
+        let thumbBuffer: Buffer | null = null;
 
-      let thumbBuffer: Buffer | null = null;
+        // 3a. Fast Path: Extract instant stripped thumbnail (0ms CPU, 0 network requests)
+        const photoSizes = (msg.media as any)?.photo?.sizes || [];
+        const docThumbs = (msg.media as any)?.document?.thumbs || [];
+        const stripped = [...photoSizes, ...docThumbs].find(
+          (s: any) => s instanceof Api.PhotoStrippedSize || s.className === "PhotoStrippedSize" || s.bytes
+        );
 
-      // Fast Path: Extract instant stripped thumbnail (0ms CPU, 0 network requests)
-      const photoSizes = (msg.media as any)?.photo?.sizes || [];
-      const docThumbs = (msg.media as any)?.document?.thumbs || [];
-      const stripped = [...photoSizes, ...docThumbs].find(
-        (s: any) => s instanceof Api.PhotoStrippedSize || s.className === "PhotoStrippedSize" || s.bytes
-      );
-
-      if (stripped && stripped.bytes) {
-        try {
-          thumbBuffer = Buffer.from(utils.strippedPhotoToJpg(stripped.bytes));
-        } catch (stripErr) {
-          console.warn("[Thumbnail] Stripped JPEG conversion fallback:", stripErr);
-        }
-      }
-
-      // Fallback: download small preview thumbnail
-      if (!thumbBuffer) {
-        const downloaded = await client.downloadMedia(msg.media, {
-          thumb: 1, // Small/Medium preview size
-        });
-        if (downloaded && Buffer.isBuffer(downloaded)) {
-          thumbBuffer = downloaded;
-        }
-      }
-
-      if (thumbBuffer && Buffer.isBuffer(thumbBuffer)) {
-        const key = `thumbnails/${item.channel_id}/${item.id}.jpg`;
-        try {
-          await r2.put(key, thumbBuffer, "image/jpeg");
-          await db.run("UPDATE media_items SET thumbnail_r2_key = ? WHERE id = ?", [key, item.id]);
-        } catch (r2Err) {
-          console.warn("[Thumbnail] R2 cache write non-fatal error:", r2Err);
+        if (stripped && stripped.bytes) {
+          try {
+            thumbBuffer = Buffer.from(utils.strippedPhotoToJpg(stripped.bytes));
+          } catch (stripErr) {
+            console.warn("[Thumbnail] Stripped JPEG conversion fallback:", stripErr);
+          }
         }
 
-        response = new Response(thumbBuffer as any, {
-          headers: {
-            "Content-Type": "image/jpeg",
-            "Cache-Control": "public, max-age=31536000, immutable",
-            "Access-Control-Allow-Origin": "*",
-          },
-        });
+        // 3b. Try multi-size thumbs (thumb 1, then thumb 0)
+        if (!thumbBuffer && docThumbs.length > 0) {
+          for (let idx = Math.min(docThumbs.length - 1, 1); idx >= 0; idx--) {
+            try {
+              const downloaded = await client.downloadMedia(msg.media, { thumb: idx });
+              if (downloaded && Buffer.isBuffer(downloaded) && downloaded.length > 0) {
+                thumbBuffer = downloaded;
+                break;
+              }
+            } catch {}
+          }
+        }
+
+        // 3c. For photos: download photo directly
+        if (!thumbBuffer && (msg.photo || item.file_type === "photo")) {
+          try {
+            const downloaded = await client.downloadMedia(msg.media);
+            if (downloaded && Buffer.isBuffer(downloaded) && downloaded.length > 0) {
+              thumbBuffer = downloaded;
+            }
+          } catch {}
+        }
+
+        // 3d. If real thumbBuffer found, save to R2 and return
+        if (thumbBuffer && Buffer.isBuffer(thumbBuffer) && thumbBuffer.length > 0) {
+          const key = `thumbnails/${item.channel_id}/${item.id}.jpg`;
+          try {
+            await r2.put(key, thumbBuffer, "image/jpeg");
+            await db.run("UPDATE media_items SET thumbnail_r2_key = ? WHERE id = ?", [key, item.id]);
+          } catch (r2Err) {
+            console.warn("[Thumbnail] R2 cache write non-fatal error:", r2Err);
+          }
+
+          response = new Response(thumbBuffer as any, {
+            headers: {
+              "Content-Type": "image/jpeg",
+              "Cache-Control": "public, max-age=31536000, immutable",
+              "Access-Control-Allow-Origin": "*",
+            },
+          });
+        }
       }
     }
 
+    // 4. Zero-Fail Dynamic SVG Fallback: Always return 200 OK so cards never break
     if (!response) {
-      return c.text("Failed to download thumbnail", 500);
+      const isVid = item.file_type === "video";
+      const svgContent = `<svg xmlns="http://www.w3.org/2000/svg" width="${item.width || 400}" height="${item.height || 300}" viewBox="0 0 400 300" fill="none">
+        <rect width="400" height="300" fill="${isVid ? "#0f172a" : "#1e293b"}"/>
+        <circle cx="200" cy="130" r="32" fill="${isVid ? "#1e293b" : "#334155"}"/>
+        <circle cx="200" cy="130" r="30" fill="${isVid ? "#2563eb" : "#059669"}" fill-opacity="0.2"/>
+        ${isVid 
+          ? '<path d="M194 118L212 130L194 142V118Z" fill="#38bdf8"/>' 
+          : '<path d="M188 124C188 121.791 189.791 120 192 120H208C210.209 120 212 121.791 212 124V136C212 138.209 210.209 140 208 140H192C189.791 140 188 138.209 188 136V124Z" stroke="#34d399" stroke-width="2"/>'}
+        <text x="200" y="190" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#94a3b8" text-anchor="middle">${isVid ? "Video" : "Photo"}</text>
+      </svg>`;
+
+      response = new Response(svgContent, {
+        headers: {
+          "Content-Type": "image/svg+xml",
+          "Cache-Control": "public, max-age=86400",
+          "Access-Control-Allow-Origin": "*",
+        },
+      });
     }
 
-    // 4. Save to Cloudflare Edge Cache in Background
+    // 5. Save to Cloudflare Edge Cache in Background
     if (cache && response.status === 200) {
       try {
         const resToCache = response.clone();
