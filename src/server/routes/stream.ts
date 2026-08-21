@@ -124,7 +124,7 @@ streamRouter.get("/", async (c) => {
 
   // 1. Check Cloudflare Edge Cache (Sub-3ms Local PoP Delivery)
   const workerOrigin = new URL(c.req.url).origin;
-  const cacheKeyUrl = `${workerOrigin}/api/stream/cache/${encodeURIComponent(mediaId)}?range=${encodeURIComponent(rangeHeader)}`;
+  const cacheKeyUrl = `${workerOrigin}/api/stream/cache/v2/${encodeURIComponent(mediaId)}?range=${encodeURIComponent(rangeHeader)}`;
   const cacheKey = new Request(cacheKeyUrl, { method: "GET" });
   const cache = (caches as any)?.default;
 
@@ -220,6 +220,9 @@ streamRouter.get("/", async (c) => {
 
     const outHeaders = new Headers(response.headers);
     outHeaders.set("x-edge-cache", "MISS");
+    outHeaders.set("Accept-Ranges", "bytes");
+    outHeaders.set("Access-Control-Allow-Origin", "*");
+    outHeaders.set("Access-Control-Expose-Headers", "Content-Range, Content-Length, Accept-Ranges, x-edge-cache");
     return new Response(response.body, {
       status: response.status,
       headers: outHeaders,
@@ -261,7 +264,7 @@ streamRouter.get("/", async (c) => {
       targetPeer = cached.peer;
     } else {
       targetPeer = item.telegram_channel_id;
-      if (item.telegram_channel_id === "me") {
+      if (item.telegram_channel_id === "me" || item.telegram_channel_id.startsWith("me_")) {
         targetPeer = "me";
       } else {
         try {

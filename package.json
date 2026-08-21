@@ -4,13 +4,15 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build --webpack",
+    "build": "next build",
     "start": "next start",
     "lint": "next lint",
     "test": "node --test tests/*.test.ts",
     "d1:local": "wrangler d1 migrations apply aetheroll-db --local",
     "d1:remote": "wrangler d1 migrations apply aetheroll-db --remote",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "build:pages": "NEXT_EXPORT=true next build",
+    "deploy:pages": "NEXT_EXPORT=true next build && wrangler pages deploy out --project-name=aetheroll"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.8",

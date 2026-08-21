@@ -1,0 +1,2 @@
+# Cloudflare Pages Direct API Proxy Rule (Same-Origin & Zero-CORS)
+/api/*  https://aetheroll.shivareddyvanja.workers.dev/api/:splat  200

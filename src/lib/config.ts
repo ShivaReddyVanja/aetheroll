@@ -5,7 +5,7 @@
 export const AETHEROLL_WORKER_URL = (
   process.env.NEXT_PUBLIC_REMOTE_API_URL ||
   process.env.REMOTE_API_URL ||
-  "https://aetheroll.shivareddyvanja.workers.dev"
+  "https://aetheroll-api.builtbyshiva.com"
 ).replace(/\/$/, "");
 
 /**
@@ -15,15 +15,30 @@ export function getApiBaseUrl(isRemoteOnly: boolean = false): string {
   if (isRemoteOnly) return AETHEROLL_WORKER_URL;
 
   if (typeof window !== "undefined") {
-    const isLocalhost = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
     const backendMode = (process.env.NEXT_PUBLIC_BACKEND_MODE || "").toLowerCase();
-    if (backendMode === "prod" || backendMode === "remote") {
-      return AETHEROLL_WORKER_URL;
+    if (backendMode === "local" || backendMode === "dev") {
+      return "";
     }
-    return isLocalhost ? "" : AETHEROLL_WORKER_URL;
+    return AETHEROLL_WORKER_URL;
   }
 
   return AETHEROLL_WORKER_URL;
+}
+
+/**
+ * Returns the direct video streaming URL
+ */
+export function getMediaStreamUrl(mediaId: string): string {
+  const base = getApiBaseUrl();
+  return base ? `${base}/api/stream?media_id=${encodeURIComponent(mediaId)}` : `/api/stream?media_id=${encodeURIComponent(mediaId)}`;
+}
+
+/**
+ * Returns the direct media thumbnail URL
+ */
+export function getMediaThumbnailUrl(mediaId: string): string {
+  const base = getApiBaseUrl();
+  return base ? `${base}/api/media/${encodeURIComponent(mediaId)}/thumbnail` : `/api/media/${encodeURIComponent(mediaId)}/thumbnail`;
 }
 
 /**
@@ -53,4 +68,18 @@ export function getAuthWsUrl(): string {
   const parsed = new URL(AETHEROLL_WORKER_URL);
   const remoteWsProto = parsed.protocol === "https:" ? "wss:" : "ws:";
   return `${remoteWsProto}//${parsed.host}/api/auth/ws`;
+}
+
+/**
+ * Unified authenticated fetch for all API endpoints with native HttpOnly credentials
+ */
+export async function apiFetch(path: string, options: RequestInit = {}): Promise<Response> {
+  const base = getApiBaseUrl();
+  const cleanPath = path.startsWith("/") ? path : `/${path}`;
+  const url = base ? `${base}${cleanPath}` : cleanPath;
+
+  return fetch(url, {
+    ...options,
+    credentials: "include",
+  });
 }
