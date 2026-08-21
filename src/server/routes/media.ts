@@ -174,7 +174,7 @@ mediaRouter.post("/upload", async (c) => {
     const customFile = new CustomFile(file.name, file.size, "", fileBuffer);
     
     let targetPeer: any = channel.telegram_channel_id;
-    if (channel.telegram_channel_id === "me") {
+    if (channel.telegram_channel_id === "me" || channel.telegram_channel_id.startsWith("me_")) {
       targetPeer = "me";
     } else {
       try {
@@ -370,10 +370,12 @@ mediaRouter.post("/:id/favorite", async (c) => {
       if (item && auth.sessionString) {
         const client = await getConnectedClient(auth.sessionString, auth.telegramConfig);
         let targetPeer: any = item.telegram_channel_id;
-        if (targetPeer !== "me") {
+        if (targetPeer !== "me" && !targetPeer.startsWith("me_")) {
           try {
             targetPeer = await client.getInputEntity(targetPeer);
           } catch {}
+        } else {
+          targetPeer = "me";
         }
         await emitGalleryEvent(client, targetPeer, item.telegram_message_id, "FAVORITE", {
           fav: isFavorited,
@@ -447,9 +449,11 @@ mediaRouter.post("/delete", async (c) => {
         try {
           const deleteTgPromise = (async () => {
             let targetPeer: any = item.telegram_channel_id;
-            if (targetPeer !== "me") {
+            if (targetPeer !== "me" && !targetPeer.startsWith("me_")) {
               try { targetPeer = await client.getInputEntity(targetPeer); }
               catch { try { targetPeer = await client.getEntity(targetPeer); } catch {} }
+            } else {
+              targetPeer = "me";
             }
             const msgId = Number(item.telegram_message_id);
             const idsToDelete: number[] = [msgId];
@@ -463,19 +467,23 @@ mediaRouter.post("/delete", async (c) => {
                 }
               }
             } catch (replyErr) {
-              console.warn("[MediaDelete] GetReplies check warning:", replyErr);
+              console.warn("[MediaDelete] Failed fetching replies to delete:", replyErr);
             }
 
-            // Atomic batch deletion of media + all metadata reply messages
+            console.log(`[MediaDelete] Deleting Telegram messages: ${idsToDelete.join(", ")} from peer ${targetPeer}`);
             await client.deleteMessages(targetPeer, idsToDelete, { revoke: true });
           })();
 
-          await Promise.race([
-            deleteTgPromise,
-            new Promise((resolve) => setTimeout(resolve, 2000)),
-          ]);
-        } catch (tgDelErr) {
-          console.warn("[MediaDelete] Telegram message delete warning:", tgDelErr);
+          if ((c.executionCtx as any)?.waitUntil) {
+            c.executionCtx.waitUntil(deleteTgPromise.catch(() => {}));
+          } else {
+            await Promise.race([
+              deleteTgPromise,
+              new Promise((_, reject) => setTimeout(() => reject(new Error("Telegram delete timeout")), 5000))
+            ]).catch((e) => console.warn("[MediaDelete] TG delete non-fatal error:", e));
+          }
+        } catch (tgErr) {
+          console.warn("[MediaDelete] Failed deleting from Telegram:", tgErr);
         }
       }
     }
@@ -653,7 +661,7 @@ mediaRouter.get("/:id/thumbnail", async (c) => {
       const client = await getConnectedClient(auth.sessionString, auth.telegramConfig);
 
       let targetPeer: any = item.telegram_channel_id;
-      if (item.telegram_channel_id === "me") {
+      if (item.telegram_channel_id === "me" || item.telegram_channel_id.startsWith("me_")) {
         targetPeer = "me";
       } else {
         try {

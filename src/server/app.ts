@@ -36,9 +36,28 @@ app.use(
   cors({
     origin: (origin) => origin || "*",
     credentials: true,
-    allowHeaders: ["Content-Type", "x-tg-session", "Authorization", "Cookie", "Upgrade", "x-tg-api-id", "x-tg-api-hash", "x-tg-test-mode", "x-tg-enc-key"],
+    allowHeaders: [
+      "Content-Type",
+      "Range",
+      "x-tg-session",
+      "Authorization",
+      "Cookie",
+      "Upgrade",
+      "x-tg-api-id",
+      "x-tg-api-hash",
+      "x-tg-test-mode",
+      "x-tg-enc-key",
+      "x-enable-telemetry",
+    ],
     allowMethods: ["GET", "HEAD", "PUT", "POST", "DELETE", "PATCH", "OPTIONS"],
-    exposeHeaders: ["Content-Length", "Content-Range", "Set-Cookie"],
+    exposeHeaders: [
+      "Content-Length",
+      "Content-Range",
+      "Accept-Ranges",
+      "x-edge-cache",
+      "x-original-status",
+      "Set-Cookie",
+    ],
     maxAge: 86400,
   })
 );

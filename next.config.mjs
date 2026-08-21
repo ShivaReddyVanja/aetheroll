@@ -3,7 +3,7 @@ import path from "path";
 const backendMode = (
   process.env.BACKEND_MODE ||
   process.env.NEXT_PUBLIC_BACKEND_MODE ||
-  "dev"
+  "prod"
 ).toLowerCase().trim();
 
 const isProdBackend = backendMode === "prod" || backendMode === "remote";
@@ -11,7 +11,7 @@ const isProdBackend = backendMode === "prod" || backendMode === "remote";
 const remoteUrl =
   process.env.REMOTE_API_URL ||
   process.env.NEXT_PUBLIC_REMOTE_API_URL ||
-  "https://aetheroll.shivareddyvanja.workers.dev";
+  "https://aetheroll-api.builtbyshiva.com";
 
 console.log(
   `\x1b[36m[Backend Switch]\x1b[0m Active Backend: \x1b[1m${
@@ -23,6 +23,8 @@ console.log(
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  output: process.env.NEXT_EXPORT === "true" ? "export" : undefined,
+  images: { unoptimized: true },
   reactStrictMode: true,
   turbopack: {
     root: path.resolve(process.cwd()),

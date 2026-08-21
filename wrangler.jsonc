@@ -6,6 +6,12 @@
   "compatibility_flags": [
     "nodejs_compat"
   ],
+  "routes": [
+    {
+      "pattern": "aetheroll-api.builtbyshiva.com",
+      "custom_domain": true
+    }
+  ],
 
   // 1. Durable Objects (Stateful WebSocket & Warm MTProto Sessions)
   "durable_objects": {
@@ -48,6 +54,6 @@
   "vars": {
     "TELEGRAM_API_ID": "12345678",
     "TELEGRAM_TEST_MODE": "false",
-    "ENABLE_TELEMETRY": "false"
+    "ENABLE_TELEMETRY": "true"
   }
 }

@@ -119,8 +119,10 @@ tagsRouter.post("/media-person", async (c) => {
       if (mediaItem && auth.sessionString) {
         const client = await getConnectedClient(auth.sessionString, auth.telegramConfig);
         let targetPeer: any = mediaItem.telegram_channel_id;
-        if (targetPeer !== "me") {
+        if (targetPeer !== "me" && !targetPeer.startsWith("me_")) {
           try { targetPeer = await client.getInputEntity(targetPeer); } catch {}
+        } else {
+          targetPeer = "me";
         }
         await emitGalleryEvent(client, targetPeer, mediaItem.telegram_message_id, "TAG_PEOPLE", {
           people: allPeople.map((p) => p.name),
@@ -308,8 +310,10 @@ tagsRouter.post("/media-event", async (c) => {
       if (mediaItem && ev && auth.sessionString) {
         const client = await getConnectedClient(auth.sessionString, auth.telegramConfig);
         let targetPeer: any = mediaItem.telegram_channel_id;
-        if (targetPeer !== "me") {
+        if (targetPeer !== "me" && !targetPeer.startsWith("me_")) {
           try { targetPeer = await client.getInputEntity(targetPeer); } catch {}
+        } else {
+          targetPeer = "me";
         }
         await emitGalleryEvent(client, targetPeer, mediaItem.telegram_message_id, "SET_EVENT", {
           event: ev.name,

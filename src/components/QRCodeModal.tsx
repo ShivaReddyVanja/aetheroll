@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { QrCode, RefreshCw, Smartphone, ShieldCheck, AlertCircle } from "lucide-react";
-import { getAuthWsUrl } from "@/lib/config";
+import { getAuthWsUrl, getApiBaseUrl } from "@/lib/config";
 
 interface QRCodeModalProps {
   onLoginSuccess: (user: any) => void;
@@ -25,7 +25,7 @@ export function QRCodeModal({ onLoginSuccess }: QRCodeModalProps) {
     // Helper: Stateful HTTP Polling fallback
     const startHttpPolling = async () => {
       try {
-        const res = await fetch("/api/auth/qr");
+        const res = await fetch(`${getApiBaseUrl()}/api/auth/qr`, { credentials: "include" });
         const data = await res.json();
         if (data.error) throw new Error(data.error);
 
@@ -36,9 +36,10 @@ export function QRCodeModal({ onLoginSuccess }: QRCodeModalProps) {
         pollInterval = setInterval(async () => {
           if (isCancelled) return;
           try {
-            const checkRes = await fetch("/api/auth/qr/check", {
+            const checkRes = await fetch(`${getApiBaseUrl()}/api/auth/qr/check`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
+              credentials: "include",
               body: JSON.stringify({ qrId: data.qrId }),
             });
             const checkData = await checkRes.json();
@@ -46,13 +47,12 @@ export function QRCodeModal({ onLoginSuccess }: QRCodeModalProps) {
               clearInterval(pollInterval);
               if (checkData.sessionToken) {
                 try {
-                  await fetch("/api/auth/session", {
+                  await fetch(`${getApiBaseUrl()}/api/auth/session`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
+                    credentials: "include",
                     body: JSON.stringify({ sessionToken: checkData.sessionToken }),
                   });
-                  // Also persist for cross-origin upload headers (uploads go direct to worker)
-                  localStorage.setItem("tg_session_token", checkData.sessionToken);
                 } catch {}
               }
               onLoginSuccess(checkData.user);
@@ -85,13 +85,12 @@ export function QRCodeModal({ onLoginSuccess }: QRCodeModalProps) {
             ws.close();
             // Establish HttpOnly session cookie
             if (data.sessionToken) {
-              await fetch("/api/auth/session", {
+              await fetch(`${getApiBaseUrl()}/api/auth/session`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
+                credentials: "include",
                 body: JSON.stringify({ sessionToken: data.sessionToken }),
               });
-              // Also persist for cross-origin upload headers (uploads go direct to worker)
-              localStorage.setItem("tg_session_token", data.sessionToken);
             }
             onLoginSuccess(data.user);
           } else if (data.type === "expired") {
