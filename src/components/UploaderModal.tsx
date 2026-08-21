@@ -25,16 +25,6 @@ import { AETHEROLL_WORKER_URL } from "@/lib/config";
  */
 const WORKER_URL = AETHEROLL_WORKER_URL;
 
-/**
- * Read the session token for cross-origin upload headers.
- * The tg_session cookie is HttpOnly (not readable by JS), so at login we also
- * persist the token in localStorage under "tg_session_token".
- */
-function getSessionToken(): string {
-  if (typeof localStorage === "undefined") return "";
-  return localStorage.getItem("tg_session_token") ?? "";
-}
-
 interface UploaderModalProps {
   channelId: string;
   channelName: string;
@@ -146,7 +136,6 @@ export function UploaderModal({
         // 1MB binary WebSocket frames directly to Cloudflare Durable Object (which relays 512KB slices to MTProto)
         const CHUNK_SIZE = 1024 * 1024;
         const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
-        const sessionToken = getSessionToken();
 
         setTasks((prev) =>
           prev.map((t, idx) =>
@@ -204,7 +193,6 @@ export function UploaderModal({
             // Step 1: Send JSON init handshake
             ws.send(JSON.stringify({
               type: "init",
-              token: sessionToken,
               fileName: file.name,
               fileSize: file.size,
               channelId,

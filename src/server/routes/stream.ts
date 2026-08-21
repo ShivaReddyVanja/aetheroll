@@ -124,7 +124,7 @@ streamRouter.get("/", async (c) => {
 
   // 1. Check Cloudflare Edge Cache (Sub-3ms Local PoP Delivery)
   const workerOrigin = new URL(c.req.url).origin;
-  const cacheKeyUrl = `${workerOrigin}/api/stream/cache/${encodeURIComponent(mediaId)}?range=${encodeURIComponent(rangeHeader)}`;
+  const cacheKeyUrl = `${workerOrigin}/api/stream/cache/v2/${encodeURIComponent(mediaId)}?range=${encodeURIComponent(rangeHeader)}`;
   const cacheKey = new Request(cacheKeyUrl, { method: "GET" });
   const cache = (caches as any)?.default;
 

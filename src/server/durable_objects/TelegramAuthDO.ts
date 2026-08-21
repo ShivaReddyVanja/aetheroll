@@ -296,7 +296,7 @@ export class TelegramAuthDO {
       if (typeof serverWs?.accept === "function") {
         serverWs.accept();
       }
-      this.handleUploadWebSocket(serverWs, effectiveEnv);
+      this.handleUploadWebSocket(serverWs, effectiveEnv, request);
 
       return new Response(null, {
         status: 101,
@@ -332,13 +332,13 @@ export class TelegramAuthDO {
 
     // 5. HTTP QR Generation endpoint
     if (url.pathname.endsWith("/qr") && request.method === "GET") {
-      return this.handleQrHttp(effectiveEnv);
+      return this.handleQrHttp(effectiveEnv, request);
     }
 
     // 6. HTTP QR Check polling endpoint
     if (url.pathname.endsWith("/check") && request.method === "POST") {
       const body = (await request.json().catch(() => ({}))) as any;
-      return this.handleCheckHttp(body?.qrId, effectiveEnv);
+      return this.handleCheckHttp(body?.qrId, effectiveEnv, request);
     }
 
     return new Response("Not found in Auth DO", { status: 404 });
@@ -474,8 +474,9 @@ export class TelegramAuthDO {
     }
   }
 
-  private async handleQrHttp(envObj?: any): Promise<Response> {
+  private async handleQrHttp(envObj?: any, request?: Request): Promise<Response> {
     const qrId = crypto.randomUUID();
+    const origin = request?.headers?.get("origin") || "*";
     try {
       const targetEnv = envObj || this.env;
       const { token, expires, client, tokenBuffer } = await startQrLogin(targetEnv);
@@ -504,37 +505,59 @@ export class TelegramAuthDO {
           qrImage,
           expires,
         }),
-        { headers: { "Content-Type": "application/json" } }
+        {
+          headers: {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+          },
+        }
       );
     } catch (err: any) {
       const errMsg = err?.errorMessage || err?.message || (typeof err === "object" ? (err.description || JSON.stringify(err)) : String(err));
       console.error("[handleQrHttp Error]:", errMsg, err);
       return new Response(JSON.stringify({ error: errMsg || "Failed generating QR" }), {
         status: 500,
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": origin,
+          "Access-Control-Allow-Credentials": "true",
+        },
       });
     }
   }
 
-  private async handleCheckHttp(qrId?: string, envObj?: any): Promise<Response> {
+  private async handleCheckHttp(qrId?: string, envObj?: any, request?: Request): Promise<Response> {
+    const origin = request?.headers?.get("origin") || "*";
+    const isBuiltByShiva = origin.includes("builtbyshiva.com");
+    const domainPart = isBuiltByShiva ? "; Domain=.builtbyshiva.com" : "";
+
     if (!qrId) {
       return new Response(JSON.stringify({ error: "qrId required" }), {
         status: 400,
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": origin,
+          "Access-Control-Allow-Credentials": "true",
+        },
       });
     }
 
-    const sessionState = this.activeSessions.get(qrId);
-    if (!sessionState || !sessionState.client || !sessionState.tokenBuffer) {
+    const sessionEntry = this.activeSessions.get(qrId);
+    if (!sessionEntry || !sessionEntry.client) {
       return new Response(JSON.stringify({ error: "Session expired or invalid" }), {
-        status: 400,
-        headers: { "Content-Type": "application/json" },
+        status: 404,
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": origin,
+          "Access-Control-Allow-Credentials": "true",
+        },
       });
     }
 
     try {
       const targetEnv = envObj || this.env;
-      const check = await checkQrLoginStatus(sessionState.client, sessionState.tokenBuffer, targetEnv);
+      const check = await checkQrLoginStatus(sessionEntry.client, sessionEntry.tokenBuffer as any, targetEnv);
 
       if (check.success && check.sessionString && check.user) {
         const db = getDb(targetEnv?.DB);
@@ -574,7 +597,7 @@ export class TelegramAuthDO {
           [sessionId, userId, expiresAt]
         );
 
-        const cookieValue = `tg_session=${sessionToken}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=2592000; Domain=.builtbyshiva.com`;
+        const cookieValue = `tg_session=${sessionToken}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=2592000${domainPart}`;
         const response = new Response(
           JSON.stringify({
             success: true,
@@ -589,6 +612,8 @@ export class TelegramAuthDO {
             headers: {
               "Content-Type": "application/json",
               "Set-Cookie": cookieValue,
+              "Access-Control-Allow-Origin": origin,
+              "Access-Control-Allow-Credentials": "true",
             },
           }
         );
@@ -597,7 +622,11 @@ export class TelegramAuthDO {
       }
 
       return new Response(JSON.stringify({ success: false }), {
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": origin,
+          "Access-Control-Allow-Credentials": "true",
+        },
       });
     } catch (checkErr: any) {
       console.error("[handleCheckHttp Error]:", checkErr);
@@ -713,6 +742,12 @@ export class TelegramAuthDO {
           offsets.push(off);
         }
 
+        this.logEvent(
+          "STREAM",
+          "info",
+          `⚡ [Parallel Segment ${segmentIndex} Start] Fetching ${offsets.length} parts (${(segLength / 1024 / 1024).toFixed(1)}MB) with 6 MTProto workers`
+        );
+
         const buffers: Buffer[] = new Array(offsets.length);
         const CONCURRENCY = 6;
         let cursor = 0;
@@ -722,6 +757,7 @@ export class TelegramAuthDO {
             const idx = cursor++;
             const offset = offsets[idx];
             const partLength = Math.min(TG_CHUNK_SIZE, totalSize - offset);
+            const partStartTime = Date.now();
 
             // Check if individual chunk is in prefetchedChunks
             const chunkKey = `${item.id}:${offset}`;
@@ -746,6 +782,11 @@ export class TelegramAuthDO {
                 const b = Buffer.from(res.bytes).subarray(0, partLength);
                 buffers[idx] = b;
                 this.storeChunkInRam(chunkKey, b);
+                this.logEvent(
+                  "MTPROTO",
+                  "info",
+                  `📦 [Part ${idx + 1}/${offsets.length}] offset=${offset} (512KB) in ${Date.now() - partStartTime}ms`
+                );
               }
             } catch (err: any) {
               console.warn(`[SegmentFetch] Error offset=${offset}:`, err?.message);
@@ -765,6 +806,11 @@ export class TelegramAuthDO {
                   const b = Buffer.from(res.bytes).subarray(0, partLength);
                   buffers[idx] = b;
                   this.storeChunkInRam(chunkKey, b);
+                  this.logEvent(
+                    "MTPROTO",
+                    "info",
+                    `📦 [Part ${idx + 1}/${offsets.length} Retry] offset=${offset} in ${Date.now() - partStartTime}ms`
+                  );
                 }
               } catch {}
             }
@@ -904,11 +950,20 @@ export class TelegramAuthDO {
       const parts = rangeHeader.replace(/bytes=/, "").split("-");
       let start = parseInt(parts[0], 10);
       let requestedEnd = parts[1] ? parseInt(parts[1], 10) : undefined;
-      const CHUNK_SIZE = 512 * 1024;
-      let end = requestedEnd !== undefined ? requestedEnd : Math.min(start + CHUNK_SIZE - 1, totalSize - 1);
-
       if (isNaN(start)) start = 0;
-      if (isNaN(end) || end >= totalSize) end = totalSize - 1;
+
+      const BROWSER_CHUNK_SIZE = 4 * 1024 * 1024; // Standard 4MB chunk size for video playback
+      const SEGMENT_SIZE = 16 * 1024 * 1024;
+
+      let end: number;
+      // If client specifically probes for a tiny range (< 64KB, e.g. moov atom / metadata probe), honor the tiny probe
+      if (requestedEnd !== undefined && (requestedEnd - start + 1) < 64 * 1024) {
+        end = Math.min(requestedEnd, totalSize - 1);
+      } else {
+        // For video playback stream, always deliver a full 4.0 MB slice (or up to EOF)
+        end = Math.min(start + BROWSER_CHUNK_SIZE - 1, totalSize - 1);
+      }
+
       if (start > end || start >= totalSize) {
         return new Response(null, {
           status: 416,
@@ -920,34 +975,52 @@ export class TelegramAuthDO {
         });
       }
 
-      const SEGMENT_SIZE = 16 * 1024 * 1024;
       const segmentIndex = Math.floor(start / SEGMENT_SIZE);
       const segStart = segmentIndex * SEGMENT_SIZE;
+      const endSegmentIndex = Math.floor(end / SEGMENT_SIZE);
 
       this.logEvent(
         "STREAM",
         "info",
-        `🎬 [Stream Request] ${item.id.slice(0, 8)}... Range: ${start}-${end}/${totalSize} (Segment ${segmentIndex})`
+        `🎬 [Stream Request] ${item.id.slice(0, 8)}... Range: ${start}-${end}/${totalSize} (Segment ${segmentIndex}${endSegmentIndex !== segmentIndex ? `->${endSegmentIndex}` : ""})`
       );
 
-      // 3. Predictive Lookahead Prefetch: Next segment if reading past 50% of current segment
+      // 3. Predictive Lookahead Prefetch: Next segment as soon as reading past 25% (Chunk 1) of current segment
       const offsetWithinSeg = start - segStart;
-      if (offsetWithinSeg > SEGMENT_SIZE / 2) {
+      if (offsetWithinSeg >= SEGMENT_SIZE / 4) {
         const nextSegIndex = segmentIndex + 1;
         if (nextSegIndex * SEGMENT_SIZE < totalSize) {
           this.fetchSegmentParallel(client, item, fileLocation, nextSegIndex, r2).catch(() => {});
         }
       }
 
-      // 4. Fetch the 16MB segment in parallel
-      const segmentBuffer = await this.fetchSegmentParallel(client, item, fileLocation, segmentIndex, r2);
-      if (!segmentBuffer || segmentBuffer.length === 0) {
+      // 4. Fetch the primary 16MB segment in parallel
+      const primarySegBuffer = await this.fetchSegmentParallel(client, item, fileLocation, segmentIndex, r2);
+      if (!primarySegBuffer || primarySegBuffer.length === 0) {
         return new Response("Segment unavailable", { status: 502 });
       }
 
-      const sliceStart = start - segStart;
-      const sliceEnd = Math.min(sliceStart + (end - start + 1), segmentBuffer.length);
-      const exactSlice = segmentBuffer.subarray(sliceStart, sliceEnd);
+      let exactSlice: Buffer;
+      if (endSegmentIndex === segmentIndex) {
+        // Slice is entirely within this segment
+        const sliceStart = start - segStart;
+        const sliceEnd = Math.min(sliceStart + (end - start + 1), primarySegBuffer.length);
+        exactSlice = primarySegBuffer.subarray(sliceStart, sliceEnd);
+      } else {
+        // Slice crosses the 16MB segment boundary into the next segment
+        const sliceStart = start - segStart;
+        const firstPart = primarySegBuffer.subarray(sliceStart);
+
+        const nextSegBuffer = await this.fetchSegmentParallel(client, item, fileLocation, endSegmentIndex, r2);
+        if (nextSegBuffer && nextSegBuffer.length > 0) {
+          const neededBytes = (end - start + 1) - firstPart.length;
+          const secondPart = nextSegBuffer.subarray(0, Math.min(neededBytes, nextSegBuffer.length));
+          exactSlice = Buffer.concat([firstPart, secondPart]);
+        } else {
+          exactSlice = firstPart;
+        }
+      }
+
       if (exactSlice.length === 0) {
         return new Response(null, {
           status: 416,
@@ -978,7 +1051,7 @@ export class TelegramAuthDO {
     }
   }
 
-  private async handleUploadWebSocket(ws: WebSocket, envObj: any) {
+  private async handleUploadWebSocket(ws: WebSocket, envObj: any, request?: Request) {
     let client: any = null;
     let uploadState: {
       userId: string;
@@ -1233,7 +1306,7 @@ export class TelegramAuthDO {
 
           if (msg.type === "init") {
             logToClient("INIT_RECEIVED", { fileName: msg.fileName, fileSize: msg.fileSize, totalChunks: msg.totalChunks });
-            const parsed = extractSessionToken({ headers: new Headers({ "x-tg-session": msg.token }) });
+            const parsed = extractSessionToken(msg.token || request);
             if (!parsed) {
               ws.send(JSON.stringify({ type: "error", error: "Authentication token required" }));
               return;
