@@ -39,12 +39,39 @@ mediaRouter.get("/", async (c) => {
     const personId = c.req.query("person_id");
     const locationId = c.req.query("location_id");
     const eventId = c.req.query("event_id");
+    const tagId = c.req.query("tag_id");
+    const tripId = c.req.query("trip_id");
+    const hasGeo = c.req.query("has_geo") === "true";
     const favoritesOnly = c.req.query("favorites_only") === "true";
 
     let query = `
       SELECT m.*,
              CASE WHEN f.user_id IS NOT NULL THEN 1 ELSE 0 END as is_favorite,
-             u.display_name as uploader_name
+             u.display_name as uploader_name,
+             (
+               SELECT GROUP_CONCAT(p.id || '::' || p.name || '::' || COALESCE(t.bbox_x, '') || '::' || COALESCE(t.bbox_y, '') || '::' || COALESCE(t.bbox_w, '') || '::' || COALESCE(t.bbox_h, ''), '||')
+               FROM media_person_tags t
+               JOIN people p ON p.id = t.person_id
+               WHERE t.media_item_id = m.id
+             ) as people_raw,
+             (
+               SELECT GROUP_CONCAT(tg.id || '::' || tg.name || '::' || COALESCE(tg.color, ''), '||')
+               FROM media_tags mt
+               JOIN tags tg ON tg.id = mt.tag_id
+               WHERE mt.media_item_id = m.id
+             ) as tags_raw,
+             (
+               SELECT GROUP_CONCAT(e.id || '::' || e.name, '||')
+               FROM media_event_tags et
+               JOIN events e ON e.id = et.event_id
+               WHERE et.media_item_id = m.id
+             ) as events_raw,
+             (
+               SELECT GROUP_CONCAT(tr.id || '::' || tr.name, '||')
+               FROM trip_media tm
+               JOIN trips tr ON tr.id = tm.trip_id
+               WHERE tm.media_item_id = m.id
+             ) as trips_raw
       FROM media_items m
       LEFT JOIN users u ON u.id = m.uploader_user_id
       LEFT JOIN media_favorites f ON f.media_item_id = m.id AND f.user_id = ?
@@ -67,8 +94,12 @@ mediaRouter.get("/", async (c) => {
     }
 
     if (locationId) {
-      query += ` AND m.id IN (SELECT media_item_id FROM media_location_tags WHERE location_id = ?)`;
-      params.push(locationId);
+      // Backwards compatibility for location filter
+      query += ` AND (m.latitude IS NOT NULL AND m.longitude IS NOT NULL)`;
+    }
+
+    if (hasGeo) {
+      query += ` AND m.latitude IS NOT NULL AND m.longitude IS NOT NULL`;
     }
 
     if (eventId) {
@@ -76,34 +107,76 @@ mediaRouter.get("/", async (c) => {
       params.push(eventId);
     }
 
+    if (tagId) {
+      query += ` AND m.id IN (SELECT media_item_id FROM media_tags WHERE tag_id = ?)`;
+      params.push(tagId);
+    }
+
+    if (tripId) {
+      query += ` AND m.id IN (SELECT media_item_id FROM trip_media WHERE trip_id = ?)`;
+      params.push(tripId);
+    }
+
     query += ` ORDER BY m.captured_at DESC LIMIT ?`;
     params.push(limit);
 
     const items = await db.all(query, params);
 
-    // Fetch tags for each item in batch
+    // Fast in-memory parsing (1 query total for entire page!)
     for (const item of items) {
-      item.people = await db.all(
-        `SELECT p.id, p.name, t.bbox_x, t.bbox_y, t.bbox_w, t.bbox_h
-         FROM media_person_tags t
-         JOIN people p ON p.id = t.person_id
-         WHERE t.media_item_id = ?`,
-        [item.id]
-      );
-      item.locations = await db.all(
-        `SELECT l.id, l.name, l.latitude, l.longitude, l.place_type
-         FROM media_location_tags t
-         JOIN locations l ON l.id = t.location_id
-         WHERE t.media_item_id = ?`,
-        [item.id]
-      );
-      item.events = await db.all(
-        `SELECT e.id, e.name
-         FROM media_event_tags t
-         JOIN events e ON e.id = t.event_id
-         WHERE t.media_item_id = ?`,
-        [item.id]
-      );
+      item.people = item.people_raw
+        ? item.people_raw.split("||").map((p: string) => {
+            const [id, name, bx, by, bw, bh] = p.split("::");
+            return {
+              id,
+              name,
+              bbox_x: bx ? parseFloat(bx) : null,
+              bbox_y: by ? parseFloat(by) : null,
+              bbox_w: bw ? parseFloat(bw) : null,
+              bbox_h: bh ? parseFloat(bh) : null,
+            };
+          })
+        : [];
+      delete item.people_raw;
+
+      item.tags = item.tags_raw
+        ? item.tags_raw.split("||").map((t: string) => {
+            const [id, name, color] = t.split("::");
+            return { id, name, color: color || null };
+          })
+        : [];
+      delete item.tags_raw;
+
+      item.events = item.events_raw
+        ? item.events_raw.split("||").map((e: string) => {
+            const [id, name] = e.split("::");
+            return { id, name };
+          })
+        : [];
+      delete item.events_raw;
+
+      item.trips = item.trips_raw
+        ? item.trips_raw.split("||").map((tr: string) => {
+            const [id, name] = tr.split("::");
+            return { id, name };
+          })
+        : [];
+      delete item.trips_raw;
+
+      // Provide backwards compatible locations structure
+      if (item.latitude != null && item.longitude != null) {
+        item.locations = [
+          {
+            id: `geo_${item.id}`,
+            name: `GPS (${Number(item.latitude).toFixed(4)}, ${Number(item.longitude).toFixed(4)})`,
+            latitude: item.latitude,
+            longitude: item.longitude,
+            place_type: "gps",
+          },
+        ];
+      } else {
+        item.locations = [];
+      }
     }
 
     const nextCursor = items.length === limit ? items[items.length - 1].captured_at : null;
@@ -146,6 +219,10 @@ mediaRouter.post("/upload", async (c) => {
     const blurHash = (formData.get("blur_hash") as string) || "LEHV6nWB2yk8pyo0adR*.7kCMdnj";
     const capturedAt = (formData.get("captured_at") as string) || new Date().toISOString();
     const thumbnailBase64 = formData.get("thumbnail_base64") as string;
+    const latitudeStr = formData.get("latitude") as string;
+    const longitudeStr = formData.get("longitude") as string;
+    const latitude = latitudeStr ? parseFloat(latitudeStr) : null;
+    const longitude = longitudeStr ? parseFloat(longitudeStr) : null;
 
     if (!file || !channelId) {
       return c.json({ error: "File and channel_id are required" }, 400);
@@ -202,14 +279,16 @@ mediaRouter.post("/upload", async (c) => {
       `INSERT INTO media_items (
          id, channel_id, uploader_user_id, telegram_message_id, file_type,
          mime_type, file_size_bytes, width, height, duration_seconds,
-         blur_hash, thumbnail_r2_key, captured_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         blur_hash, thumbnail_r2_key, captured_at, latitude, longitude
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(channel_id, telegram_message_id) DO UPDATE SET
-         file_size_bytes = excluded.file_size_bytes`,
+         file_size_bytes = excluded.file_size_bytes,
+         latitude = COALESCE(excluded.latitude, media_items.latitude),
+         longitude = COALESCE(excluded.longitude, media_items.longitude)`,
       [
         mediaId, channelId, session.id, realMessageId, isVideo ? "video" : "photo",
         file.type || (isVideo ? "video/mp4" : "image/jpeg"), file.size, 1920, 1080, null,
-        blurHash, thumbnailR2Key, capturedAt
+        blurHash, thumbnailR2Key, capturedAt, latitude, longitude
       ]
     );
 

@@ -74,3 +74,16 @@ export function getAuthWsUrl(): string {
   const remoteWsProto = parsed.protocol === "https:" ? "wss:" : "ws:";
   return `${remoteWsProto}//${parsed.host}/api/auth/ws`;
 }
+
+/**
+ * Universal cross-origin fetch helper with HttpOnly cookies attached
+ */
+export async function apiFetch(path: string, options: RequestInit = {}): Promise<Response> {
+  const base = getApiBaseUrl();
+  const url = path.startsWith("http") ? path : `${base}${path.startsWith("/") ? path : `/${path}`}`;
+  return fetch(url, {
+    ...options,
+    credentials: "include",
+  });
+}
+
