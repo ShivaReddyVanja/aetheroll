@@ -72,10 +72,28 @@ app.route("/trips", tripsRouter);
 app.route("/stream", streamRouter);
 app.route("/logs", logsRouter);
 
-// Health check
-app.get("/health", (c) => {
-  return c.json({ status: "ok", timestamp: new Date().toISOString() });
+import { PINWHEEL_FAVICON_SVG } from "../lib/brand";
+
+// Mount root router to handle root favicon and API routes
+export const rootApp = new Hono();
+rootApp.get("/favicon.ico", (c) => {
+  return new Response(PINWHEEL_FAVICON_SVG, {
+    headers: {
+      "Content-Type": "image/svg+xml",
+      "Cache-Control": "public, max-age=31536000, immutable",
+    },
+  });
 });
+rootApp.get("/favicon.svg", (c) => {
+  return new Response(PINWHEEL_FAVICON_SVG, {
+    headers: {
+      "Content-Type": "image/svg+xml",
+      "Cache-Control": "public, max-age=31536000, immutable",
+    },
+  });
+});
+rootApp.route("/api", app);
+rootApp.route("/", app);
 
 export { TelegramAuthDO } from "./durable_objects/TelegramAuthDO";
-export default app;
+export default rootApp;
