@@ -45,16 +45,42 @@ export function MediaCard({
   onToggleFavorite,
   onToggleSelect,
 }: MediaCardProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const hoverTimerRef = useRef<NodeJS.Timeout | null>(null);
 
+  const [isVisible, setIsVisible] = useState(false);
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
   const [customThumb, setCustomThumb] = useState<string | null>(null);
   const [isPlayingPreview, setIsPlayingPreview] = useState(false);
   const [isVideoReady, setIsVideoReady] = useState(false);
   const hasCapturedRef = useRef(false);
+
+  // Viewport IntersectionObserver: Only mount/fetch image when card is within 300px of screen
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    if (typeof IntersectionObserver === "undefined") {
+      setIsVisible(true);
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setIsVisible(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "300px 0px" }
+    );
+
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   // Capture video frame on hardware GPU and backfill to R2
   const captureAndBackfill = (videoEl: HTMLVideoElement) => {
@@ -149,6 +175,7 @@ export function MediaCard({
 
   return (
     <div
+      ref={containerRef}
       onClick={() => onClick(item)}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
@@ -167,19 +194,22 @@ export function MediaCard({
         }`}
       />
 
-      {/* 2. Static Thumbnail Image */}
-      {!imageError ? (
+      {/* 2. Static Thumbnail Image - Only mounted/requested once within viewport margin */}
+      {isVisible && !imageError && (
         <img
           src={customThumb || getMediaThumbnailUrl(item.id)}
           alt="Media"
           loading="lazy"
+          decoding="async"
           onLoad={() => setImageLoaded(true)}
           onError={() => setImageError(true)}
           className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-300 ${
             imageLoaded && (!isPlayingPreview || !isVideoReady) ? "opacity-100" : isVideoReady ? "opacity-0" : "opacity-100"
           }`}
         />
-      ) : (
+      )}
+
+      {isVisible && imageError && (
         /* Fallback UI when thumbnail image failed */
         <div className="absolute inset-0 w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-slate-400 p-3 select-none">
           {isVideo ? (
