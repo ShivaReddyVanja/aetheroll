@@ -13,7 +13,7 @@ import {
   startQrLogin,
   checkQrLoginStatus,
 } from "../lib/telegram";
-import { uploadFile, CustomFile } from "telegram/client/uploads";
+import { uploadFile, CustomFile } from "telegram/client/uploads.js";
 import { emitGalleryEvent } from "../lib/ledger";
 
 function toBigInt(val: number | string, radix?: number) {
@@ -22,6 +22,43 @@ function toBigInt(val: number | string, radix?: number) {
     return fn(val.slice(2), 16);
   }
   return radix ? fn(val, radix) : fn(val);
+}
+
+export const MAX_TELEGRAM_FILE_SIZE = 2000 * 1024 * 1024; // 2,000 MB (Telegram standard upload limit)
+
+/**
+ * Sliding-Window Rate Pacer to ensure outgoing MTProto RPC requests
+ * strictly remain under a target limit (e.g. 25 req/sec) across all parallel workers.
+ */
+export class SlidingWindowRatePacer {
+  private timestamps: number[] = [];
+  private maxRequests: number;
+  private windowMs: number;
+
+  constructor(maxRequests: number = 25, windowMs: number = 1000) {
+    this.maxRequests = maxRequests;
+    this.windowMs = windowMs;
+  }
+
+  async acquire(): Promise<void> {
+    while (true) {
+      const now = Date.now();
+      // Remove timestamps older than the sliding window
+      this.timestamps = this.timestamps.filter((t) => now - t < this.windowMs);
+
+      if (this.timestamps.length < this.maxRequests) {
+        this.timestamps.push(now);
+        return;
+      }
+
+      // Oldest timestamp must expire before a new slot opens
+      const oldest = this.timestamps[0];
+      const waitTime = this.windowMs - (now - oldest) + 5; // +5ms safety jitter buffer
+      if (waitTime > 0) {
+        await new Promise((resolve) => setTimeout(resolve, waitTime));
+      }
+    }
+  }
 }
 
 export class TelegramAuthDO {
@@ -47,6 +84,8 @@ export class TelegramAuthDO {
   prefetchedChunks: Map<string, { buffer: Buffer; expires: number }>;
   segmentRingCache: Map<string, { buffer: Buffer; expires: number; lastUsed: number }>;
   inFlightSegments: Map<string, Promise<Buffer | null>>;
+  ratePacer: SlidingWindowRatePacer;
+  streamAbortController: AbortController;
   recentLogs: Array<{
     id: string;
     timestamp: number;
@@ -68,6 +107,8 @@ export class TelegramAuthDO {
     this.prefetchedChunks = new Map();
     this.segmentRingCache = new Map();
     this.inFlightSegments = new Map();
+    this.ratePacer = new SlidingWindowRatePacer(25, 1000);
+    this.streamAbortController = new AbortController();
     this.recentLogs = [];
     this.logStreamControllers = new Set();
   }
@@ -312,6 +353,17 @@ export class TelegramAuthDO {
     // 3. Stream media chunks endpoint with persistent warm MTProto connection
     if (url.pathname.includes("/stream") || url.pathname.includes("/api/stream")) {
       return this.handleStream(request, effectiveEnv);
+    }
+
+    // 3.5 Clear in-memory caches endpoint
+    if (url.pathname.includes("/cache/clear")) {
+      this.segmentRingCache.clear();
+      this.prefetchedChunks.clear();
+      this.mediaLocationCache.clear();
+      this.logEvent("RAM", "info", "🧹 In-memory RAM segment and chunk caches cleared");
+      return new Response(JSON.stringify({ success: true, message: "In-memory DO caches cleared" }), {
+        headers: { "Content-Type": "application/json" },
+      });
     }
 
     // 4. WebSocket endpoint for real-time bidirectional QR auth
@@ -707,7 +759,9 @@ export class TelegramAuthDO {
     item: any,
     fileLocation: any,
     segmentIndex: number,
-    r2: any
+    r2: any,
+    bypassCache: boolean = false,
+    signal?: AbortSignal
   ): Promise<Buffer | null> {
     const SEGMENT_SIZE = 16 * 1024 * 1024;
     const TG_CHUNK_SIZE = 512 * 1024;
@@ -718,18 +772,20 @@ export class TelegramAuthDO {
     const segLength = segEnd - segStart;
     const segmentKey = `${item.id}:seg:${segmentIndex}`;
 
-    // 1. Check in-memory ring cache
-    const now = Date.now();
-    const cached = this.segmentRingCache.get(segmentKey);
-    if (cached && cached.expires > now) {
-      cached.lastUsed = now;
-      this.logEvent("RAM", "success", `⚡ [Ring-Buffer Hit] Segment ${segmentIndex} (${(segLength / 1024 / 1024).toFixed(1)}MB)`);
-      return cached.buffer;
+    // 1. Check in-memory ring cache (unless bypassCache is requested)
+    if (!bypassCache) {
+      const now = Date.now();
+      const cached = this.segmentRingCache.get(segmentKey);
+      if (cached && cached.expires > now) {
+        cached.lastUsed = now;
+        this.logEvent("RAM", "success", `⚡ [Ring-Buffer Hit] Segment ${segmentIndex} (${(segLength / 1024 / 1024).toFixed(1)}MB)`);
+        return cached.buffer;
+      }
     }
 
-    // 2. Check In-Flight Promise deduplication
+    // 2. Check In-Flight Promise deduplication (ALWAYS share active in-flight fetches unless explicitly bypassing)
     const existing = this.inFlightSegments.get(segmentKey);
-    if (existing) {
+    if (existing && !bypassCache) {
       this.logEvent("PREFETCH", "info", `🔗 [In-Flight Share] Joining active Segment ${segmentIndex} fetch`);
       return existing;
     }
@@ -742,18 +798,29 @@ export class TelegramAuthDO {
           offsets.push(off);
         }
 
+        const CONCURRENCY = 10;
+        const totalParts = offsets.length;
+
         this.logEvent(
           "STREAM",
           "info",
-          `⚡ [Parallel Segment ${segmentIndex} Start] Fetching ${offsets.length} parts (${(segLength / 1024 / 1024).toFixed(1)}MB) with 6 MTProto workers`
+          `⚡ [Parallel Segment ${segmentIndex} Start] Fetching ${totalParts} parts (${(segLength / 1024 / 1024).toFixed(1)}MB) with ${CONCURRENCY} MTProto workers (Global Pacer <= 25 req/s)`
         );
+        console.log(`[Stream Benchmark] ⚡ Starting Segment ${segmentIndex} (${(segLength / 1024 / 1024).toFixed(2)} MB, ${totalParts} parts) with CONCURRENCY=${CONCURRENCY}`);
 
         const buffers: Buffer[] = new Array(offsets.length);
-        const CONCURRENCY = 6;
         let cursor = 0;
+        let requestsSent = 0;
+        let requestsCompleted = 0;
+        const latencies: number[] = [];
 
-        const downloadWorker = async () => {
+        const downloadWorker = async (workerId: number) => {
           while (cursor < offsets.length) {
+            if (signal?.aborted) {
+              this.logEvent("STREAM", "warn", `🛑 [Stream Aborted] Worker ${workerId} stopped for segment ${segmentIndex}`);
+              break;
+            }
+
             const idx = cursor++;
             const offset = offsets[idx];
             const partLength = Math.min(TG_CHUNK_SIZE, totalSize - offset);
@@ -761,13 +828,20 @@ export class TelegramAuthDO {
 
             // Check if individual chunk is in prefetchedChunks
             const chunkKey = `${item.id}:${offset}`;
-            const ramChunk = this.prefetchedChunks.get(chunkKey);
-            if (ramChunk && ramChunk.expires > Date.now()) {
-              buffers[idx] = ramChunk.buffer.subarray(0, partLength);
-              continue;
+            if (!bypassCache) {
+              const ramChunk = this.prefetchedChunks.get(chunkKey);
+              if (ramChunk && ramChunk.expires > Date.now()) {
+                buffers[idx] = ramChunk.buffer.subarray(0, partLength);
+                continue;
+              }
             }
 
             try {
+              if (signal?.aborted) break;
+              await this.ratePacer.acquire();
+              if (signal?.aborted) break;
+
+              requestsSent++;
               const req = new Api.upload.GetFile({
                 location: fileLocation,
                 offset: toBigInt(offset),
@@ -779,22 +853,32 @@ export class TelegramAuthDO {
                 new Promise((_, reject) => setTimeout(() => reject(new Error("Segment chunk timeout")), 7000)),
               ]);
               if (res && res.bytes) {
+                const latency = Date.now() - partStartTime;
+                latencies.push(latency);
+                requestsCompleted++;
                 const b = Buffer.from(res.bytes).subarray(0, partLength);
                 buffers[idx] = b;
                 this.storeChunkInRam(chunkKey, b);
                 this.logEvent(
                   "MTPROTO",
                   "info",
-                  `📦 [Part ${idx + 1}/${offsets.length}] offset=${offset} (512KB) in ${Date.now() - partStartTime}ms`
+                  `📦 [Worker ${workerId} | Part ${idx + 1}/${offsets.length}] offset=${offset} (512KB) in ${latency}ms`
                 );
               }
             } catch (err: any) {
-              console.warn(`[SegmentFetch] Error offset=${offset}:`, err?.message);
+              if (signal?.aborted) break;
+              console.warn(`[SegmentFetch] Worker ${workerId} Error offset=${offset}:`, err?.message);
               if (err?.errorMessage === "FILE_REFERENCE_EXPIRED") {
                 this.mediaLocationCache.delete(item.id);
               }
               // Retry once with fresh invoke
               try {
+                if (signal?.aborted) break;
+                await this.ratePacer.acquire();
+                if (signal?.aborted) break;
+
+                requestsSent++;
+                const retryStartTime = Date.now();
                 const req = new Api.upload.GetFile({
                   location: fileLocation,
                   offset: toBigInt(offset),
@@ -803,13 +887,16 @@ export class TelegramAuthDO {
                 });
                 const res: any = await client.invoke(req);
                 if (res && res.bytes) {
+                  const latency = Date.now() - retryStartTime;
+                  latencies.push(latency);
+                  requestsCompleted++;
                   const b = Buffer.from(res.bytes).subarray(0, partLength);
                   buffers[idx] = b;
                   this.storeChunkInRam(chunkKey, b);
                   this.logEvent(
                     "MTPROTO",
                     "info",
-                    `📦 [Part ${idx + 1}/${offsets.length} Retry] offset=${offset} in ${Date.now() - partStartTime}ms`
+                    `📦 [Worker ${workerId} | Part ${idx + 1}/${offsets.length} Retry] offset=${offset} in ${latency}ms`
                   );
                 }
               } catch {}
@@ -817,8 +904,10 @@ export class TelegramAuthDO {
           }
         };
 
-        const workers = Array.from({ length: Math.min(CONCURRENCY, offsets.length) }, () => downloadWorker());
+        const workers = Array.from({ length: Math.min(CONCURRENCY, offsets.length) }, (_, i) => downloadWorker(i + 1));
         await Promise.all(workers);
+
+        if (signal?.aborted) return null;
 
         const assembled = Buffer.concat(buffers.filter(Boolean));
         if (assembled.length === 0) return null;
@@ -844,11 +933,19 @@ export class TelegramAuthDO {
 
         const elapsed = Date.now() - segStartTime;
         const mb = assembled.length / 1024 / 1024;
-        const speedMbS = elapsed > 0 ? (mb / (elapsed / 1000)).toFixed(1) : "0";
+        const speedMbS = elapsed > 0 ? (mb / (elapsed / 1000)).toFixed(2) : "0";
+        const rps = elapsed > 0 ? (requestsCompleted / (elapsed / 1000)).toFixed(1) : "0";
+        const avgLat = latencies.length > 0 ? Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length) : 0;
+        const minLat = latencies.length > 0 ? Math.min(...latencies) : 0;
+        const maxLat = latencies.length > 0 ? Math.max(...latencies) : 0;
+
+        const summaryLog = `📊 [Segment ${segmentIndex} Benchmark | WORKERS=${CONCURRENCY} | GLOBAL PACER<=25rps] Size: ${mb.toFixed(1)}MB | Time: ${elapsed}ms | Speed: ${speedMbS} MB/s | Rate: ${rps} req/sec | Latency: avg=${avgLat}ms (min=${minLat}ms, max=${maxLat}ms) | Requests: ${requestsCompleted}/${requestsSent} completed`;
+        console.log(summaryLog);
+
         this.logEvent(
           "STREAM",
           "success",
-          `🚀 [Segment ${segmentIndex} Assembled] ${mb.toFixed(1)}MB in ${elapsed}ms (${speedMbS} MB/s)`
+          `🚀 [Segment ${segmentIndex} Benchmark | WORKERS=${CONCURRENCY} | GLOBAL PACER<=25rps] ${mb.toFixed(1)}MB in ${elapsed}ms (${speedMbS} MB/s) | ${rps} req/sec | avg chunk: ${avgLat}ms`
         );
 
         return assembled;
@@ -897,6 +994,18 @@ export class TelegramAuthDO {
       const mediaId = url.searchParams.get("media_id");
       if (!mediaId) return new Response("media_id required", { status: 400 });
 
+      const noCache = url.searchParams.get("nocache") === "1" || url.searchParams.get("nocache") === "true";
+
+      // Reset the DO-wide stream abort controller for this media session.
+      // When browser disconnects (request.signal fires), we abort the controller so
+      // all background prefetch tasks also stop — not just the primary fetch.
+      this.streamAbortController = new AbortController();
+      const streamSignal = this.streamAbortController.signal;
+      request.signal.addEventListener("abort", () => {
+        this.streamAbortController.abort();
+        this.logEvent("STREAM", "warn", `🛑 [Stream Cancelled] Browser disconnected for ${mediaId?.slice(0, 8)}... — aborting all background fetches`);
+      }, { once: true });
+
       const { client, userId, error } = await this.getOrConnectUserClient(request, envObj);
       if (!client) return new Response(error || "Unauthorized", { status: 401 });
 
@@ -942,6 +1051,7 @@ export class TelegramAuthDO {
             "Accept-Ranges": "bytes",
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges",
+            "Cache-Control": noCache ? "no-store, no-cache, must-revalidate" : "public, max-age=31536000, immutable",
           },
         });
       }
@@ -952,7 +1062,7 @@ export class TelegramAuthDO {
       let requestedEnd = parts[1] ? parseInt(parts[1], 10) : undefined;
       if (isNaN(start)) start = 0;
 
-      const BROWSER_CHUNK_SIZE = 4 * 1024 * 1024; // Standard 4MB chunk size for video playback
+      const BROWSER_CHUNK_SIZE = 2 * 1024 * 1024; // Optimized 2MB chunk size for video playback
       const SEGMENT_SIZE = 16 * 1024 * 1024;
 
       let end: number;
@@ -960,7 +1070,7 @@ export class TelegramAuthDO {
       if (requestedEnd !== undefined && (requestedEnd - start + 1) < 64 * 1024) {
         end = Math.min(requestedEnd, totalSize - 1);
       } else {
-        // For video playback stream, always deliver a full 4.0 MB slice (or up to EOF)
+        // For video playback stream, always deliver a full 2.0 MB slice (or up to EOF)
         end = Math.min(start + BROWSER_CHUNK_SIZE - 1, totalSize - 1);
       }
 
@@ -982,20 +1092,22 @@ export class TelegramAuthDO {
       this.logEvent(
         "STREAM",
         "info",
-        `🎬 [Stream Request] ${item.id.slice(0, 8)}... Range: ${start}-${end}/${totalSize} (Segment ${segmentIndex}${endSegmentIndex !== segmentIndex ? `->${endSegmentIndex}` : ""})`
+        `🎬 [Stream Request] ${item.id.slice(0, 8)}... Range: ${start}-${end}/${totalSize} (Segment ${segmentIndex}${endSegmentIndex !== segmentIndex ? `->${endSegmentIndex}` : ""})${noCache ? " [NO-CACHE]" : ""}`
       );
 
-      // 3. Predictive Lookahead Prefetch: Next segment as soon as reading past 25% (Chunk 1) of current segment
+      // 3. Predictive Lookahead Prefetch: Fire at 75% into current segment so N is nearly
+      //    done before N+1 starts — prevents two segments competing on the global rate pacer.
+      //    Uses streamSignal (DO-wide) so it stops immediately when browser closes the player.
       const offsetWithinSeg = start - segStart;
-      if (offsetWithinSeg >= SEGMENT_SIZE / 4) {
+      if (offsetWithinSeg >= (SEGMENT_SIZE * 3) / 4 && !noCache) {
         const nextSegIndex = segmentIndex + 1;
         if (nextSegIndex * SEGMENT_SIZE < totalSize) {
-          this.fetchSegmentParallel(client, item, fileLocation, nextSegIndex, r2).catch(() => {});
+          this.fetchSegmentParallel(client, item, fileLocation, nextSegIndex, r2, false, streamSignal).catch(() => {});
         }
       }
 
       // 4. Fetch the primary 16MB segment in parallel
-      const primarySegBuffer = await this.fetchSegmentParallel(client, item, fileLocation, segmentIndex, r2);
+      const primarySegBuffer = await this.fetchSegmentParallel(client, item, fileLocation, segmentIndex, r2, noCache, streamSignal);
       if (!primarySegBuffer || primarySegBuffer.length === 0) {
         return new Response("Segment unavailable", { status: 502 });
       }
@@ -1011,7 +1123,7 @@ export class TelegramAuthDO {
         const sliceStart = start - segStart;
         const firstPart = primarySegBuffer.subarray(sliceStart);
 
-        const nextSegBuffer = await this.fetchSegmentParallel(client, item, fileLocation, endSegmentIndex, r2);
+        const nextSegBuffer = await this.fetchSegmentParallel(client, item, fileLocation, endSegmentIndex, r2, noCache, streamSignal);
         if (nextSegBuffer && nextSegBuffer.length > 0) {
           const neededBytes = (end - start + 1) - firstPart.length;
           const secondPart = nextSegBuffer.subarray(0, Math.min(neededBytes, nextSegBuffer.length));
@@ -1040,7 +1152,7 @@ export class TelegramAuthDO {
           "Accept-Ranges": "bytes",
           "Content-Length": exactSlice.length.toString(),
           "Content-Type": videoMimeType,
-          "Cache-Control": "public, max-age=31536000, immutable",
+          "Cache-Control": noCache ? "no-store, no-cache, must-revalidate" : "public, max-age=31536000, immutable",
           "Access-Control-Allow-Origin": "*",
           "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges",
         },
@@ -1364,6 +1476,12 @@ export class TelegramAuthDO {
             logToClient("MTPROTO_READY", { dcId: client.session.dcId, connected: client.connected });
 
             const fileSize = Number(msg.fileSize) || 0;
+            if (fileSize > MAX_TELEGRAM_FILE_SIZE) {
+              logToClient("FILE_TOO_LARGE", { fileSize, max: MAX_TELEGRAM_FILE_SIZE });
+              ws.send(JSON.stringify({ type: "error", error: "File exceeds Telegram's 2,000 MB (2 GB) upload limit" }));
+              return;
+            }
+
             const isBig = fileSize > 10 * 1024 * 1024;
             const isVideo = msg.mimeType ? msg.mimeType.startsWith("video/") : false;
             const fileId = helpers.readBigIntFromBuffer(helpers.generateRandomBytes(8), true, true);
@@ -1663,6 +1781,13 @@ export class TelegramAuthDO {
       if (!channel_id || !file_name || !file_size || !total_chunks) {
         return new Response(
           JSON.stringify({ error: "channel_id, file_name, file_size, and total_chunks required" }),
+          { status: 400, headers: { "Content-Type": "application/json" } }
+        );
+      }
+
+      if (Number(file_size) > MAX_TELEGRAM_FILE_SIZE) {
+        return new Response(
+          JSON.stringify({ error: "File exceeds Telegram's 2,000 MB (2 GB) upload limit" }),
           { status: 400, headers: { "Content-Type": "application/json" } }
         );
       }
@@ -2006,6 +2131,13 @@ export class TelegramAuthDO {
           status: 400,
           headers: { "Content-Type": "application/json" },
         });
+      }
+
+      if (file.size > MAX_TELEGRAM_FILE_SIZE) {
+        return new Response(
+          JSON.stringify({ error: "File exceeds Telegram's 2,000 MB (2 GB) upload limit" }),
+          { status: 400, headers: { "Content-Type": "application/json" } }
+        );
       }
 
       const db = getDb(envObj?.DB);

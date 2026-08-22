@@ -5,7 +5,7 @@ import type { GalleryEvent } from "../src/server/lib/ledger.ts";
 import type { DatabaseInterface } from "../src/server/lib/db.ts";
 
 describe("📜 Telegram Event Sourcing & Disaster Recovery Ledger", () => {
-  it("should correctly parse valid [GP_EVENT:v1] JSON messages", () => {
+  it("should correctly parse valid [GP_EVENT:v1] JSON messages", async () => {
     const rawTelegramMessage = `
 [GP_EVENT:v1]
 {
@@ -29,7 +29,7 @@ describe("📜 Telegram Event Sourcing & Disaster Recovery Ledger", () => {
 }
     `.trim();
 
-    const parsed = parseGalleryEvent(rawTelegramMessage);
+    const parsed = await parseGalleryEvent(rawTelegramMessage);
     assert.ok(parsed, "Event should be successfully parsed");
     assert.equal(parsed?._t, "GP_EVENT");
     assert.equal(parsed?.ref, 42);
@@ -39,10 +39,10 @@ describe("📜 Telegram Event Sourcing & Disaster Recovery Ledger", () => {
     assert.equal(parsed?.data.gps?.name, "Kuntala Falls");
   });
 
-  it("should return null for non-event telegram messages", () => {
-    assert.equal(parseGalleryEvent("Hello, how are you?"), null);
-    assert.equal(parseGalleryEvent("[GP_EVENT:v1]\n{invalid json"), null);
-    assert.equal(parseGalleryEvent(undefined), null);
+  it("should return null for non-event telegram messages", async () => {
+    assert.equal(await parseGalleryEvent("Hello, how are you?"), null);
+    assert.equal(await parseGalleryEvent("[GP_EVENT:v1]\n{invalid json"), null);
+    assert.equal(await parseGalleryEvent(undefined), null);
   });
 
   it("should replay events deterministically and update state", async () => {
@@ -98,9 +98,9 @@ describe("📜 Telegram Event Sourcing & Disaster Recovery Ledger", () => {
           favorites.add(`${params[0]}:${params[1]}`);
         }
         if (sql.includes("INSERT INTO media_person_tags")) {
-          const existing = peopleTags.get(params[0]) || [];
-          existing.push(params[1]);
-          peopleTags.set(params[0], existing);
+          const existing = peopleTags.get(params[1]) || [];
+          existing.push(params[2]);
+          peopleTags.set(params[1], existing);
         }
         if (sql.includes("INSERT INTO media_location_tags")) {
           locationTags.set(params[0], params[1]);

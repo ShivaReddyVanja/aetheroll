@@ -123,10 +123,11 @@ streamRouter.get("/", async (c) => {
   const rangeHeader = c.req.header("range") || "full";
 
   // 1. Check Cloudflare Edge Cache (Sub-3ms Local PoP Delivery)
+  const noCache = c.req.query("nocache") === "1" || c.req.query("nocache") === "true";
   const workerOrigin = new URL(c.req.url).origin;
-  const cacheKeyUrl = `${workerOrigin}/api/stream/cache/v2/${encodeURIComponent(mediaId)}?range=${encodeURIComponent(rangeHeader)}`;
+  const cacheKeyUrl = `${workerOrigin}/api/stream/cache/v3/${encodeURIComponent(mediaId)}?range=${encodeURIComponent(rangeHeader)}`;
   const cacheKey = new Request(cacheKeyUrl, { method: "GET" });
-  const cache = (caches as any)?.default;
+  const cache = noCache ? null : (caches as any)?.default;
 
   if (cache) {
     try {
@@ -185,7 +186,28 @@ streamRouter.get("/", async (c) => {
       method: c.req.method,
       headers,
     });
-    const doRes = await stub.fetch(req);
+
+    // Race DO fetch against browser disconnect.
+    // When browser closes, c.req.raw.signal fires → we abandon stub.fetch().
+    // Abandoning the promise causes Cloudflare to cancel the in-flight DO request,
+    // which aborts DO's request.signal → our MTProto workers stop immediately.
+    const browserAbort = new Promise<never>((_, reject) => {
+      if (c.req.raw.signal?.aborted) {
+        reject(new Error("Browser disconnected"));
+        return;
+      }
+      c.req.raw.signal?.addEventListener("abort", () => reject(new Error("Browser disconnected")), { once: true });
+    });
+
+    let doRes: Response;
+    try {
+      doRes = await Promise.race([stub.fetch(req), browserAbort]);
+    } catch (err: any) {
+      // Browser disconnected before DO responded — return 499 (client closed request)
+      console.log(`[Stream] Browser disconnected mid-flight for media=${mediaId}, aborting DO fetch`);
+      return new Response("", { status: 499 }) as any;
+    }
+
     const resHeaders = new Headers(doRes.headers);
     const body = await doRes.arrayBuffer();
     const response = new Response(body, {
