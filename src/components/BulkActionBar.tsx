@@ -235,10 +235,10 @@ export function BulkActionBar({
   };
 
   return (
-    <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 flex flex-col items-center select-none">
+    <div className="fixed bottom-20 md:bottom-6 left-1/2 -translate-x-1/2 z-40 flex flex-col items-center select-none w-[calc(100vw-2rem)] md:w-auto max-w-[calc(100vw-2rem)]">
       {/* Popover Menu */}
       {activePopup && (
-        <div className="mb-3 w-80 bg-[var(--bg-surface)] border border-[var(--border-color)] rounded-2xl shadow-2xl p-3.5 space-y-3 animate-in fade-in slide-in-from-bottom-2 duration-150">
+        <div className="mb-3 w-full md:w-80 bg-[var(--bg-surface)] border border-[var(--border-color)] rounded-2xl shadow-2xl p-3.5 space-y-3 animate-in fade-in slide-in-from-bottom-2 duration-150">
           <div className="flex items-center justify-between border-b border-[var(--border-color)] pb-2">
             <span className="text-xs font-semibold text-[var(--text-primary)]">
               {activePopup === "tag" && `Add Tag to ${count} items`}
@@ -343,64 +343,68 @@ export function BulkActionBar({
       )}
 
       {/* Floating Action Pill */}
-      <div className="flex items-center gap-2 px-4 py-2.5 rounded-full bg-[var(--bg-surface)]/95 backdrop-blur-md border border-[var(--border-color)] shadow-2xl text-[var(--text-primary)] text-xs font-medium">
-        <span className="font-semibold text-blue-500 px-1">{count} selected</span>
+      <div className="flex items-center gap-1 md:gap-2 px-3 md:px-4 py-2 md:py-2.5 rounded-full bg-[var(--bg-surface)]/95 backdrop-blur-md border border-[var(--border-color)] shadow-2xl text-[var(--text-primary)] text-xs font-medium w-full md:w-auto justify-between md:justify-start">
+        <span className="font-semibold text-blue-500 px-1 shrink-0">{count} selected</span>
 
-        <div className="h-4 w-px bg-[var(--border-color)] mx-1" />
+        <div className="h-4 w-px bg-[var(--border-color)] mx-0.5 md:mx-1" />
 
         {/* Tag Button */}
         <button
           onClick={() => setActivePopup(activePopup === "tag" ? null : "tag")}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full transition-colors ${
+          title="Add Tag"
+          className={`flex items-center gap-1.5 px-2.5 md:px-3 py-1.5 rounded-full transition-colors ${
             activePopup === "tag" ? "bg-blue-600 text-white" : "hover:bg-[var(--bg-hover)]"
           }`}
         >
           <Tag className="w-3.5 h-3.5" />
-          <span>Tag</span>
+          <span className="hidden md:inline">Tag</span>
         </button>
 
         {/* Trip Button */}
         <button
           onClick={() => setActivePopup(activePopup === "trip" ? null : "trip")}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full transition-colors ${
+          title="Add to Trip"
+          className={`flex items-center gap-1.5 px-2.5 md:px-3 py-1.5 rounded-full transition-colors ${
             activePopup === "trip" ? "bg-amber-600 text-white" : "hover:bg-[var(--bg-hover)]"
           }`}
         >
           <Compass className="w-3.5 h-3.5" />
-          <span>Trip</span>
+          <span className="hidden md:inline">Trip</span>
         </button>
 
         {/* Event Button */}
         <button
           onClick={() => setActivePopup(activePopup === "event" ? null : "event")}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full transition-colors ${
+          title="Add to Event"
+          className={`flex items-center gap-1.5 px-2.5 md:px-3 py-1.5 rounded-full transition-colors ${
             activePopup === "event" ? "bg-purple-600 text-white" : "hover:bg-[var(--bg-hover)]"
           }`}
         >
           <Calendar className="w-3.5 h-3.5" />
-          <span>Event</span>
+          <span className="hidden md:inline">Event</span>
         </button>
 
         {/* Person Button */}
         <button
           onClick={() => setActivePopup(activePopup === "person" ? null : "person")}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full transition-colors ${
+          title="Tag Person"
+          className={`flex items-center gap-1.5 px-2.5 md:px-3 py-1.5 rounded-full transition-colors ${
             activePopup === "person" ? "bg-blue-600 text-white" : "hover:bg-[var(--bg-hover)]"
           }`}
         >
           <User className="w-3.5 h-3.5" />
-          <span>Person</span>
+          <span className="hidden md:inline">Person</span>
         </button>
 
         {/* Favorite Button */}
         {onFavoriteSelected && (
           <button
             onClick={() => onFavoriteSelected(mediaItemIds)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full hover:bg-[var(--bg-hover)] text-amber-500 transition-colors"
+            className="flex items-center gap-1.5 px-2.5 md:px-3 py-1.5 rounded-full hover:bg-[var(--bg-hover)] text-amber-500 transition-colors"
             title="Favorite selected"
           >
             <Star className="w-3.5 h-3.5 fill-amber-500/20" />
-            <span>Favorite</span>
+            <span className="hidden md:inline">Favorite</span>
           </button>
         )}
 
@@ -408,15 +412,15 @@ export function BulkActionBar({
         {onDeleteSelected && (
           <button
             onClick={() => onDeleteSelected(mediaItemIds)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full hover:bg-rose-500/10 text-rose-500 transition-colors"
+            className="flex items-center gap-1.5 px-2.5 md:px-3 py-1.5 rounded-full hover:bg-rose-500/10 text-rose-500 transition-colors"
             title="Delete selected media"
           >
             <Trash2 className="w-3.5 h-3.5" />
-            <span>Delete</span>
+            <span className="hidden md:inline">Delete</span>
           </button>
         )}
 
-        <div className="h-4 w-px bg-[var(--border-color)] mx-1" />
+        <div className="h-4 w-px bg-[var(--border-color)] mx-0.5 md:mx-1" />
 
         {/* Clear selection button */}
         <button

@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { Sidebar, Channel, UserProfile } from "@/components/Sidebar";
+import { BottomNav } from "@/components/BottomNav";
 import { MasonryGrid } from "@/components/MasonryGrid";
 import { MediaItem } from "@/components/MediaCard";
 import { MediaViewer } from "@/components/MediaViewer";
@@ -28,11 +29,15 @@ import {
   Calendar,
   User,
   MapPin,
+  Menu,
 } from "lucide-react";
 
 export default function GalleryPage() {
   // Theme state
   const [isDarkMode, setIsDarkMode] = useState(true);
+
+  // Mobile sidebar drawer state
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // Auth state
   const [user, setUser] = useState<UserProfile | null>(null);
@@ -419,14 +424,18 @@ export default function GalleryPage() {
         onLogout={handleLogout}
         isDarkMode={isDarkMode}
         onToggleTheme={toggleTheme}
+        isOpen={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
       />
 
       {/* Main Gallery Workspace */}
-      <main className="flex-1 flex flex-col h-full overflow-hidden bg-[var(--bg-primary)] relative">
-        {/* Google Photos Top Floating Search Bar / Multi-selection Action Bar */}
-        <header className="h-16 px-6 flex items-center justify-between z-20 flex-shrink-0">
+      <main className="flex-1 flex flex-col h-full overflow-hidden bg-[var(--bg-primary)] relative min-w-0">
+        {/* ── Header: responsive for mobile + desktop ── */}
+        <header className="h-14 md:h-16 px-3 md:px-6 flex items-center justify-between z-20 flex-shrink-0 gap-2">
+
           {selectedIds.size > 0 ? (
-            <div className="w-full h-12 rounded-full bg-[var(--bg-secondary)] border border-[var(--border-color)] px-5 flex items-center justify-between shadow-md animate-fadeIn">
+            /* ── Selection mode bar (same on all screen sizes) ── */
+            <div className="w-full h-11 rounded-full bg-[var(--bg-secondary)] border border-[var(--border-color)] px-4 flex items-center justify-between shadow-md animate-fadeIn">
               <div className="flex items-center gap-3">
                 <button
                   onClick={() => setSelectedIds(new Set())}
@@ -462,74 +471,94 @@ export default function GalleryPage() {
             </div>
           ) : (
             <>
-              {/* Google Photos Large Floating Search Bar */}
-              <div className="relative flex-1 max-w-2xl">
-                <Search className="w-5 h-5 text-[var(--text-secondary)] absolute left-4 top-3" />
+              {/* ── Mobile: Hamburger ── */}
+              <button
+                onClick={() => setSidebarOpen(true)}
+                className="md:hidden p-2.5 rounded-full text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] flex-shrink-0"
+                aria-label="Open menu"
+              >
+                <Menu className="w-5 h-5" />
+              </button>
+
+              {/* ── Search Bar ── */}
+              <div className="relative flex-1 min-w-0">
+                <Search className="w-4 h-4 md:w-5 md:h-5 text-[var(--text-secondary)] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                 <input
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder={`Search in "${currentChannel?.name || "Library"}"...`}
-                  className="w-full bg-[var(--bg-secondary)] hover:bg-[var(--bg-hover)] focus:bg-[var(--bg-surface)] border border-transparent focus:border-[var(--border-color)] rounded-full pl-12 pr-10 py-2.5 text-sm text-[var(--text-primary)] placeholder-[var(--text-tertiary)] focus:outline-none shadow-sm transition-colors"
+                  className="w-full bg-[var(--bg-secondary)] hover:bg-[var(--bg-hover)] focus:bg-[var(--bg-surface)] border border-transparent focus:border-[var(--border-color)] rounded-full pl-10 pr-9 py-2 md:pl-12 md:pr-10 md:py-2.5 text-sm text-[var(--text-primary)] placeholder-[var(--text-tertiary)] focus:outline-none shadow-sm transition-colors"
                 />
                 {searchQuery && (
                   <button
                     onClick={() => setSearchQuery("")}
-                    className="absolute right-3.5 top-3 text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
                   >
                     <X className="w-4 h-4" />
                   </button>
                 )}
               </div>
 
-              {/* Right Action Icons */}
-              <div className="flex items-center gap-2 ml-4">
-                {/* Sync Channel Button */}
+              {/* ── Right Action Icons ── */}
+              <div className="flex items-center gap-1 md:gap-2 flex-shrink-0">
+                {/* Sync — hidden on mobile to save space */}
                 <button
                   onClick={() => selectedChannelId && handleSyncChannel(selectedChannelId)}
                   disabled={!selectedChannelId || isSyncing}
                   title={isSyncing ? "Syncing with Telegram..." : `Sync "${currentChannel?.name || "Library"}" from Telegram`}
-                  className="p-2.5 rounded-full text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-blue-500 transition-colors disabled:opacity-40"
+                  className="hidden md:flex p-2.5 rounded-full text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-blue-500 transition-colors disabled:opacity-40"
                 >
                   <RefreshCw className={`w-5 h-5 ${isSyncing ? "animate-spin text-blue-500" : ""}`} />
                 </button>
 
-                {/* Upload Button */}
+                {/* Sync icon on mobile (icon only, no label) */}
+                <button
+                  onClick={() => selectedChannelId && handleSyncChannel(selectedChannelId)}
+                  disabled={!selectedChannelId || isSyncing}
+                  title="Sync from Telegram"
+                  className="md:hidden p-2.5 rounded-full text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-blue-500 transition-colors disabled:opacity-40"
+                >
+                  <RefreshCw className={`w-4 h-4 ${isSyncing ? "animate-spin text-blue-500" : ""}`} />
+                </button>
+
+                {/* Upload */}
                 <button
                   onClick={() => setShowUploader(true)}
                   disabled={!selectedChannelId}
                   title="Upload photos & videos"
-                  className="p-2.5 rounded-full text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] transition-colors disabled:opacity-40"
+                  className="p-2 md:p-2.5 rounded-full text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] transition-colors disabled:opacity-40"
                 >
                   <Plus className="w-5 h-5" />
                 </button>
 
-                {/* Theme Toggle (Sun/Moon) */}
+                {/* Theme toggle — desktop only */}
                 <button
                   onClick={toggleTheme}
                   title={isDarkMode ? "Switch to Light Mode" : "Switch to Dark Mode"}
-                  className="p-2.5 rounded-full text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] transition-colors"
+                  className="hidden md:flex p-2.5 rounded-full text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] transition-colors"
                 >
                   {isDarkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
                 </button>
 
-                {/* Settings Gear */}
+                {/* Settings — desktop only */}
                 <button
                   onClick={() => setShowSettings(true)}
                   title="Settings & Turbo Cache"
-                  className="p-2.5 rounded-full text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] transition-colors"
+                  className="hidden md:flex p-2.5 rounded-full text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] transition-colors"
                 >
                   <Settings className="w-5 h-5" />
                 </button>
 
-                {/* Profile Circle Avatar */}
-                <div className="w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-xs ml-1 shadow-sm select-none cursor-pointer">
+                {/* Profile avatar */}
+                <div className="w-7 h-7 md:w-8 md:h-8 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-xs shadow-sm select-none cursor-pointer">
                   {user?.displayName ? user.displayName.charAt(0).toUpperCase() : "S"}
                 </div>
               </div>
             </>
           )}
         </header>
+
 
         {/* Collections Sub-filter Filter Pills Header */}
         {(activeFilter === "people" ||
@@ -601,7 +630,7 @@ export default function GalleryPage() {
         )}
 
         {/* Gallery Content Area */}
-        <div className="flex-1 overflow-y-auto relative">
+        <div className="flex-1 overflow-y-auto relative pb-16 md:pb-0">
           {channels.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-center px-4">
               <div className="w-16 h-16 rounded-full bg-blue-500/10 text-blue-500 flex items-center justify-center mb-4 shadow-sm">
@@ -664,6 +693,16 @@ export default function GalleryPage() {
           }}
         />
       </main>
+
+      {/* ── Mobile Bottom Navigation Bar ── */}
+      <BottomNav
+        activeFilter={activeFilter}
+        onSelectFilter={(filter) => {
+          setActiveFilter(filter);
+          setSelectedSubFilter({ type: null, id: null, name: null });
+        }}
+        onOpenSidebar={() => setSidebarOpen(true)}
+      />
 
       {/* Lightbox / Video Player */}
       {activeViewerItem && (
