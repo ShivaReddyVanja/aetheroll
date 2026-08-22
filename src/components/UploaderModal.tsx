@@ -25,6 +25,9 @@ import { AETHEROLL_WORKER_URL } from "@/lib/config";
  */
 const WORKER_URL = AETHEROLL_WORKER_URL;
 
+// Telegram standard user max upload limit is 2,000 MB
+export const MAX_TELEGRAM_FILE_SIZE = 2000 * 1024 * 1024;
+
 interface UploaderModalProps {
   channelId: string;
   channelName: string;
@@ -63,20 +66,28 @@ export function UploaderModal({
     if (bytes < 1024 * 1024) {
       return `${(bytes / 1024).toFixed(1)} KB`;
     }
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    if (bytes < 1024 * 1024 * 1024) {
+      return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    }
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
   };
 
   const handleFilesSelected = (files: FileList | File[] | null) => {
     if (!files) return;
-    const newTasks: UploadTask[] = Array.from(files).map((f) => ({
-      id: crypto.randomUUID(),
-      file: f,
-      status: "pending",
-      progress: 0,
-      previewUrl: f.type.startsWith("image/") ? URL.createObjectURL(f) : undefined,
-      isVideo: f.type.startsWith("video/"),
-      sizeFormatted: formatFileSize(f.size),
-    }));
+    const newTasks: UploadTask[] = Array.from(files).map((f) => {
+      const isOversized = f.size > MAX_TELEGRAM_FILE_SIZE;
+      return {
+        id: crypto.randomUUID(),
+        file: f,
+        status: isOversized ? ("error" as const) : ("pending" as const),
+        progress: 0,
+        previewUrl: f.type.startsWith("image/") ? URL.createObjectURL(f) : undefined,
+        isVideo: f.type.startsWith("video/"),
+        sizeFormatted: formatFileSize(f.size),
+        error: isOversized ? "Exceeds Telegram's 2,000 MB (2 GB) upload limit" : undefined,
+        uploadedText: isOversized ? "Too large (> 2 GB)" : undefined,
+      };
+    });
     setTasks((prev) => [...prev, ...newTasks]);
   };
 
@@ -86,12 +97,13 @@ export function UploaderModal({
   };
 
   const startUpload = async () => {
-    if (tasks.length === 0 || isUploading) return;
+    const validTasks = tasks.filter((t) => t.status === "pending" && t.file.size <= MAX_TELEGRAM_FILE_SIZE);
+    if (validTasks.length === 0 || isUploading) return;
     setIsUploading(true);
 
     for (let i = 0; i < tasks.length; i++) {
       const task = tasks[i];
-      if (task.status === "done") continue;
+      if (task.status === "done" || task.status === "error" || task.file.size > MAX_TELEGRAM_FILE_SIZE) continue;
 
       setTasks((prev) =>
         prev.map((t, idx) => (idx === i ? { ...t, status: "processing", progress: 5 } : t))

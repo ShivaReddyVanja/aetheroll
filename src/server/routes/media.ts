@@ -12,6 +12,8 @@ import { emitGalleryEvent } from "../lib/ledger";
 import { Api, utils } from "telegram";
 import { isTelemetryEnabled } from "./logs";
 
+export const MAX_TELEGRAM_FILE_SIZE = 2000 * 1024 * 1024; // 2,000 MB (Telegram standard user upload limit)
+
 export const mediaRouter = new Hono();
 
 /**
@@ -187,7 +189,7 @@ mediaRouter.get("/", async (c) => {
   }
 });
 
-import { CustomFile } from "telegram/client/uploads";
+import { CustomFile } from "telegram/client/uploads.js";
 
 /**
  * POST /api/media/upload
@@ -226,6 +228,10 @@ mediaRouter.post("/upload", async (c) => {
 
     if (!file || !channelId) {
       return c.json({ error: "File and channel_id are required" }, 400);
+    }
+
+    if (file.size > MAX_TELEGRAM_FILE_SIZE) {
+      return c.json({ error: "File exceeds Telegram's 2,000 MB (2 GB) upload limit" }, 400);
     }
 
     const channel = await db.get(
@@ -491,78 +497,107 @@ mediaRouter.post("/delete", async (c) => {
       return c.json({ error: "media_ids array required" }, 400);
     }
 
+    const placeholders = media_ids.map(() => "?").join(",");
+    const items = await db.all(
+      `SELECT m.*, c.telegram_channel_id FROM media_items m
+       JOIN channels c ON c.id = m.channel_id
+       WHERE m.id IN (${placeholders})`,
+      media_ids
+    );
+
+    // 1. Batched D1 Database Deletions (Instant & Reliable)
+    await db.run(`DELETE FROM media_favorites WHERE media_item_id IN (${placeholders})`, media_ids);
+    await db.run(`DELETE FROM media_person_tags WHERE media_item_id IN (${placeholders})`, media_ids);
+    await db.run(`DELETE FROM media_tags WHERE media_item_id IN (${placeholders})`, media_ids);
+    await db.run(`DELETE FROM media_event_tags WHERE media_item_id IN (${placeholders})`, media_ids);
+    await db.run(`DELETE FROM trip_media WHERE media_item_id IN (${placeholders})`, media_ids);
+    await db.run(`DELETE FROM media_items WHERE id IN (${placeholders})`, media_ids);
+
+    const deletedCount = items.length || media_ids.length;
+
+    // 2. Batched R2 Cache cleanup
     const r2 = getR2Storage((c.env as any)?.R2_BUCKET);
-    let client: any = null;
-    if (auth.sessionString) {
-      try {
-        client = await getConnectedClient(auth.sessionString, auth.telegramConfig);
-      } catch (clientErr) {
-        console.warn("[MediaDelete] Telegram client connect error:", clientErr);
+    Promise.allSettled(
+      items.map(async (item: any) => {
+        if (item.thumbnail_r2_key) {
+          try { await r2.delete(item.thumbnail_r2_key); } catch {}
+        }
+        try { await r2.delete(`cache/${item.channel_id}/${item.id}.bin`); } catch {}
+      })
+    ).catch(() => {});
+
+    // 3. Batched Telegram Message Deletion grouped by target channel
+    if (auth.sessionString && items.length > 0) {
+      const itemsByChannel = new Map<string, any[]>();
+      for (const item of items) {
+        if (item.telegram_message_id && item.telegram_channel_id) {
+          const list = itemsByChannel.get(item.telegram_channel_id) || [];
+          list.push(item);
+          itemsByChannel.set(item.telegram_channel_id, list);
+        }
       }
-    }
 
-    let deletedCount = 0;
-    for (const mediaId of media_ids) {
-      const item = await db.get(
-        `SELECT m.*, c.telegram_channel_id FROM media_items m
-         JOIN channels c ON c.id = m.channel_id
-         WHERE m.id = ?`,
-        [mediaId]
-      );
+      if (itemsByChannel.size > 0) {
+        const deleteTgPromise = (async () => {
+          try {
+            const client = await getConnectedClient(auth.sessionString!, auth.telegramConfig);
 
-      // 1. Delete from D1 Database first (instant & reliable)
-      await db.run("DELETE FROM media_favorites WHERE media_item_id = ?", [mediaId]);
-      await db.run("DELETE FROM media_items WHERE id = ?", [mediaId]);
-      deletedCount++;
-
-      if (!item) continue;
-
-      // 2. Delete cached thumbnail & full files from R2
-      if (item.thumbnail_r2_key) {
-        try { await r2.delete(item.thumbnail_r2_key); } catch {}
-      }
-      try { await r2.delete(`cache/${item.channel_id}/${item.id}.bin`); } catch {}
-
-      // 3. Delete message from Telegram and all its metadata replies with strict timeout
-      if (client && item.telegram_message_id) {
-        try {
-          const deleteTgPromise = (async () => {
-            let targetPeer: any = item.telegram_channel_id;
-            if (targetPeer !== "me" && !targetPeer.startsWith("me_")) {
-              try { targetPeer = await client.getInputEntity(targetPeer); }
-              catch { try { targetPeer = await client.getEntity(targetPeer); } catch {} }
-            } else {
-              targetPeer = "me";
-            }
-            const msgId = Number(item.telegram_message_id);
-            const idsToDelete: number[] = [msgId];
-
-            // Find all reply metadata messages attached to this media item (e.g. [GP_EVENT:v1])
-            try {
-              const replies = await client.getMessages(targetPeer, { replyTo: msgId, limit: 20 });
-              if (replies && replies.length > 0) {
-                for (const r of replies) {
-                  if (r && r.id) idsToDelete.push(Number(r.id));
+            for (const [channelTgId, channelItems] of itemsByChannel.entries()) {
+              try {
+                let targetPeer: any = channelTgId;
+                if (targetPeer !== "me" && !targetPeer.startsWith("me_")) {
+                  try { targetPeer = await client.getInputEntity(targetPeer); }
+                  catch { try { targetPeer = await client.getEntity(targetPeer); } catch {} }
+                } else {
+                  targetPeer = "me";
                 }
+
+                const allIdsToDelete = new Set<number>();
+
+                // Collect primary message IDs and fetch associated metadata replies in parallel
+                await Promise.allSettled(
+                  channelItems.map(async (item) => {
+                    const msgId = Number(item.telegram_message_id);
+                    if (!msgId) return;
+                    allIdsToDelete.add(msgId);
+
+                    try {
+                      const replies = await client.getMessages(targetPeer, { replyTo: msgId, limit: 20 });
+                      if (replies && replies.length > 0) {
+                        for (const r of replies) {
+                          if (r && r.id) allIdsToDelete.add(Number(r.id));
+                        }
+                      }
+                    } catch (replyErr) {
+                      console.warn("[MediaDelete] Failed fetching replies for msgId:", msgId, replyErr);
+                    }
+                  })
+                );
+
+                // Telegram deleteMessages supports up to 100 IDs per RPC call
+                const idArray = Array.from(allIdsToDelete);
+                const TG_BATCH_LIMIT = 100;
+                for (let i = 0; i < idArray.length; i += TG_BATCH_LIMIT) {
+                  const chunk = idArray.slice(i, i + TG_BATCH_LIMIT);
+                  console.log(`[MediaDelete] Batched deleting ${chunk.length} Telegram messages from peer ${channelTgId}:`, chunk);
+                  await client.deleteMessages(targetPeer, chunk, { revoke: true });
+                }
+              } catch (chErr) {
+                console.warn(`[MediaDelete] Failed batch deleting messages in channel ${channelTgId}:`, chErr);
               }
-            } catch (replyErr) {
-              console.warn("[MediaDelete] Failed fetching replies to delete:", replyErr);
             }
-
-            console.log(`[MediaDelete] Deleting Telegram messages: ${idsToDelete.join(", ")} from peer ${targetPeer}`);
-            await client.deleteMessages(targetPeer, idsToDelete, { revoke: true });
-          })();
-
-          if ((c.executionCtx as any)?.waitUntil) {
-            c.executionCtx.waitUntil(deleteTgPromise.catch(() => {}));
-          } else {
-            await Promise.race([
-              deleteTgPromise,
-              new Promise((_, reject) => setTimeout(() => reject(new Error("Telegram delete timeout")), 5000))
-            ]).catch((e) => console.warn("[MediaDelete] TG delete non-fatal error:", e));
+          } catch (clientErr) {
+            console.warn("[MediaDelete] Telegram client error during deletion:", clientErr);
           }
-        } catch (tgErr) {
-          console.warn("[MediaDelete] Failed deleting from Telegram:", tgErr);
+        })();
+
+        if ((c.executionCtx as any)?.waitUntil) {
+          c.executionCtx.waitUntil(deleteTgPromise.catch(() => {}));
+        } else {
+          await Promise.race([
+            deleteTgPromise,
+            new Promise((_, reject) => setTimeout(() => reject(new Error("Telegram delete timeout")), 10000))
+          ]).catch((e) => console.warn("[MediaDelete] TG delete non-fatal error:", e));
         }
       }
     }

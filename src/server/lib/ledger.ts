@@ -1,5 +1,5 @@
 import { TelegramClient } from "telegram";
-import { CustomFile } from "telegram/client/uploads";
+import { CustomFile } from "telegram/client/uploads.js";
 import type { DatabaseInterface } from "./db";
 import crypto from "crypto";
 

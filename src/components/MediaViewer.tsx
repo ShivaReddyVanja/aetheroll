@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { X, ChevronLeft, ChevronRight, Heart, Download, Info, Trash2, Play, Pause } from "lucide-react";
 import { MediaItem } from "./MediaCard";
 import { TagDrawer } from "./TagDrawer";
@@ -28,6 +28,7 @@ export function MediaViewer({
   onDelete,
 }: MediaViewerProps) {
   const [showTagDrawer, setShowTagDrawer] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
 
   const currentIndex = items.findIndex((i) => i.id === item.id);
   const hasPrev = currentIndex > 0;
@@ -40,6 +41,19 @@ export function MediaViewer({
   const handleNext = () => {
     if (hasNext) onNavigate(items[currentIndex + 1]);
   };
+
+  // Explicit video cleanup on item change or viewer unmount/close
+  useEffect(() => {
+    return () => {
+      if (videoRef.current) {
+        try {
+          videoRef.current.pause();
+          videoRef.current.removeAttribute("src");
+          videoRef.current.load();
+        } catch {}
+      }
+    };
+  }, [item.id]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -128,12 +142,13 @@ export function MediaViewer({
           {isVideo ? (
             <video
               key={item.id}
+              ref={videoRef}
               src={getMediaStreamUrl(item.id)}
               poster={getMediaThumbnailUrl(item.id)}
               controls
               autoPlay
               playsInline
-              preload="auto"
+              preload="metadata"
               onCanPlay={(e) => {
                 const playPromise = e.currentTarget.play();
                 if (playPromise !== undefined) {
