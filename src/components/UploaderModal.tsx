@@ -30,8 +30,9 @@ interface UploadTask {
   file: File;
   status: "pending" | "processing" | "uploading" | "done" | "error";
   progress: number;
-  step1Progress?: number;
-  step2Progress?: number;
+  uploadedBytes?: number;
+  speedFormatted?: string;
+  durationFormatted?: string;
   error?: string;
   previewUrl?: string;
   isVideo: boolean;
@@ -46,6 +47,7 @@ export function UploaderModal({
 }: UploaderModalProps) {
   const [tasks, setTasks] = useState<UploadTask[]>([]);
   const [isUploading, setIsUploading] = useState(false);
+  const [currentSpeed, setCurrentSpeed] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -53,6 +55,20 @@ export function UploaderModal({
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
     if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
     return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  };
+
+  const formatSpeed = (bytesPerSec: number) => {
+    if (bytesPerSec <= 0) return "0 KB/s";
+    if (bytesPerSec < 1024 * 1024) return `${(bytesPerSec / 1024).toFixed(1)} KB/s`;
+    return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`;
+  };
+
+  const formatDuration = (ms: number) => {
+    const totalSec = Math.round(ms / 1000);
+    if (totalSec < 60) return `${totalSec}s`;
+    const mins = Math.floor(totalSec / 60);
+    const secs = totalSec % 60;
+    return `${mins}m ${secs}s`;
   };
 
   const handleFilesSelected = (files: FileList | File[] | null) => {
@@ -124,7 +140,7 @@ export function UploaderModal({
         }
 
         const exif = await extractExifMetadata(file);
-        const CHUNK_SIZE = 1024 * 1024;
+        const CHUNK_SIZE = 512 * 1024; // Aligned directly with Telegram 512KB MTProto parts
         const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
 
         setTasks((prev) =>
@@ -134,8 +150,6 @@ export function UploaderModal({
                   ...t,
                   status: "uploading",
                   progress: 0,
-                  step1Progress: 0,
-                  step2Progress: 0,
                 }
               : t
           )
@@ -148,7 +162,25 @@ export function UploaderModal({
 
           let nextChunkToSend = 0;
           let ackedChunks = 0;
-          const PIPELINE_WINDOW = 2;
+          let settled = false; // Guard against double resolve/reject
+          const PIPELINE_WINDOW = 4; // Sliding window of 4 active parts
+
+          const uploadStartTime = Date.now();
+          let lastSampleTime = Date.now();
+          let lastSampleAckedBytes = 0;
+
+          const settledResolve = (val: any) => { if (!settled) { settled = true; resolve(val); } };
+          const settledReject = (err: any) => { if (!settled) { settled = true; reject(err); } };
+
+          // 45-second inactivity watchdog
+          let watchdogTimer: any = null;
+          const resetWatchdog = () => {
+            if (watchdogTimer) clearTimeout(watchdogTimer);
+            watchdogTimer = setTimeout(() => {
+              try { ws.close(); } catch {}
+              settledReject(new Error("Upload connection timed out (no response from server)"));
+            }, 45000);
+          };
 
           const sendChunk = async (chunkIndex: number) => {
             if (chunkIndex >= totalChunks) return;
@@ -164,17 +196,19 @@ export function UploaderModal({
 
             if (ws.readyState === WebSocket.OPEN) {
               ws.send(frameBuffer);
+              resetWatchdog();
             }
           };
 
           const pumpPipeline = async () => {
             while (nextChunkToSend < totalChunks && (nextChunkToSend - ackedChunks) < PIPELINE_WINDOW) {
               const toSend = nextChunkToSend++;
-              sendChunk(toSend);
+              await sendChunk(toSend); // await ensures slice completes before advancing window
             }
           };
 
           ws.onopen = () => {
+            resetWatchdog();
             ws.send(JSON.stringify({
               type: "init",
               fileName: file.name,
@@ -192,46 +226,51 @@ export function UploaderModal({
           };
 
           ws.onmessage = async (event) => {
+            resetWatchdog();
             try {
               const data = JSON.parse(event.data);
               if (data.type === "init_ok") {
                 nextChunkToSend = 0;
                 ackedChunks = 0;
                 await pumpPipeline();
-              } else if (data.type === "chunk_ack") {
+              } else if (data.type === "part_ack") {
                 ackedChunks++;
-                const step1Percent = Math.min(Math.round((ackedChunks / totalChunks) * 100), 100);
+                const uploadedBytes = Math.min(ackedChunks * CHUNK_SIZE, file.size);
+                const percent = data.progressPercent ?? Math.min(Math.round((uploadedBytes / file.size) * 100), 100);
+
+                // Compute rolling speed sample every 400ms+
+                const now = Date.now();
+                const deltaMs = now - lastSampleTime;
+                if (deltaMs >= 400) {
+                  const bytesDelta = uploadedBytes - lastSampleAckedBytes;
+                  const instantSpeed = (bytesDelta / deltaMs) * 1000;
+                  const speedText = formatSpeed(instantSpeed);
+                  setCurrentSpeed(speedText);
+                  lastSampleTime = now;
+                  lastSampleAckedBytes = uploadedBytes;
+                }
 
                 setTasks((prev) =>
-                  prev.map((t, idx) => {
-                    if (idx !== i) return t;
-                    const overall = Math.round(step1Percent * 0.7 + (t.step2Progress || 0) * 0.3);
-                    return {
-                      ...t,
-                      status: "uploading",
-                      step1Progress: step1Percent,
-                      progress: overall,
-                    };
-                  })
+                  prev.map((t, idx) =>
+                    idx === i
+                      ? {
+                          ...t,
+                          status: "uploading",
+                          progress: percent,
+                          uploadedBytes,
+                        }
+                      : t
+                  )
                 );
 
                 await pumpPipeline();
-              } else if (data.type === "telegram_progress") {
-                const step2Percent = data.progressPercent || 0;
-
-                setTasks((prev) =>
-                  prev.map((t, idx) => {
-                    if (idx !== i) return t;
-                    const overall = Math.round((t.step1Progress || 100) * 0.7 + step2Percent * 0.3);
-                    return {
-                      ...t,
-                      status: "uploading",
-                      step2Progress: step2Percent,
-                      progress: overall,
-                    };
-                  })
-                );
               } else if (data.type === "complete") {
+                if (watchdogTimer) clearTimeout(watchdogTimer);
+                const totalElapsedMs = Math.max(Date.now() - uploadStartTime, 1000);
+                const avgSpeedBytesPerSec = (file.size / totalElapsedMs) * 1000;
+                const durationFormatted = formatDuration(totalElapsedMs);
+                const speedFormatted = formatSpeed(avgSpeedBytesPerSec);
+
                 setTasks((prev) =>
                   prev.map((t, idx) =>
                     idx === i
@@ -239,15 +278,19 @@ export function UploaderModal({
                           ...t,
                           status: "done",
                           progress: 100,
+                          uploadedBytes: file.size,
+                          durationFormatted,
+                          speedFormatted,
                         }
                       : t
                   )
                 );
                 try { ws.close(); } catch {}
-                resolve(data);
+                settledResolve(data);
               } else if (data.type === "error") {
+                if (watchdogTimer) clearTimeout(watchdogTimer);
                 try { ws.close(); } catch {}
-                reject(new Error(data.error || "Upload failed"));
+                settledReject(new Error(data.error || "Upload failed"));
               }
             } catch (parseErr) {
               console.error("[Upload WS Parse Error]:", parseErr);
@@ -255,12 +298,14 @@ export function UploaderModal({
           };
 
           ws.onerror = () => {
-            reject(new Error("WebSocket upload connection failed"));
+            if (watchdogTimer) clearTimeout(watchdogTimer);
+            settledReject(new Error("WebSocket upload connection failed"));
           };
 
           ws.onclose = (ev) => {
+            if (watchdogTimer) clearTimeout(watchdogTimer);
             if (!ev.wasClean && ackedChunks < totalChunks) {
-              reject(new Error(`WebSocket connection closed unexpectedly (Code: ${ev.code})`));
+              settledReject(new Error(`WebSocket connection closed unexpectedly (Code: ${ev.code})`));
             }
           };
         });
@@ -330,13 +375,22 @@ export function UploaderModal({
               </h2>
             </div>
           </div>
-          <button
-            onClick={onClose}
-            disabled={isUploading}
-            className="p-1.5 rounded-full text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] disabled:opacity-30 transition-colors flex-shrink-0"
-          >
-            <X className="w-4 h-4" />
-          </button>
+          
+          <div className="flex items-center gap-2 flex-shrink-0">
+            {/* Live Upload Speed Badge beside X */}
+            {isUploading && currentSpeed && (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-blue-500/10 text-blue-500 border border-blue-500/20 animate-pulse">
+                ⚡ {currentSpeed}
+              </span>
+            )}
+            <button
+              onClick={onClose}
+              disabled={isUploading}
+              className="p-1.5 rounded-full text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] disabled:opacity-30 transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
 
         {/* Content Area */}
@@ -423,9 +477,16 @@ export function UploaderModal({
                         </span>
                         <span className="text-[11px] font-medium text-[var(--text-tertiary)] flex-shrink-0">
                           {isDone ? (
-                            <span className="text-emerald-500 font-semibold">100%</span>
+                            <span className="text-emerald-500 font-semibold">
+                              ✓ {task.durationFormatted ? `${task.durationFormatted}` : "Completed"} {task.speedFormatted ? `(${task.speedFormatted})` : ""}
+                            </span>
                           ) : isUploadingState ? (
-                            <span className="text-blue-500 font-semibold">{task.progress}%</span>
+                            <span className="text-blue-500 font-medium">
+                              <span className="font-semibold">{task.progress}%</span>
+                              <span className="text-[var(--text-tertiary)] ml-1 font-normal">
+                                ({formatFileSize(task.uploadedBytes || 0)} / {task.sizeFormatted})
+                              </span>
+                            </span>
                           ) : isProcessing ? (
                             <span className="text-amber-500">Preparing...</span>
                           ) : (
