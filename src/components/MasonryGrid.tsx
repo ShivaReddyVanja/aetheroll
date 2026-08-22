@@ -33,6 +33,31 @@ export function MasonryGrid({
   isSyncing = false,
   onOpenUploader,
 }: MasonryGridProps) {
+  const sentinelRef = React.useRef<HTMLDivElement>(null);
+
+  // 75% Scroll Threshold IntersectionObserver
+  React.useEffect(() => {
+    const sentinel = sentinelRef.current;
+    if (!sentinel || !hasMore || loading) return;
+
+    if (typeof IntersectionObserver === "undefined") return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting && hasMore && !loading) {
+          onLoadMore?.();
+        }
+      },
+      {
+        rootMargin: "600px 0px", // Triggers fetch 600px (~2-3 rows) before reaching bottom
+        threshold: 0,
+      }
+    );
+
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasMore, loading, onLoadMore]);
+
   // Group items by date string (Google Photos format: "Mon, Oct 2, 2023")
   const dateGroups = useMemo(() => {
     const groups: { [key: string]: { dateLabel: string; year: number; items: MediaItem[] } } = {};
@@ -157,16 +182,15 @@ export function MasonryGrid({
         );
       })}
 
-      {/* Infinite Scroll / Load More */}
+      {/* Infinite Scroll Sentinel: invisible trigger positioned at the bottom of the feed */}
       {hasMore && (
-        <div className="text-center py-8">
-          <button
-            onClick={onLoadMore}
-            disabled={loading}
-            className="px-6 py-2.5 rounded-full bg-[var(--bg-secondary)] hover:bg-[var(--bg-hover)] border border-[var(--border-color)] text-[var(--text-primary)] text-xs font-medium transition-all shadow-sm disabled:opacity-50"
-          >
-            {loading ? "Loading more..." : "Load More"}
-          </button>
+        <div ref={sentinelRef} className="h-10 w-full flex items-center justify-center py-6">
+          {loading && (
+            <div className="flex items-center gap-2 text-xs text-[var(--text-tertiary)] font-medium">
+              <RefreshCw className="w-4 h-4 animate-spin text-blue-500" />
+              <span>Loading more...</span>
+            </div>
+          )}
         </div>
       )}
     </div>

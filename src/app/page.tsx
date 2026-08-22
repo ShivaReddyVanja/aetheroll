@@ -162,15 +162,29 @@ export default function GalleryPage() {
     }
   }, [activeFilter, selectedChannelId]);
 
-  // 4. Fetch Media Items
+  // Helper to dynamically calculate 2 screens worth of batch size based on viewport
+  const getDynamicBatchLimit = () => {
+    if (typeof window === "undefined") return 48;
+    const cols = Math.max(2, Math.floor(window.innerWidth / 240));
+    const rows = Math.max(3, Math.ceil(window.innerHeight / 220));
+    return Math.min(100, Math.max(24, cols * rows * 2));
+  };
+
+  const inFlightFetchRef = React.useRef(false);
+
+  // 4. Fetch Media Items (with Dynamic Viewport Batching & Backend Filters)
   const fetchMedia = useCallback(
     async (cursor?: string) => {
-      if (!selectedChannelId) return;
+      if (!selectedChannelId || inFlightFetchRef.current) return;
+      inFlightFetchRef.current = true;
       setLoadingMedia(true);
 
       try {
-        let url = `/api/media?channel_id=${selectedChannelId}&limit=50`;
+        const batchLimit = getDynamicBatchLimit();
+        let url = `/api/media?channel_id=${selectedChannelId}&limit=${batchLimit}`;
         if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
+        if (activeFilter === "photos") url += `&file_type=photo`;
+        if (activeFilter === "videos") url += `&file_type=video`;
         if (activeFilter === "favorites") url += `&favorites_only=true`;
         if (activeFilter === "places") url += `&has_geo=true`;
 
@@ -190,13 +204,14 @@ export default function GalleryPage() {
         const data = await res.json();
 
         if (data.items) {
-          let items: MediaItem[] = data.items;
-
-          if (activeFilter === "photos") items = items.filter((i) => i.file_type === "photo");
-          if (activeFilter === "videos") items = items.filter((i) => i.file_type === "video");
+          const items: MediaItem[] = data.items;
 
           if (cursor) {
-            setMediaItems((prev) => [...prev, ...items]);
+            setMediaItems((prev) => {
+              const existingIds = new Set(prev.map((i) => i.id));
+              const newItems = items.filter((i) => !existingIds.has(i.id));
+              return [...prev, ...newItems];
+            });
           } else {
             setMediaItems(items);
           }
@@ -205,6 +220,7 @@ export default function GalleryPage() {
       } catch (e) {
         console.error("Failed to load media:", e);
       } finally {
+        inFlightFetchRef.current = false;
         setLoadingMedia(false);
       }
     },

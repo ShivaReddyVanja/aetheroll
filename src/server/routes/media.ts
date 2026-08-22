@@ -38,6 +38,7 @@ mediaRouter.get("/", async (c) => {
 
     const limit = Math.min(parseInt(c.req.query("limit") || "50", 10), 100);
     const cursor = c.req.query("cursor");
+    const fileType = c.req.query("file_type"); // "photo" | "video"
     const personId = c.req.query("person_id");
     const locationId = c.req.query("location_id");
     const eventId = c.req.query("event_id");
@@ -81,6 +82,11 @@ mediaRouter.get("/", async (c) => {
     `;
     const params: any[] = [auth.userId, channelId];
 
+    if (fileType === "photo" || fileType === "video") {
+      query += ` AND m.file_type = ?`;
+      params.push(fileType);
+    }
+
     if (cursor) {
       query += ` AND m.captured_at < ?`;
       params.push(cursor);
@@ -119,7 +125,7 @@ mediaRouter.get("/", async (c) => {
       params.push(tripId);
     }
 
-    query += ` ORDER BY m.captured_at DESC LIMIT ?`;
+    query += ` ORDER BY m.captured_at DESC, m.id DESC LIMIT ?`;
     params.push(limit);
 
     const items = await db.all(query, params);
