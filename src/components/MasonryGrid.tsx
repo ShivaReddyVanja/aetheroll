@@ -126,7 +126,7 @@ export function MasonryGrid({
             <div className="group flex items-center gap-2.5 text-[var(--text-primary)] font-semibold text-sm py-2.5 mb-1 sticky top-0 bg-[var(--bg-primary)] z-10 select-none">
               <button
                 onClick={() => onSelectDay?.(groupItems.map((i) => i.id))}
-                className={`w-5 h-5 rounded-full flex items-center justify-center transition-all ${
+                className={`w-6 h-6 md:w-5 md:h-5 rounded-full flex items-center justify-center transition-all flex-shrink-0 ${
                   isAllDaySelected
                     ? "bg-blue-600 text-white opacity-100"
                     : "border border-[var(--border-color)] opacity-0 group-hover:opacity-100 hover:border-blue-500 text-transparent"
