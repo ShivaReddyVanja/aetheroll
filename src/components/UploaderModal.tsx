@@ -49,7 +49,10 @@ export function UploaderModal({
   const [isUploading, setIsUploading] = useState(false);
   const [currentSpeed, setCurrentSpeed] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const activeWsRef = useRef<WebSocket | null>(null);
+  const isCancelledRef = useRef(false);
 
   const formatFileSize = (bytes: number) => {
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -90,16 +93,43 @@ export function UploaderModal({
   };
 
   const handleRemoveTask = (id: string) => {
-    if (isUploading) return;
+    // If the removed task is currently uploading/processing, close its WebSocket
+    const target = tasks.find((t) => t.id === id);
+    if (target && (target.status === "uploading" || target.status === "processing")) {
+      try {
+        activeWsRef.current?.close();
+      } catch {}
+    }
     setTasks((prev) => prev.filter((t) => t.id !== id));
+  };
+
+  const cancelAllUploads = () => {
+    isCancelledRef.current = true;
+    try {
+      activeWsRef.current?.close();
+    } catch {}
+    setIsUploading(false);
+    setCurrentSpeed(null);
+    setShowCancelConfirm(false);
+    onClose();
+  };
+
+  const handleCloseOrCancel = () => {
+    if (isUploading) {
+      setShowCancelConfirm(true);
+    } else {
+      onClose();
+    }
   };
 
   const startUpload = async () => {
     const validTasks = tasks.filter((t) => t.status === "pending" && t.file.size <= MAX_TELEGRAM_FILE_SIZE);
     if (validTasks.length === 0 || isUploading) return;
     setIsUploading(true);
+    isCancelledRef.current = false;
 
     for (let i = 0; i < tasks.length; i++) {
+      if (isCancelledRef.current) break;
       const task = tasks[i];
       if (task.status === "done" || task.status === "error" || task.file.size > MAX_TELEGRAM_FILE_SIZE) continue;
 
@@ -159,6 +189,7 @@ export function UploaderModal({
           const wsBaseUrl = WORKER_URL.replace(/^http:/, "ws:").replace(/^https:/, "wss:");
           const ws = new WebSocket(`${wsBaseUrl}/api/media/upload/ws`);
           ws.binaryType = "arraybuffer";
+          activeWsRef.current = ws;
 
           let nextChunkToSend = 0;
           let ackedChunks = 0;
@@ -353,7 +384,9 @@ export function UploaderModal({
       }
     }
 
+    activeWsRef.current = null;
     setIsUploading(false);
+    setCurrentSpeed(null);
     onUploadComplete();
   };
 
@@ -384,9 +417,8 @@ export function UploaderModal({
               </span>
             )}
             <button
-              onClick={onClose}
-              disabled={isUploading}
-              className="p-1.5 rounded-full text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] disabled:opacity-30 transition-colors"
+              onClick={handleCloseOrCancel}
+              className="p-1.5 rounded-full text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] transition-colors"
             >
               <X className="w-4 h-4" />
             </button>
@@ -523,14 +555,17 @@ export function UploaderModal({
                     </div>
 
                     {/* Status Icons / Action */}
-                    <div className="flex-shrink-0">
+                    <div className="flex-shrink-0 flex items-center gap-1">
                       {isDone && <CheckCircle2 className="w-4 h-4 text-emerald-500" />}
                       {isErr && <AlertCircle className="w-4 h-4 text-rose-500" />}
                       {isProcessing && <RefreshCw className="w-3.5 h-3.5 text-amber-500 animate-spin" />}
-                      {!isUploading && !isDone && (
+                      
+                      {/* Allow removing pending, errored, or cancelling in-flight task */}
+                      {!isDone && (
                         <button
                           onClick={() => handleRemoveTask(task.id)}
-                          className="p-1 text-[var(--text-tertiary)] hover:text-rose-500 rounded-full transition-colors"
+                          title={isUploadingState || isProcessing ? "Cancel this upload" : "Remove from queue"}
+                          className="p-1 text-[var(--text-tertiary)] hover:text-rose-500 hover:bg-[var(--bg-hover)] rounded-full transition-colors"
                         >
                           <X className="w-3.5 h-3.5" />
                         </button>
@@ -555,9 +590,8 @@ export function UploaderModal({
         {/* Footer Actions */}
         <div className="flex items-center justify-end gap-2.5 px-5 py-3.5 border-t border-[var(--border-color)] bg-[var(--bg-surface)] flex-shrink-0">
           <button
-            onClick={onClose}
-            disabled={isUploading}
-            className="px-4 py-2 rounded-full text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-40"
+            onClick={handleCloseOrCancel}
+            className="px-4 py-2 rounded-full text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] transition-colors"
           >
             {completedCount === totalCount && totalCount > 0 ? "Done" : "Cancel"}
           </button>
@@ -584,6 +618,37 @@ export function UploaderModal({
             </button>
           )}
         </div>
+
+        {/* Confirmation Modal when canceling active upload */}
+        {showCancelConfirm && (
+          <div className="absolute inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-5 animate-fadeIn">
+            <div className="bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-2xl p-5 max-w-xs w-full shadow-2xl text-center flex flex-col items-center">
+              <div className="w-11 h-11 rounded-full bg-rose-500/10 text-rose-500 flex items-center justify-center mb-3">
+                <AlertCircle className="w-6 h-6 stroke-[1.75]" />
+              </div>
+              <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                Cancel all uploads?
+              </h3>
+              <p className="text-xs text-[var(--text-secondary)] mt-1.5 leading-relaxed">
+                Upload is currently in progress. Canceling will stop in-flight transfers and discard remaining queue items.
+              </p>
+              <div className="flex items-center gap-2.5 mt-5 w-full">
+                <button
+                  onClick={() => setShowCancelConfirm(false)}
+                  className="flex-1 px-3 py-2 rounded-xl text-xs font-medium bg-[var(--bg-secondary)] hover:bg-[var(--bg-hover)] text-[var(--text-primary)] border border-[var(--border-color)] transition-colors"
+                >
+                  Continue Upload
+                </button>
+                <button
+                  onClick={cancelAllUploads}
+                  className="flex-1 px-3 py-2 rounded-xl text-xs font-semibold bg-rose-600 hover:bg-rose-500 text-white shadow-md transition-colors"
+                >
+                  Yes, Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
