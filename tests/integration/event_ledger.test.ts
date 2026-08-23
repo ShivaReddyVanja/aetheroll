@@ -1,8 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseGalleryEvent, applyGalleryEventsToDb } from "../src/server/lib/ledger.ts";
-import type { GalleryEvent } from "../src/server/lib/ledger.ts";
-import type { DatabaseInterface } from "../src/server/lib/db.ts";
+import { parseGalleryEvent, applyGalleryEventsToDb } from "../../src/server/lib/ledger.ts";
+import type { GalleryEvent } from "../../src/server/lib/ledger.ts";
+import type { DatabaseInterface } from "../../src/server/lib/db.ts";
 
 describe("📜 Telegram Event Sourcing & Disaster Recovery Ledger", () => {
   it("should correctly parse valid [GP_EVENT:v1] JSON messages", async () => {
