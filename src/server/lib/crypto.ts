@@ -204,10 +204,11 @@ export async function verifyAetherollSignature(
     if (match[1].toLowerCase() === expectedHex.toLowerCase()) {
       return true;
     }
+    return false;
   }
 
   // 2. Event Ledger WAL Tag Match (Legacy and Threaded events)
-  if (messageText.includes("[GP_EVENT:v1]") || messageText.includes("#aetheroll")) {
+  if (messageText.includes("[GP_EVENT:v1]") || messageText.includes("[GP_BATCH:v1]") || messageText.includes("#aetheroll")) {
     return true;
   }
 

@@ -312,17 +312,27 @@ export class UploadHttpHandler {
         file: inputFile,
         thumb: thumbBuf,
         caption: signature,
-        forceDocument: false,
-        attributes: isVideo
-          ? [
-              new Api.DocumentAttributeVideo({
-                duration: Math.round(Number(duration) || 0),
-                w: Number(width) || 1920,
-                h: Number(height) || 1080,
-                supportsStreaming: true,
-              }),
-            ]
-          : undefined,
+        forceDocument: true,
+        attributes: [
+          new Api.DocumentAttributeFilename({
+            fileName: uploadSession.fileName,
+          }),
+          ...(isVideo
+            ? [
+                new Api.DocumentAttributeVideo({
+                  duration: Math.round(Number(duration) || 0),
+                  w: Number(width) || 1920,
+                  h: Number(height) || 1080,
+                  supportsStreaming: true,
+                }),
+              ]
+            : [
+                new Api.DocumentAttributeImageSize({
+                  w: Number(width) || 1920,
+                  h: Number(height) || 1080,
+                }),
+              ]),
+        ],
       });
 
       const realMessageId = sentMsg.id;
@@ -486,17 +496,27 @@ export class UploadHttpHandler {
           thumb: thumbBuf,
           caption: signature,
           workers: 1,
-          forceDocument: false,
-          attributes: isVideo
-            ? [
-                new Api.DocumentAttributeVideo({
-                  duration: Math.round(Number(formData.get("duration")) || 0),
-                  w: Number(formData.get("width")) || 1920,
-                  h: Number(formData.get("height")) || 1080,
-                  supportsStreaming: true,
-                }),
-              ]
-            : undefined,
+          forceDocument: true,
+          attributes: [
+            new Api.DocumentAttributeFilename({
+              fileName: file.name,
+            }),
+            ...(isVideo
+              ? [
+                  new Api.DocumentAttributeVideo({
+                    duration: Math.round(Number(formData.get("duration")) || 0),
+                    w: Number(formData.get("width")) || 1920,
+                    h: Number(formData.get("height")) || 1080,
+                    supportsStreaming: true,
+                  }),
+                ]
+              : [
+                  new Api.DocumentAttributeImageSize({
+                    w: Number(formData.get("width")) || 1920,
+                    h: Number(formData.get("height")) || 1080,
+                  }),
+                ]),
+          ],
         });
         console.log(`[UploadOneShot] Telegram sendFile SUCCESS! Message ID: ${sentMsg.id}`);
       } catch (sendErr: any) {

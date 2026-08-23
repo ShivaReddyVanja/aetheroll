@@ -130,7 +130,42 @@ actionsMediaRoute.post("/delete", async (c) => {
       }
 
       if (itemsByChannel.size > 0) {
-        const deleteTgPromise = (async () => {
+        const authDo = (c.env as any)?.AUTH_DO;
+        if (authDo && typeof authDo.idFromName === "function") {
+          try {
+            const token = auth.sessionToken || auth.userId || "default";
+            const doId = authDo.idFromName(token);
+            const stub = authDo.get(doId);
+
+            const headers = new Headers();
+            headers.set("Content-Type", "application/json");
+            if (auth.sessionToken) headers.set("x-tg-session", auth.sessionToken);
+            if (c.req.header("cookie")) headers.set("cookie", c.req.header("cookie")!);
+            if (c.req.header("authorization")) headers.set("authorization", c.req.header("authorization")!);
+            if (c.env?.TELEGRAM_API_ID) headers.set("x-tg-api-id", String(c.env.TELEGRAM_API_ID));
+            if (c.env?.TELEGRAM_API_HASH) headers.set("x-tg-api-hash", String(c.env.TELEGRAM_API_HASH));
+            if (c.env?.TELEGRAM_TEST_MODE) headers.set("x-tg-test-mode", String(c.env.TELEGRAM_TEST_MODE));
+            if (c.env?.SESSION_ENCRYPTION_KEY) headers.set("x-tg-enc-key", String(c.env.SESSION_ENCRYPTION_KEY));
+
+            const channelItems = Array.from(itemsByChannel.entries()).map(([channelTgId, list]) => ({
+              channelTgId,
+              messageIds: list.map((it) => Number(it.telegram_message_id)).filter(Boolean),
+            }));
+
+            const deleteReq = new Request("https://internal.do/api/media/delete", {
+              method: "POST",
+              headers,
+              body: JSON.stringify({ channel_items: channelItems }),
+            });
+
+            await stub.fetch(deleteReq).catch((err: any) => {
+              console.warn("[MediaDelete] DO deletion non-fatal error:", err);
+            });
+          } catch (doErr) {
+            console.warn("[MediaDelete] DO dispatch error:", doErr);
+          }
+        } else {
+          // Fallback for local Node / testing environment without Durable Object
           try {
             const client = await getConnectedClient(auth.sessionString!, auth.telegramConfig);
 
@@ -165,17 +200,8 @@ actionsMediaRoute.post("/delete", async (c) => {
               }
             }
           } catch (clientErr) {
-            console.warn("[MediaDelete] Telegram client error during deletion:", clientErr);
+            console.warn("[MediaDelete] Telegram client fallback error:", clientErr);
           }
-        })();
-
-        if ((c.executionCtx as any)?.waitUntil) {
-          c.executionCtx.waitUntil(deleteTgPromise.catch(() => {}));
-        } else {
-          await Promise.race([
-            deleteTgPromise,
-            new Promise((_, reject) => setTimeout(() => reject(new Error("Telegram delete timeout")), 10000))
-          ]).catch((e) => console.warn("[MediaDelete] TG delete non-fatal error:", e));
         }
       }
     }

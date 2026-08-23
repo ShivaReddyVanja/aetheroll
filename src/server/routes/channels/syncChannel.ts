@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import crypto from "crypto";
+import { Api, utils } from "telegram";
 import { toSafeNumber } from "../../lib/db.ts";
 import { verifyAetherollSignature } from "../../lib/crypto.ts";
 import {
@@ -7,6 +8,7 @@ import {
   parseGalleryBatch,
   applyGalleryEventsToDb,
   applyGalleryBatch,
+  EVENT_TAG_PREFIX,
   BATCH_TAG_PREFIX,
 } from "../../lib/ledger.ts";
 import type { GalleryEvent, GalleryOp } from "../../lib/ledger.ts";
@@ -60,8 +62,10 @@ syncChannelRoute.post("/:id/sync", async (c) => {
 
     const activeTgMediaMsgIds = new Set<number>();
     const scannedMsgIds: number[] = [];
-    const eventRecords: { event: GalleryEvent; msgId: number }[] = [];
+    const eventRecords: { event: GalleryEvent; msgId: number; ref: number }[] = [];
+    const rawEventMessages: { msgId: number; ref: number | null }[] = [];
     const batchRecords: { batch: { ts: number; ops: GalleryOp[] }; msgId: number }[] = [];
+    const encryptionKey = (c.env as any)?.MASTER_ENCRYPTION_KEY;
 
     // Pass 1: Index raw media messages & collect WAL events
     for (const msg of messages) {
@@ -69,11 +73,30 @@ syncChannelRoute.post("/:id/sync", async (c) => {
       const msgId = toSafeNumber(msg.id);
       scannedMsgIds.push(msgId);
 
-      // 1. Check if this message is an encrypted/legacy inline WAL event
-      const event = await parseGalleryEvent(msg.message, (c.env as any)?.MASTER_ENCRYPTION_KEY);
-      if (event) {
-        eventRecords.push({ event, msgId });
-        continue;
+      const hasEventPrefix = typeof msg.message === "string" && msg.message.includes(EVENT_TAG_PREFIX);
+      const rawReplyToId = (msg.replyTo as any)?.replyToMsgId ? toSafeNumber((msg.replyTo as any).replyToMsgId) : null;
+      let envelopeRef: number | null = null;
+
+      // 1. Check if this message is a WAL event envelope
+      if (hasEventPrefix && msg.message) {
+        try {
+          const jsonStr = msg.message.substring(msg.message.indexOf(EVENT_TAG_PREFIX) + EVENT_TAG_PREFIX.length).trim();
+          const parsed = JSON.parse(jsonStr);
+          if (parsed && typeof parsed.ref === "number") {
+            envelopeRef = parsed.ref;
+          }
+        } catch {}
+
+        const event = await parseGalleryEvent(msg.message, encryptionKey);
+        const refId = event?.ref || envelopeRef || rawReplyToId || 0;
+        if (event) {
+          eventRecords.push({ event, msgId, ref: refId });
+          continue;
+        } else {
+          // Record unparseable/unencrypted raw event message for orphan cleanup check
+          rawEventMessages.push({ msgId, ref: envelopeRef || rawReplyToId });
+          continue;
+        }
       }
 
       // 2. Check if this message is a GP_BATCH document manifest
@@ -85,7 +108,7 @@ syncChannelRoute.post("/:id/sync", async (c) => {
               msg.message,
               docBytes,
               channel.telegram_channel_id,
-              (c.env as any)?.MASTER_ENCRYPTION_KEY
+              encryptionKey
             );
             if (batch) {
               batchRecords.push({ batch, msgId });
@@ -97,16 +120,33 @@ syncChannelRoute.post("/:id/sync", async (c) => {
         }
       }
 
-      if (!msg.media) continue;
+      // If it's a non-media message (e.g. text reply, signature tag), track for potential cleanup
+      if (!msg.media) {
+        if (rawReplyToId || msg.message?.startsWith("[AET:v1:")) {
+          rawEventMessages.push({ msgId, ref: rawReplyToId });
+        }
+        continue;
+      }
 
-      const isPhoto = !!msg.photo;
-      const isVideo = !!(msg.video || (msg.document && msg.document.mimeType?.startsWith("video/")));
+      const doc = (msg.document || (msg.media as any)?.document) as any;
+      const isLegacyPhoto = !!msg.photo;
+      const isDocImage = !!(doc && (
+        doc.mimeType?.startsWith("image/") ||
+        doc.mimeType === "image/jpeg" ||
+        doc.mimeType === "image/png" ||
+        doc.mimeType === "image/webp" ||
+        doc.mimeType === "image/heic" ||
+        doc.mimeType === "image/gif" ||
+        doc.mimeType === "image/avif"
+      ));
+      const isPhoto = isLegacyPhoto || isDocImage;
+      const isVideo = !!(msg.video || (doc && doc.mimeType?.startsWith("video/")));
 
       if (!isPhoto && !isVideo) continue;
 
-      const fileType = isPhoto ? "photo" : "video";
-      const mimeType = isPhoto ? "image/jpeg" : (msg.document?.mimeType || "video/mp4");
-      const fileSize = toSafeNumber((msg.photo as any)?.sizes?.slice(-1)[0]?.size || (msg.document as any)?.size || 0);
+      const fileType = isVideo ? "video" : "photo";
+      const mimeType = doc?.mimeType || (isPhoto ? "image/jpeg" : "video/mp4");
+      const fileSize = toSafeNumber((msg.photo as any)?.sizes?.slice(-1)[0]?.size || doc?.size || 0);
       const dateSeconds = toSafeNumber(msg.date, Math.floor(Date.now() / 1000));
 
       // Strictly verify Aetheroll cryptographic upload signature or WAL event
@@ -117,15 +157,21 @@ syncChannelRoute.post("/:id/sync", async (c) => {
         (c.env as any)?.SESSION_ENCRYPTION_KEY
       );
       if (!isAetherollMedia) {
-        continue; // Ignore random non-Aetheroll chat files
+        continue; // Strictly ignore any non-Aetheroll media
       }
 
       activeTgMediaMsgIds.add(msgId);
 
-      // Default dimensions or extracted
-      const width = toSafeNumber((msg.photo as any)?.sizes?.slice(-1)[0]?.w || (msg.document as any)?.attributes?.find((a: any) => a.w)?.w || 1920);
-      const height = toSafeNumber((msg.photo as any)?.sizes?.slice(-1)[0]?.h || (msg.document as any)?.attributes?.find((a: any) => a.h)?.h || 1080);
-      const rawDuration = (msg.document as any)?.attributes?.find((a: any) => a.duration)?.duration;
+      // Default dimensions or extracted from document/photo attributes
+      const docAttrs = doc?.attributes || [];
+      const imageAttr = docAttrs.find((a: any) => a.w && a.h);
+      const videoAttr = docAttrs.find((a: any) => a.w && a.h);
+      const photoSizes = (msg.photo as any)?.sizes || [];
+      const largestPhotoSize = photoSizes[photoSizes.length - 1];
+
+      const width = toSafeNumber(imageAttr?.w || videoAttr?.w || largestPhotoSize?.w || 1920);
+      const height = toSafeNumber(imageAttr?.h || videoAttr?.h || largestPhotoSize?.h || 1080);
+      const rawDuration = docAttrs.find((a: any) => a.duration != null)?.duration;
       const duration = rawDuration != null ? toSafeNumber(rawDuration) : null;
 
       // Extract raw GPS from Telegram geo attachment if present
@@ -191,27 +237,41 @@ syncChannelRoute.post("/:id/sync", async (c) => {
       }
     }
 
-    // Pass 3: Auto-clean orphaned [GP_EVENT:v1] text messages from Telegram
-    const orphanedEventIds: number[] = [];
+    // Pass 3: Auto-clean orphaned [GP_EVENT:v1] text messages & dangling replies from Telegram
+    const orphanedEventIds = new Set<number>();
     const validEvents: GalleryEvent[] = [];
 
     for (const rec of eventRecords) {
-      if (activeTgMediaMsgIds.has(rec.event.ref)) {
+      if (activeTgMediaMsgIds.has(rec.ref)) {
         validEvents.push(rec.event);
       } else {
         // Target media message is no longer in Telegram! Mark event text message for cleanup
-        orphanedEventIds.push(rec.msgId);
+        orphanedEventIds.add(rec.msgId);
       }
     }
 
-    if (orphanedEventIds.length > 0) {
-      try {
-        await client.deleteMessages(targetPeer, orphanedEventIds, { revoke: true });
-        cleanedOrphanEventsCount = orphanedEventIds.length;
-        console.log(`[EventLedger] Cleaned ${cleanedOrphanEventsCount} orphaned event messages from channel ${channel.name}`);
-      } catch (delErr) {
-        console.warn("[EventLedger] Orphaned event cleanup warning:", delErr);
+    for (const rec of rawEventMessages) {
+      if (rec.ref && activeTgMediaMsgIds.has(rec.ref)) {
+        // Target media still exists in Telegram, keep
+      } else {
+        // Target media no longer in Telegram or unlinked event message -> mark for cleanup
+        orphanedEventIds.add(rec.msgId);
       }
+    }
+
+    const orphanIdArray = Array.from(orphanedEventIds);
+    if (orphanIdArray.length > 0) {
+      const TG_BATCH_LIMIT = 100;
+      for (let i = 0; i < orphanIdArray.length; i += TG_BATCH_LIMIT) {
+        const chunk = orphanIdArray.slice(i, i + TG_BATCH_LIMIT);
+        try {
+          await client.deleteMessages(targetPeer, chunk, { revoke: true });
+          cleanedOrphanEventsCount += chunk.length;
+        } catch (delErr) {
+          console.warn("[EventLedger] Orphaned event cleanup warning:", delErr);
+        }
+      }
+      console.log(`[EventLedger] Cleaned ${cleanedOrphanEventsCount} orphaned event/reply messages from channel ${channel.name}`);
     }
 
     // Pass 4: Replay valid Event Sourcing Ledger (restores tags, trips, people, events, favorites, GPS)

@@ -5,7 +5,6 @@ export async function getMasterCryptoKey(customKey?: string): Promise<CryptoKey>
   const secret =
     customKey ||
     process.env.MASTER_ENCRYPTION_KEY ||
-    process.env.SESSION_ENCRYPTION_KEY ||
     "aetheroll-vault-master-secret";
 
   const encoder = new TextEncoder();

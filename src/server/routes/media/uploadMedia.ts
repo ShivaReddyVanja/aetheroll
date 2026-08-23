@@ -1,9 +1,10 @@
 import { Hono } from "hono";
 import { getCookie } from "hono/cookie";
 import crypto from "crypto";
+import { Api } from "telegram";
 import { CustomFile } from "telegram/client/uploads.js";
 import { getDb } from "../../lib/db.ts";
-import { decryptSession } from "../../lib/crypto.ts";
+import { decryptSession, generateAetherollSignature } from "../../lib/crypto.ts";
 import { resolveUserAuth } from "../../lib/auth.ts";
 import { getR2Storage } from "../../lib/r2.ts";
 import { getConnectedClient, getDefaultTelegramConfig } from "../../lib/telegram.ts";
@@ -125,10 +126,38 @@ uploadMediaRoute.post("/upload", async (c) => {
       }
     }
 
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const signature = await generateAetherollSignature(
+      file.size,
+      nowSeconds,
+      (c.env as any)?.SESSION_ENCRYPTION_KEY
+    );
+
     const sentMsg = await client.sendFile(targetPeer, {
       file: customFile,
+      caption: signature,
       workers: 1,
-      forceDocument: false,
+      forceDocument: true,
+      attributes: [
+        new Api.DocumentAttributeFilename({
+          fileName: file.name,
+        }),
+        ...(isVideo
+          ? [
+              new Api.DocumentAttributeVideo({
+                duration: 0,
+                w: 1920,
+                h: 1080,
+                supportsStreaming: true,
+              }),
+            ]
+          : [
+              new Api.DocumentAttributeImageSize({
+                w: 1920,
+                h: 1080,
+              }),
+            ]),
+      ],
     });
 
     const realMessageId = sentMsg.id;
