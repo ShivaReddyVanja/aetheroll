@@ -1,7 +1,7 @@
 import { Api, helpers } from "telegram";
 import crypto from "crypto";
 import { getDb } from "../../lib/db.ts";
-import { decryptSession } from "../../lib/crypto.ts";
+import { decryptSession, generateAetherollSignature } from "../../lib/crypto.ts";
 import { extractSessionToken } from "../../lib/auth.ts";
 import { getR2Storage } from "../../lib/r2.ts";
 import { getDefaultTelegramConfig, getConnectedClient } from "../../lib/telegram.ts";
@@ -83,22 +83,37 @@ export class UploadWebSocketHandler {
               md5Checksum: "",
             });
 
-        const media = uploadState.isVideo
-          ? new Api.InputMediaUploadedDocument({
-              file: inputFile,
-              mimeType: uploadState.mimeType || "video/mp4",
-              attributes: [
-                new Api.DocumentAttributeVideo({
-                  duration: Math.round(uploadState.duration || 0),
-                  w: uploadState.width || 1920,
-                  h: uploadState.height || 1080,
-                  supportsStreaming: true,
-                }),
-              ],
-            })
-          : new Api.InputMediaUploadedPhoto({
-              file: inputFile,
-            });
+        const nowSeconds = Math.floor(Date.now() / 1000);
+        const signature = await generateAetherollSignature(
+          uploadState.fileSize,
+          nowSeconds,
+          envObj?.SESSION_ENCRYPTION_KEY
+        );
+
+        const media = new Api.InputMediaUploadedDocument({
+          file: inputFile,
+          mimeType: uploadState.mimeType || (uploadState.isVideo ? "video/mp4" : "image/jpeg"),
+          attributes: [
+            new Api.DocumentAttributeFilename({
+              fileName: uploadState.fileName,
+            }),
+            ...(uploadState.isVideo
+              ? [
+                  new Api.DocumentAttributeVideo({
+                    duration: Math.round(uploadState.duration || 0),
+                    w: uploadState.width || 1920,
+                    h: uploadState.height || 1080,
+                    supportsStreaming: true,
+                  }),
+                ]
+              : [
+                  new Api.DocumentAttributeImageSize({
+                    w: uploadState.width || 1920,
+                    h: uploadState.height || 1080,
+                  }),
+                ]),
+          ],
+        });
 
         logToClient("INVOKING_SEND_MEDIA", { targetPeer: uploadState.targetPeer, isVideo: uploadState.isVideo });
 
@@ -110,7 +125,7 @@ export class UploadWebSocketHandler {
                 new Api.messages.SendMedia({
                   peer: uploadState.targetPeer,
                   media,
-                  message: "",
+                  message: signature,
                   randomId: helpers.readBigIntFromBuffer(helpers.generateRandomBytes(8), true, true),
                 })
               ),

@@ -171,83 +171,137 @@ thumbnailMediaRoute.get("/:id/thumbnail", async (c) => {
       const auth = await resolveUserAuth(c);
       if (!auth.authenticated || !auth.sessionString) return c.text("Unauthorized", 401);
 
-      const client = await getConnectedClient(auth.sessionString, auth.telegramConfig);
-
-      let targetPeer: any = item.telegram_channel_id;
-      if (item.telegram_channel_id === "me" || item.telegram_channel_id.startsWith("me_")) {
-        targetPeer = "me";
-      } else {
+      const authDo = (c.env as any)?.AUTH_DO;
+      if (authDo && typeof authDo.idFromName === "function") {
         try {
-          targetPeer = await client.getInputEntity(item.telegram_channel_id);
-        } catch {
-          try {
-            targetPeer = await client.getEntity(item.telegram_channel_id);
-          } catch {}
-        }
-      }
+          const token = auth.sessionToken || auth.userId || "default";
+          const doId = authDo.idFromName(token);
+          const stub = authDo.get(doId);
 
-      const msgId = Number(item.telegram_message_id);
-      const messages = await client.getMessages(targetPeer, { ids: [msgId] });
-      const msg = messages[0];
+          const headers = new Headers();
+          if (auth.sessionToken) headers.set("x-tg-session", auth.sessionToken);
+          if (c.req.header("cookie")) headers.set("cookie", c.req.header("cookie")!);
+          if (c.req.header("authorization")) headers.set("authorization", c.req.header("authorization")!);
+          if (c.env?.TELEGRAM_API_ID) headers.set("x-tg-api-id", String(c.env.TELEGRAM_API_ID));
+          if (c.env?.TELEGRAM_API_HASH) headers.set("x-tg-api-hash", String(c.env.TELEGRAM_API_HASH));
+          if (c.env?.TELEGRAM_TEST_MODE) headers.set("x-tg-test-mode", String(c.env.TELEGRAM_TEST_MODE));
+          if (c.env?.SESSION_ENCRYPTION_KEY) headers.set("x-tg-enc-key", String(c.env.SESSION_ENCRYPTION_KEY));
+          headers.set("x-target-channel-id", item.telegram_channel_id);
+          headers.set("x-target-msg-id", String(item.telegram_message_id));
 
-      if (msg && msg.media) {
-        let thumbBuffer: Buffer | null = null;
-
-        // 3a. Extract instant stripped thumbnail
-        const photoSizes = (msg.media as any)?.photo?.sizes || [];
-        const docThumbs = (msg.media as any)?.document?.thumbs || [];
-        const stripped = [...photoSizes, ...docThumbs].find(
-          (s: any) => s instanceof Api.PhotoStrippedSize || s.className === "PhotoStrippedSize" || s.bytes
-        );
-
-        if (stripped && stripped.bytes) {
-          try {
-            thumbBuffer = Buffer.from(utils.strippedPhotoToJpg(stripped.bytes));
-          } catch (stripErr) {
-            console.warn("[Thumbnail] Stripped JPEG conversion fallback:", stripErr);
-          }
-        }
-
-        // 3b. Try multi-size thumbs (thumb 1, then thumb 0)
-        if (!thumbBuffer && docThumbs.length > 0) {
-          for (let idx = Math.min(docThumbs.length - 1, 1); idx >= 0; idx--) {
-            try {
-              const downloaded = await client.downloadMedia(msg.media, { thumb: idx });
-              if (downloaded && Buffer.isBuffer(downloaded) && downloaded.length > 0) {
-                thumbBuffer = downloaded;
-                break;
-              }
-            } catch {}
-          }
-        }
-
-        // 3c. For photos: download photo directly
-        if (!thumbBuffer && (msg.photo || item.file_type === "photo")) {
-          try {
-            const downloaded = await client.downloadMedia(msg.media);
-            if (downloaded && Buffer.isBuffer(downloaded) && downloaded.length > 0) {
-              thumbBuffer = downloaded;
-            }
-          } catch {}
-        }
-
-        // 3d. If real thumbBuffer found, save to R2 and return
-        if (thumbBuffer && Buffer.isBuffer(thumbBuffer) && thumbBuffer.length > 0) {
-          const key = `thumbnails/${item.channel_id}/${item.id}.jpg`;
-          try {
-            await r2.put(key, thumbBuffer, "image/jpeg");
-            await db.run("UPDATE media_items SET thumbnail_r2_key = ? WHERE id = ?", [key, item.id]);
-          } catch (r2Err) {
-            console.warn("[Thumbnail] R2 cache write non-fatal error:", r2Err);
-          }
-
-          response = new Response(thumbBuffer as any, {
-            headers: {
-              "Content-Type": "image/jpeg",
-              "Cache-Control": "public, max-age=31536000, immutable",
-              "Access-Control-Allow-Origin": "*",
-            },
+          const thumbReq = new Request("https://internal.do/api/media/thumbnail", {
+            method: "GET",
+            headers,
           });
+
+          const doRes = await stub.fetch(thumbReq);
+          if (doRes.ok) {
+            const thumbBuffer = Buffer.from(await doRes.arrayBuffer());
+            if (thumbBuffer.length > 0) {
+              const key = `thumbnails/${item.channel_id}/${item.id}.jpg`;
+              try {
+                await r2.put(key, thumbBuffer, { contentType: "image/jpeg" });
+                await db.run("UPDATE media_items SET thumbnail_r2_key = ? WHERE id = ?", [key, item.id]);
+              } catch (r2Err) {
+                console.warn("[Thumbnail] R2 cache write non-fatal error:", r2Err);
+              }
+
+              response = new Response(thumbBuffer as any, {
+                headers: {
+                  "Content-Type": "image/jpeg",
+                  "Cache-Control": "public, max-age=31536000, immutable",
+                  "Access-Control-Allow-Origin": "*",
+                },
+              });
+            }
+          }
+        } catch (doErr) {
+          console.warn("[Thumbnail] DO fallback error:", doErr);
+        }
+      } else {
+        // Fallback for local Node / testing environment without Durable Object
+        try {
+          const client = await getConnectedClient(auth.sessionString, auth.telegramConfig);
+
+          let targetPeer: any = item.telegram_channel_id;
+          if (item.telegram_channel_id === "me" || item.telegram_channel_id.startsWith("me_")) {
+            targetPeer = "me";
+          } else {
+            try {
+              targetPeer = await client.getInputEntity(item.telegram_channel_id);
+            } catch {
+              try {
+                targetPeer = await client.getEntity(item.telegram_channel_id);
+              } catch {}
+            }
+          }
+
+          const msgId = Number(item.telegram_message_id);
+          const messages = await client.getMessages(targetPeer, { ids: [msgId] });
+          const msg = messages[0];
+
+          if (msg && msg.media) {
+            let thumbBuffer: Buffer | null = null;
+
+            // 3a. Extract instant stripped thumbnail
+            const photoSizes = (msg.media as any)?.photo?.sizes || [];
+            const docThumbs = (msg.media as any)?.document?.thumbs || [];
+            const stripped = [...photoSizes, ...docThumbs].find(
+              (s: any) => s instanceof Api.PhotoStrippedSize || s.className === "PhotoStrippedSize" || s.bytes
+            );
+
+            if (stripped && stripped.bytes) {
+              try {
+                thumbBuffer = Buffer.from(utils.strippedPhotoToJpg(stripped.bytes));
+              } catch (stripErr) {
+                console.warn("[Thumbnail] Stripped JPEG conversion fallback:", stripErr);
+              }
+            }
+
+            // 3b. Try multi-size thumbs (thumb 1, then thumb 0)
+            if (!thumbBuffer && docThumbs.length > 0) {
+              for (let idx = Math.min(docThumbs.length - 1, 1); idx >= 0; idx--) {
+                try {
+                  const downloaded = await client.downloadMedia(msg.media, { thumb: idx });
+                  if (downloaded && Buffer.isBuffer(downloaded) && downloaded.length > 0) {
+                    thumbBuffer = downloaded;
+                    break;
+                  }
+                } catch {}
+              }
+            }
+
+            // 3c. For photos: download photo directly
+            if (!thumbBuffer && (msg.photo || item.file_type === "photo")) {
+              try {
+                const downloaded = await client.downloadMedia(msg.media);
+                if (downloaded && Buffer.isBuffer(downloaded) && downloaded.length > 0) {
+                  thumbBuffer = downloaded;
+                }
+              } catch {}
+            }
+
+            // 3d. If real thumbBuffer found, save to R2 and return
+            if (thumbBuffer && Buffer.isBuffer(thumbBuffer) && thumbBuffer.length > 0) {
+              const key = `thumbnails/${item.channel_id}/${item.id}.jpg`;
+              try {
+                await r2.put(key, thumbBuffer, { contentType: "image/jpeg" });
+                await db.run("UPDATE media_items SET thumbnail_r2_key = ? WHERE id = ?", [key, item.id]);
+              } catch (r2Err) {
+                console.warn("[Thumbnail] R2 cache write non-fatal error:", r2Err);
+              }
+
+              response = new Response(thumbBuffer as any, {
+                headers: {
+                  "Content-Type": "image/jpeg",
+                  "Cache-Control": "public, max-age=31536000, immutable",
+                  "Access-Control-Allow-Origin": "*",
+                },
+              });
+            }
+          }
+        } catch (clientErr) {
+          console.warn("[Thumbnail] Telegram client fallback error:", clientErr);
         }
       }
     }

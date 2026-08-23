@@ -1,3 +1,4 @@
+import { Api, utils } from "telegram";
 import { SlidingWindowRatePacer, MAX_TELEGRAM_FILE_SIZE, toBigInt } from "./common/ratePacer.ts";
 import { TelemetryLogger } from "./telemetry/telemetryLogger.ts";
 import { ClientSessionManager } from "./auth/clientSessionManager.ts";
@@ -182,6 +183,139 @@ export class TelegramAuthDO {
       return new Response(JSON.stringify({ success: true, message: "In-memory DO caches cleared" }), {
         headers: { "Content-Type": "application/json" },
       });
+    }
+
+    // 3.6 Batch Delete media messages in Telegram with warm MTProto connection
+    if (url.pathname.includes("/delete") || url.pathname.includes("/api/media/delete")) {
+      try {
+        const { client, userId, error } = await this.clientSessionManager.getOrConnectUserClient(request, effectiveEnv);
+        if (!client) {
+          return new Response(JSON.stringify({ error: error || "Unauthorized" }), {
+            status: 401,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+
+        const body = (await request.json().catch(() => ({}))) as any;
+        const channelItemsList: Array<{ channelTgId: string; messageIds: number[] }> = body?.channel_items || [];
+
+        for (const { channelTgId, messageIds } of channelItemsList) {
+          if (!messageIds || messageIds.length === 0) continue;
+          let targetPeer: any = channelTgId;
+          if (targetPeer !== "me" && !targetPeer.startsWith("me_")) {
+            try { targetPeer = await client.getInputEntity(targetPeer); }
+            catch { try { targetPeer = await client.getEntity(targetPeer); } catch {} }
+          } else {
+            targetPeer = "me";
+          }
+
+          const TG_BATCH_LIMIT = 100;
+          for (let i = 0; i < messageIds.length; i += TG_BATCH_LIMIT) {
+            const chunk = messageIds.slice(i, i + TG_BATCH_LIMIT);
+            await client.deleteMessages(targetPeer, chunk, { revoke: true });
+          }
+        }
+
+        return new Response(JSON.stringify({ success: true }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      } catch (err: any) {
+        console.error("[DO:MediaDelete Error]:", err);
+        return new Response(JSON.stringify({ error: err.message || "Failed to delete messages in Telegram" }), {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+    }
+
+    // 3.7 Fetch media thumbnail with warm MTProto connection
+    if (url.pathname.includes("/thumbnail") || url.pathname.includes("/api/media/thumbnail")) {
+      try {
+        const { client, userId, error } = await this.clientSessionManager.getOrConnectUserClient(request, effectiveEnv);
+        if (!client) {
+          return new Response(JSON.stringify({ error: error || "Unauthorized" }), {
+            status: 401,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+
+        const channelTgId = request.headers.get("x-target-channel-id") || url.searchParams.get("channel") || "me";
+        const msgIdStr = request.headers.get("x-target-msg-id") || url.searchParams.get("msgId");
+        const msgId = Number(msgIdStr);
+        if (!msgId) {
+          return new Response(JSON.stringify({ error: "Missing message ID" }), {
+            status: 400,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+
+        let targetPeer: any = channelTgId;
+        if (targetPeer !== "me" && !targetPeer.startsWith("me_")) {
+          try { targetPeer = await client.getInputEntity(targetPeer); }
+          catch { try { targetPeer = await client.getEntity(targetPeer); } catch {} }
+        } else {
+          targetPeer = "me";
+        }
+
+        const messages = await client.getMessages(targetPeer, { ids: [msgId] });
+        const msg = messages[0];
+
+        if (msg && msg.media) {
+          let thumbBuffer: Buffer | null = null;
+          const photoSizes = (msg.media as any)?.photo?.sizes || [];
+          const docThumbs = (msg.media as any)?.document?.thumbs || [];
+          const stripped = [...photoSizes, ...docThumbs].find(
+            (s: any) => s instanceof Api.PhotoStrippedSize || s.className === "PhotoStrippedSize" || s.bytes
+          );
+
+          if (stripped && stripped.bytes) {
+            try {
+              thumbBuffer = Buffer.from(utils.strippedPhotoToJpg(stripped.bytes));
+            } catch {}
+          }
+
+          if (!thumbBuffer && docThumbs.length > 0) {
+            for (let idx = Math.min(docThumbs.length - 1, 1); idx >= 0; idx--) {
+              try {
+                const downloaded = await client.downloadMedia(msg.media, { thumb: idx });
+                if (downloaded && Buffer.isBuffer(downloaded) && downloaded.length > 0) {
+                  thumbBuffer = downloaded;
+                  break;
+                }
+              } catch {}
+            }
+          }
+
+          if (!thumbBuffer && msg.photo) {
+            try {
+              const downloaded = await client.downloadMedia(msg.media);
+              if (downloaded && Buffer.isBuffer(downloaded) && downloaded.length > 0) {
+                thumbBuffer = downloaded;
+              }
+            } catch {}
+          }
+
+          if (thumbBuffer && Buffer.isBuffer(thumbBuffer) && thumbBuffer.length > 0) {
+            return new Response(thumbBuffer as any, {
+              headers: {
+                "Content-Type": "image/jpeg",
+                "Cache-Control": "public, max-age=31536000, immutable",
+              },
+            });
+          }
+        }
+
+        return new Response(JSON.stringify({ error: "Thumbnail not found" }), {
+          status: 404,
+          headers: { "Content-Type": "application/json" },
+        });
+      } catch (err: any) {
+        console.error("[DO:Thumbnail Error]:", err);
+        return new Response(JSON.stringify({ error: err.message || "Failed to fetch thumbnail" }), {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
     }
 
     // 4. WebSocket endpoint for real-time bidirectional QR auth

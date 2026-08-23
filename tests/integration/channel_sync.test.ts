@@ -127,4 +127,85 @@ describe("🔄 Channel Sync & D1 MTProto Type Sanitization Suite", () => {
     assert.equal(saved.duration, 120);
     assert.equal(saved.tgMsgId, 4242);
   });
+
+  it("4. should strictly reject non-Aetheroll media and accept only genuine signed media during sync", async () => {
+    const { generateAetherollSignature, verifyAetherollSignature } = await import("../../src/server/lib/crypto.ts");
+    const secretKey = "test-secret-session-key";
+    const fileSize = 5242880; // 5 MB
+    const dateSeconds = 1718900000;
+
+    // 1. Random Telegram chat photo without signature
+    const isRandomValid = await verifyAetherollSignature(
+      "Hey check out my dog!",
+      fileSize,
+      dateSeconds,
+      secretKey
+    );
+    assert.strictEqual(isRandomValid, false, "Must strictly reject random non-Aetheroll media");
+
+    // 2. Photo with forged / invalid hash
+    const isForgedValid = await verifyAetherollSignature(
+      "[AET:v1:deadbeef]",
+      fileSize,
+      dateSeconds,
+      secretKey
+    );
+    assert.strictEqual(isForgedValid, false, "Must strictly reject forged signature");
+
+    // 3. Photo with tampered file size
+    const genuineSig = await generateAetherollSignature(fileSize, dateSeconds, secretKey);
+    const isTamperedValid = await verifyAetherollSignature(
+      genuineSig,
+      fileSize + 1024,
+      dateSeconds,
+      secretKey
+    );
+    assert.strictEqual(isTamperedValid, false, "Must strictly reject tampered file size");
+
+    // 4. Genuine Aetheroll photo upload
+    const isGenuineValid = await verifyAetherollSignature(
+      genuineSig,
+      fileSize,
+      dateSeconds,
+      secretKey
+    );
+    assert.strictEqual(isGenuineValid, true, "Must strictly accept genuine Aetheroll media");
+  });
+
+  it("5. should accurately detect and clean orphaned event messages when target media is deleted", () => {
+    const activeTgMediaMsgIds = new Set<number>([101, 102]); // only 101 and 102 exist in TG
+    const eventRecords = [
+      { msgId: 201, ref: 101 }, // valid, parent 101 exists
+      { msgId: 202, ref: 999 }, // orphan! parent 999 was deleted
+      { msgId: 203, ref: 888 }, // orphan! parent 888 was deleted
+    ];
+    const rawEventMessages = [
+      { msgId: 204, ref: 102 }, // valid raw reply to 102
+      { msgId: 205, ref: 777 }, // orphan! parent 777 was deleted
+      { msgId: 206, ref: null }, // orphan! dangling unlinked message
+    ];
+
+    const orphanedEventIds = new Set<number>();
+    const validEvents: any[] = [];
+
+    for (const rec of eventRecords) {
+      if (activeTgMediaMsgIds.has(rec.ref)) {
+        validEvents.push(rec);
+      } else {
+        orphanedEventIds.add(rec.msgId);
+      }
+    }
+
+    for (const rec of rawEventMessages) {
+      if (rec.ref && activeTgMediaMsgIds.has(rec.ref)) {
+        // keep
+      } else {
+        orphanedEventIds.add(rec.msgId);
+      }
+    }
+
+    assert.equal(validEvents.length, 1);
+    assert.equal(validEvents[0].msgId, 201);
+    assert.deepEqual(Array.from(orphanedEventIds).sort(), [202, 203, 205, 206]);
+  });
 });

@@ -1,7 +1,9 @@
 import { Hono } from "hono";
 import crypto from "crypto";
+import { Api, utils } from "telegram";
 import { toSafeNumber } from "../../lib/db.ts";
 import { verifyAetherollSignature } from "../../lib/crypto.ts";
+import { getR2Storage } from "../../lib/r2.ts";
 import { getAuthUserClient } from "./utils.ts";
 
 export const manageChannelsRoute = new Hono();
@@ -53,12 +55,26 @@ manageChannelsRoute.post("/add", async (c) => {
       const messages = await client.getMessages(targetPeer, { limit: 100 });
       for (const msg of messages) {
         if (!msg.media) continue;
-        const isPhoto = !!msg.photo;
-        const isVideo = !!(msg.video || (msg.document && msg.document.mimeType?.startsWith("video/")));
+
+        const doc = (msg.document || (msg.media as any)?.document) as any;
+        const isLegacyPhoto = !!msg.photo;
+        const isDocImage = !!(doc && (
+          doc.mimeType?.startsWith("image/") ||
+          doc.mimeType === "image/jpeg" ||
+          doc.mimeType === "image/png" ||
+          doc.mimeType === "image/webp" ||
+          doc.mimeType === "image/heic" ||
+          doc.mimeType === "image/gif" ||
+          doc.mimeType === "image/avif"
+        ));
+        const isPhoto = isLegacyPhoto || isDocImage;
+        const isVideo = !!(msg.video || (doc && doc.mimeType?.startsWith("video/")));
+
         if (!isPhoto && !isVideo) continue;
-        const fileType = isPhoto ? "photo" : "video";
-        const mimeType = isPhoto ? "image/jpeg" : (msg.document?.mimeType || "video/mp4");
-        const fileSize = toSafeNumber((msg.photo as any)?.sizes?.slice(-1)[0]?.size || (msg.document as any)?.size || 0);
+
+        const fileType = isVideo ? "video" : "photo";
+        const mimeType = doc?.mimeType || (isPhoto ? "image/jpeg" : "video/mp4");
+        const fileSize = toSafeNumber((msg.photo as any)?.sizes?.slice(-1)[0]?.size || doc?.size || 0);
         const dateSeconds = toSafeNumber(msg.date, Math.floor(Date.now() / 1000));
 
         // Strictly verify Aetheroll cryptographic upload signature or WAL event
@@ -69,12 +85,18 @@ manageChannelsRoute.post("/add", async (c) => {
           (c.env as any)?.SESSION_ENCRYPTION_KEY
         );
         if (!isAetherollMedia) {
-          continue; // Ignore random non-Aetheroll chat files
+          continue; // Strictly ignore any non-Aetheroll media
         }
 
-        const width = toSafeNumber((msg.photo as any)?.sizes?.slice(-1)[0]?.w || (msg.document as any)?.attributes?.find((a: any) => a.w)?.w || 1920);
-        const height = toSafeNumber((msg.photo as any)?.sizes?.slice(-1)[0]?.h || (msg.document as any)?.attributes?.find((a: any) => a.h)?.h || 1080);
-        const rawDuration = (msg.document as any)?.attributes?.find((a: any) => a.duration)?.duration;
+        const docAttrs = doc?.attributes || [];
+        const imageAttr = docAttrs.find((a: any) => a.w && a.h);
+        const videoAttr = docAttrs.find((a: any) => a.w && a.h);
+        const photoSizes = (msg.photo as any)?.sizes || [];
+        const largestPhotoSize = photoSizes[photoSizes.length - 1];
+
+        const width = toSafeNumber(imageAttr?.w || videoAttr?.w || largestPhotoSize?.w || 1920);
+        const height = toSafeNumber(imageAttr?.h || videoAttr?.h || largestPhotoSize?.h || 1080);
+        const rawDuration = docAttrs.find((a: any) => a.duration != null)?.duration;
         const duration = rawDuration != null ? toSafeNumber(rawDuration) : null;
         const capturedAt = new Date(dateSeconds * 1000).toISOString();
         const tgMsgId = toSafeNumber(msg.id);
