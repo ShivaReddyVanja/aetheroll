@@ -77,7 +77,7 @@ export const metadata: Metadata = {
     apple: "/favicon.svg",
   },
   verification: {
-    google: "ggUbiG9i3iksSrwR7nG2B8MlRfG1i9YbtVLNhnvWAg",
+    google: "ggUbiG9i3iksSrwR7nG2B8MlRfG1i9YbtVVLNhnvWAg",
   },
 };
 
