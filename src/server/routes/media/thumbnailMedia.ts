@@ -174,18 +174,19 @@ thumbnailMediaRoute.get("/:id/thumbnail", async (c) => {
       const authDo = (c.env as any)?.AUTH_DO;
       if (authDo && typeof authDo.idFromName === "function") {
         try {
-          const token = auth.sessionToken || auth.userId || "default";
+          const token = auth.sessionId || auth.userId || "default";
           const doId = authDo.idFromName(token);
           const stub = authDo.get(doId);
 
           const headers = new Headers();
-          if (auth.sessionToken) headers.set("x-tg-session", auth.sessionToken);
+          if (auth.sessionId) headers.set("x-tg-session", auth.sessionId);
           if (c.req.header("cookie")) headers.set("cookie", c.req.header("cookie")!);
           if (c.req.header("authorization")) headers.set("authorization", c.req.header("authorization")!);
-          if (c.env?.TELEGRAM_API_ID) headers.set("x-tg-api-id", String(c.env.TELEGRAM_API_ID));
-          if (c.env?.TELEGRAM_API_HASH) headers.set("x-tg-api-hash", String(c.env.TELEGRAM_API_HASH));
-          if (c.env?.TELEGRAM_TEST_MODE) headers.set("x-tg-test-mode", String(c.env.TELEGRAM_TEST_MODE));
-          if (c.env?.SESSION_ENCRYPTION_KEY) headers.set("x-tg-enc-key", String(c.env.SESSION_ENCRYPTION_KEY));
+          const env = c.env as any;
+          if (env?.TELEGRAM_API_ID) headers.set("x-tg-api-id", String(env.TELEGRAM_API_ID));
+          if (env?.TELEGRAM_API_HASH) headers.set("x-tg-api-hash", String(env.TELEGRAM_API_HASH));
+          if (env?.TELEGRAM_TEST_MODE) headers.set("x-tg-test-mode", String(env.TELEGRAM_TEST_MODE));
+          if (env?.SESSION_ENCRYPTION_KEY) headers.set("x-tg-enc-key", String(env.SESSION_ENCRYPTION_KEY));
           headers.set("x-target-channel-id", item.telegram_channel_id);
           headers.set("x-target-msg-id", String(item.telegram_message_id));
 
@@ -200,7 +201,7 @@ thumbnailMediaRoute.get("/:id/thumbnail", async (c) => {
             if (thumbBuffer.length > 0) {
               const key = `thumbnails/${item.channel_id}/${item.id}.jpg`;
               try {
-                await r2.put(key, thumbBuffer, { contentType: "image/jpeg" });
+                await r2.put(key, thumbBuffer, "image/jpeg");
                 await db.run("UPDATE media_items SET thumbnail_r2_key = ? WHERE id = ?", [key, item.id]);
               } catch (r2Err) {
                 console.warn("[Thumbnail] R2 cache write non-fatal error:", r2Err);
@@ -285,7 +286,7 @@ thumbnailMediaRoute.get("/:id/thumbnail", async (c) => {
             if (thumbBuffer && Buffer.isBuffer(thumbBuffer) && thumbBuffer.length > 0) {
               const key = `thumbnails/${item.channel_id}/${item.id}.jpg`;
               try {
-                await r2.put(key, thumbBuffer, { contentType: "image/jpeg" });
+                await r2.put(key, thumbBuffer, "image/jpeg");
                 await db.run("UPDATE media_items SET thumbnail_r2_key = ? WHERE id = ?", [key, item.id]);
               } catch (r2Err) {
                 console.warn("[Thumbnail] R2 cache write non-fatal error:", r2Err);
