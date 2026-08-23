@@ -1,7 +1,7 @@
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "crypto";
-import type { DatabaseInterface } from "../src/server/lib/db.ts";
+import type { DatabaseInterface } from "../../src/server/lib/db.ts";
 
 interface ChannelRecord {
   id: string;

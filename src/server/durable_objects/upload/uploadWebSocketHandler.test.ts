@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "crypto";
-import { SlidingWindowRatePacer } from "../src/server/durable_objects/TelegramAuthDO.ts";
+import { SlidingWindowRatePacer } from "../common/ratePacer.ts";
 
 describe("⚡ Upload Pipeline: Rate-Paced Worker Pool & Backpressure Flow Control", () => {
   const TG_PART_SIZE = 512 * 1024; // 524,288 bytes (512 KB Telegram limit)
@@ -133,4 +133,3 @@ describe("⚡ Upload Pipeline: Rate-Paced Worker Pool & Backpressure Flow Contro
     assert.equal(inFlightBuffers.size, 0, "Buffer in RAM must be completely cleared after upload");
   });
 });
-

@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "crypto";
-import { getDb, sanitizeD1Param } from "../src/server/lib/db.ts";
+import { getDb, sanitizeD1Param } from "../../src/server/lib/db.ts";
 
 describe("🗑️ Media Item Deletion & Cleanup Suite", () => {
   it("1. should cleanly delete media items, tags, and favorites from database", async () => {

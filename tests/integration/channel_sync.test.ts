@@ -1,8 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "crypto";
-import { sanitizeD1Param, toSafeNumber, toSafeString } from "../src/server/lib/db.ts";
-import type { DatabaseInterface } from "../src/server/lib/db.ts";
+import { sanitizeD1Param, toSafeNumber, toSafeString } from "../../src/server/lib/db.ts";
+import type { DatabaseInterface } from "../../src/server/lib/db.ts";
 
 describe("🔄 Channel Sync & D1 MTProto Type Sanitization Suite", () => {
   it("1. should sanitize GramJS BigInteger and Long objects to primitive numbers", () => {

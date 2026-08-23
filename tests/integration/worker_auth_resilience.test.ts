@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import QRCode from "qrcode";
 import crypto from "crypto";
 import { Api } from "telegram";
-import { getDefaultTelegramConfig, checkQrLoginStatus, createTelegramClient } from "../src/server/lib/telegram.ts";
-import { encryptSession, decryptSession, getCryptoKey } from "../src/server/lib/crypto.ts";
+import { getDefaultTelegramConfig, checkQrLoginStatus, createTelegramClient } from "../../src/server/lib/telegram.ts";
+import { encryptSession, decryptSession, getCryptoKey } from "../../src/server/lib/crypto.ts";
 
 describe("⚡ Cloudflare Worker & Auth Resilience Suite", () => {
   describe("1. Strict Environment & Context Resolution (No-Fail-Fallbacks)", () => {
