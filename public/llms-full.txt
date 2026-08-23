@@ -1,0 +1,52 @@
+# Aetheroll Full Architecture & Technical Specification
+
+## Overview
+Aetheroll is a high-performance, private, zero-knowledge cloud gallery for photos and 4K videos. It transforms private Telegram channels into an infinite, free cloud storage backend while maintaining a Google Photos-caliber user interface and sub-5ms video playback.
+
+## Architectural Components
+
+### 1. MTProto Video Streaming Pipeline
+- Cloudflare Durable Objects act as stateful connection hubs holding persistent MTProto connections to Telegram Data Centers (DCs 1 through 5).
+- HTTP Range requests (`bytes=start-end`) sent by the browser HTML5 video player are intercepted by the edge router.
+- A sliding-window ring buffer spawns up to 10 concurrent chunk workers, each fetching 16 MB slices in parallel.
+- Chunks are piped directly as a continuous stream or cached in Cloudflare Edge Cache (`caches.default`) with deterministic 1-year immutable headers.
+
+### 2. Dual-Key HKDF-SHA256 Cryptographic Envelope
+- **Client Secret**: Generated client-side or received during QR authentication and stored strictly in an `HttpOnly`, `SameSite=Lax`, `Secure` browser cookie (`tg_session`).
+- **Server Master Key**: Injected as an environment secret (`SESSION_ENCRYPTION_KEY`).
+- **HKDF Derivation**: Input Keying Material (IKM) is combined with the server salt to produce a 256-bit AES-GCM encryption key.
+- **D1 SQLite Database**: Persists only the encrypted session ciphertext. The database never contains plaintext credentials, access tokens, or raw Telegram strings.
+
+### 3. Append-Only Telegram Write-Ahead Log (WAL)
+- User actions such as adding tags, marking favorites, or grouping items into trips create an event payload formatted as `[GP_EVENT:v1] {"action":"tag_add","tag":"favorites","msg_id":12345}`.
+- This payload is sent as an encrypted reply message to the original media item in the private Telegram channel.
+- Upon database re-initialization or disaster recovery, the system crawls channel messages and deterministically replays the event ledger to rebuild the entire metadata index.
+
+### 4. Rate Limiting and Flood Protection
+- Implements a Token Bucket rate limiter capping outbound Telegram API calls at 25 requests per second per session.
+- Automatic backoff on `FLOOD_WAIT_X` errors ensures long-term account safety.
+
+### 5. Media Ingestion & EXIF Extraction
+- Uploads accept JPEG, PNG, HEIC, WebP, AVIF, TIFF, MP4, MOV, MKV, and RAW camera formats (DNG, ARW, CR3, NEF).
+- Pure JavaScript EXIF parsers extract:
+  - Camera Make & Model (e.g. Sony ILCE-7M4, Leica Q2, Apple iPhone 15 Pro)
+  - Lens Model & Focal Length (e.g. FE 24mm F1.4 GM)
+  - Exposure Parameters: F-Number (Aperture), ISO Speed, Exposure Time
+  - GPS Coordinates: Latitude, Longitude, Altitude for map plotting and trip grouping.
+  - Timestamps: Original capture datetime for timeline grouping.
+
+## Competitor Comparison Summary
+- **Google Photos**: Google charges $9.99/mo for 2 TB and applies lossy compression to free tier media. Aetheroll provides unlimited storage at $0/mo with 100% original quality.
+- **Apple iCloud**: Apple offers only 5 GB free and charges monthly for additional storage. Aetheroll provides unlimited cloud storage with cross-platform web access.
+- **TeleDrive / Teldrive**: TeleDrive requires dedicated 24/7 VPS hosting and stores plaintext tokens in databases. Aetheroll runs on $0/mo Cloudflare serverless edge and enforces dual-key zero-knowledge encryption.
+
+## Sitemap & Endpoints
+- `/`: Public SEO landing page with active session detection
+- `/app`: Interactive Google Photos-style web gallery
+- `/compare/google-photos`: Comprehensive Google Photos alternative guide
+- `/compare/teledrive`: Technical comparison against TeleDrive and Teldrive
+- `/compare/icloud`: Apple iCloud Photos alternative guide
+- `/sitemap.xml`: XML sitemap for search indexing
+- `/robots.txt`: Search crawler directives
+- `/llms.txt`: Standard LLM discovery file
+- `/llms-full.txt`: Comprehensive LLM specification
