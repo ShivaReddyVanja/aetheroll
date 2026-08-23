@@ -58,6 +58,14 @@ export const metadata: Metadata = {
       "Turn your Telegram channels into a private, unlimited Google Photos vault with 100% original quality EXIF and sub-5ms 4K video streaming.",
     url: SITE_URL,
     siteName: BRAND_NAME,
+    images: [
+      {
+        url: "/opengraph-image",
+        width: 1200,
+        height: 630,
+        alt: `${BRAND_NAME} — Unlimited Private Cloud Photo & Video Vault on Telegram`,
+      },
+    ],
     locale: "en_US",
     type: "website",
   },
@@ -66,15 +74,21 @@ export const metadata: Metadata = {
     title: `${BRAND_NAME} — Infinite Cloud Photo & Video Gallery`,
     description:
       "Turn your Telegram channels into a zero-cost, private Google Photos vault with sub-5ms 4K video streaming.",
+    images: ["/opengraph-image"],
     creator: "@ShivaReddy",
   },
   alternates: {
     canonical: SITE_URL,
   },
   icons: {
-    icon: [{ url: "/favicon.svg", type: "image/svg+xml" }],
+    icon: [
+      { url: "/favicon.svg", type: "image/svg+xml" },
+      { url: "/icon", type: "image/png", sizes: "32x32" },
+    ],
     shortcut: "/favicon.svg",
-    apple: "/favicon.svg",
+    apple: [
+      { url: "/apple-icon", sizes: "180x180", type: "image/png" },
+    ],
   },
   verification: {
     google: "ggUbiG9i3iksSrwR7nG2B8MlRfG1i9YbtVVLNhnvWAg",
