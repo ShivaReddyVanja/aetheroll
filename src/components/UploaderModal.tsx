@@ -15,6 +15,13 @@ import { generateBlurHashAndThumbnail, generateVideoThumbnailAndMetadata } from 
 import { extractExifMetadata } from "@/lib/exif";
 import { AETHEROLL_WORKER_URL } from "@/lib/config";
 
+import {
+  DynamicUploadDispatcher,
+  formatUploadSpeed,
+  formatUploadDuration,
+  formatUploadFileSize,
+} from "@/lib/uploadPool";
+
 const WORKER_URL = AETHEROLL_WORKER_URL;
 export const MAX_TELEGRAM_FILE_SIZE = 2000 * 1024 * 1024;
 
@@ -28,6 +35,7 @@ interface UploaderModalProps {
 interface UploadTask {
   id: string;
   file: File;
+  size: number;
   status: "pending" | "processing" | "uploading" | "done" | "error";
   progress: number;
   uploadedBytes?: number;
@@ -51,27 +59,49 @@ export function UploaderModal({
   const [isDragging, setIsDragging] = useState(false);
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const activeWsRef = useRef<WebSocket | null>(null);
-  const isCancelledRef = useRef(false);
+  const activeSocketsRef = useRef<Map<string, WebSocket>>(new Map());
+  const dispatcherRef = useRef<DynamicUploadDispatcher<UploadTask> | null>(null);
+  const metadataCacheRef = useRef<Map<string, any>>(new Map());
 
-  const formatFileSize = (bytes: number) => {
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-  };
+  const formatFileSize = (bytes: number) => formatUploadFileSize(bytes);
 
-  const formatSpeed = (bytesPerSec: number) => {
-    if (bytesPerSec <= 0) return "0 KB/s";
-    if (bytesPerSec < 1024 * 1024) return `${(bytesPerSec / 1024).toFixed(1)} KB/s`;
-    return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`;
-  };
+  const prefetchMetadataForTask = async (task: UploadTask) => {
+    if (metadataCacheRef.current.has(task.id)) return metadataCacheRef.current.get(task.id);
+    const file = task.file;
+    const isVideo = file.type.startsWith("video/");
+    let width = 1920;
+    let height = 1080;
+    let blurHash = "LEHV6nWB2yk8pyo0adR*.7kCMdnj";
+    let thumbnailBase64 = "";
+    let duration = 0;
 
-  const formatDuration = (ms: number) => {
-    const totalSec = Math.round(ms / 1000);
-    if (totalSec < 60) return `${totalSec}s`;
-    const mins = Math.floor(totalSec / 60);
-    const secs = totalSec % 60;
-    return `${mins}m ${secs}s`;
+    if (!isVideo) {
+      try {
+        const bhResult = await generateBlurHashAndThumbnail(file);
+        width = bhResult.width;
+        height = bhResult.height;
+        blurHash = bhResult.blurHash;
+        thumbnailBase64 = bhResult.thumbnailBase64;
+      } catch (e) {
+        console.warn("BlurHash skipped for image", file.name, e);
+      }
+    } else {
+      try {
+        const vResult = await generateVideoThumbnailAndMetadata(file);
+        width = vResult.width;
+        height = vResult.height;
+        blurHash = vResult.blurHash;
+        thumbnailBase64 = vResult.thumbnailBase64;
+        duration = vResult.duration;
+      } catch (e) {
+        console.warn("Video thumbnail generation skipped for", file.name, e);
+      }
+    }
+
+    const exif = await extractExifMetadata(file);
+    const meta = { width, height, blurHash, thumbnailBase64, duration, exif };
+    metadataCacheRef.current.set(task.id, meta);
+    return meta;
   };
 
   const handleFilesSelected = (files: FileList | File[] | null) => {
@@ -81,6 +111,7 @@ export function UploaderModal({
       return {
         id: crypto.randomUUID(),
         file: f,
+        size: f.size,
         status: isOversized ? ("error" as const) : ("pending" as const),
         progress: 0,
         previewUrl: f.type.startsWith("image/") ? URL.createObjectURL(f) : undefined,
@@ -90,24 +121,40 @@ export function UploaderModal({
       };
     });
     setTasks((prev) => [...prev, ...newTasks]);
+
+    // Pre-warm metadata for new items in background
+    setTimeout(() => {
+      for (const t of newTasks) {
+        if (t.status === "pending") {
+          prefetchMetadataForTask(t).catch(() => {});
+        }
+      }
+    }, 50);
   };
 
   const handleRemoveTask = (id: string) => {
-    // If the removed task is currently uploading/processing, close its WebSocket
-    const target = tasks.find((t) => t.id === id);
-    if (target && (target.status === "uploading" || target.status === "processing")) {
+    // If the removed task is active, abort it and close its WebSocket
+    const ws = activeSocketsRef.current.get(id);
+    if (ws) {
       try {
-        activeWsRef.current?.close();
+        ws.close();
       } catch {}
+      activeSocketsRef.current.delete(id);
     }
+    metadataCacheRef.current.delete(id);
+    dispatcherRef.current?.abortTask(id);
     setTasks((prev) => prev.filter((t) => t.id !== id));
   };
 
   const cancelAllUploads = () => {
-    isCancelledRef.current = true;
-    try {
-      activeWsRef.current?.close();
-    } catch {}
+    dispatcherRef.current?.abortAll();
+    for (const [, ws] of activeSocketsRef.current.entries()) {
+      try {
+        ws.close();
+      } catch {}
+    }
+    activeSocketsRef.current.clear();
+    metadataCacheRef.current.clear();
     setIsUploading(false);
     setCurrentSpeed(null);
     setShowCancelConfirm(false);
@@ -122,269 +169,263 @@ export function UploaderModal({
     }
   };
 
+  const uploadSingleTask = async (
+    task: UploadTask,
+    signal: AbortSignal,
+    onProgress: (uploadedBytes: number) => void
+  ): Promise<any> => {
+    if (signal.aborted) {
+      throw new Error("Upload cancelled");
+    }
+
+    const file = task.file;
+    const isVideo = file.type.startsWith("video/");
+
+    // Use pre-warmed metadata or generate if not cached yet
+    const meta = await prefetchMetadataForTask(task);
+    const { width, height, blurHash, thumbnailBase64, duration, exif } = meta;
+
+    if (signal.aborted) {
+      throw new Error("Upload cancelled");
+    }
+
+    const CHUNK_SIZE = 512 * 1024; // Aligned with Telegram 512KB MTProto parts
+    const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+
+    const completeData = await new Promise<{ success: boolean; item?: any; mediaId?: string; error?: string }>((resolve, reject) => {
+      const wsBaseUrl = WORKER_URL.replace(/^http:/, "ws:").replace(/^https:/, "wss:");
+      const ws = new WebSocket(`${wsBaseUrl}/api/media/upload/ws`);
+      ws.binaryType = "arraybuffer";
+      activeSocketsRef.current.set(task.id, ws);
+
+      let nextChunkToSend = 0;
+      let ackedChunks = 0;
+      let settled = false;
+      const PIPELINE_WINDOW = 4; // Sliding window of 4 active parts
+
+      const settledResolve = (val: any) => {
+        if (!settled) {
+          settled = true;
+          activeSocketsRef.current.delete(task.id);
+          resolve(val);
+        }
+      };
+
+      const settledReject = (err: any) => {
+        if (!settled) {
+          settled = true;
+          activeSocketsRef.current.delete(task.id);
+          reject(err);
+        }
+      };
+
+      const onAbort = () => {
+        try {
+          ws.close();
+        } catch {}
+        settledReject(new Error("Upload cancelled"));
+      };
+
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener("abort", onAbort, { once: true });
+
+      // 45-second inactivity watchdog
+      let watchdogTimer: any = null;
+      const resetWatchdog = () => {
+        if (watchdogTimer) clearTimeout(watchdogTimer);
+        watchdogTimer = setTimeout(() => {
+          try {
+            ws.close();
+          } catch {}
+          settledReject(new Error("Upload connection timed out (no response from server)"));
+        }, 45000);
+      };
+
+      const sendChunk = async (chunkIndex: number) => {
+        if (chunkIndex >= totalChunks || signal.aborted) return;
+        const startByte = chunkIndex * CHUNK_SIZE;
+        const endByte = Math.min(startByte + CHUNK_SIZE, file.size);
+        const sliceBlob = file.slice(startByte, endByte);
+        const sliceBuffer = await sliceBlob.arrayBuffer();
+
+        const frameBuffer = new Uint8Array(4 + sliceBuffer.byteLength);
+        const view = new DataView(frameBuffer.buffer);
+        view.setInt32(0, chunkIndex, false);
+        frameBuffer.set(new Uint8Array(sliceBuffer), 4);
+
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(frameBuffer);
+          resetWatchdog();
+        }
+      };
+
+      const pumpPipeline = async () => {
+        while (nextChunkToSend < totalChunks && (nextChunkToSend - ackedChunks) < PIPELINE_WINDOW && !signal.aborted) {
+          const toSend = nextChunkToSend++;
+          await sendChunk(toSend);
+        }
+      };
+
+      ws.onopen = () => {
+        resetWatchdog();
+        ws.send(JSON.stringify({
+          type: "init",
+          fileName: file.name,
+          fileSize: file.size,
+          channelId,
+          mimeType: file.type || (isVideo ? "video/mp4" : "image/jpeg"),
+          totalChunks,
+          width,
+          height,
+          duration: isVideo && duration > 0 ? duration : null,
+          blurHash,
+          thumbnailBase64,
+          capturedAt: exif.capturedAt || new Date().toISOString(),
+        }));
+      };
+
+      ws.onmessage = async (event) => {
+        resetWatchdog();
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === "init_ok") {
+            nextChunkToSend = 0;
+            ackedChunks = 0;
+            await pumpPipeline();
+          } else if (data.type === "part_ack") {
+            ackedChunks++;
+            const uploadedBytes = Math.min(ackedChunks * CHUNK_SIZE, file.size);
+            onProgress(uploadedBytes);
+            await pumpPipeline();
+          } else if (data.type === "complete") {
+            if (watchdogTimer) clearTimeout(watchdogTimer);
+            try {
+              ws.close();
+            } catch {}
+            settledResolve(data);
+          } else if (data.type === "error") {
+            if (watchdogTimer) clearTimeout(watchdogTimer);
+            try {
+              ws.close();
+            } catch {}
+            settledReject(new Error(data.error || "Upload failed"));
+          }
+        } catch (parseErr) {
+          console.error("[Upload WS Parse Error]:", parseErr);
+        }
+      };
+
+      ws.onerror = () => {
+        if (watchdogTimer) clearTimeout(watchdogTimer);
+        settledReject(new Error("WebSocket upload connection failed"));
+      };
+
+      ws.onclose = (ev) => {
+        if (watchdogTimer) clearTimeout(watchdogTimer);
+        if (!ev.wasClean && ackedChunks < totalChunks) {
+          settledReject(new Error(`WebSocket connection closed unexpectedly (Code: ${ev.code})`));
+        }
+      };
+    });
+
+    if (!completeData.success) {
+      throw new Error(completeData.error || "Failed finalizing upload");
+    }
+
+    const mediaId = completeData.item?.id || completeData.mediaId;
+    if (exif.latitude && exif.longitude && mediaId) {
+      try {
+        await fetch("/api/tags/media-location", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            media_item_id: mediaId,
+            name: `GPS (${exif.latitude.toFixed(4)}, ${exif.longitude.toFixed(4)})`,
+            latitude: exif.latitude,
+            longitude: exif.longitude,
+            place_type: "landmark",
+            source: "exif",
+          }),
+        });
+      } catch {}
+    }
+
+    return completeData;
+  };
+
   const startUpload = async () => {
     const validTasks = tasks.filter((t) => t.status === "pending" && t.file.size <= MAX_TELEGRAM_FILE_SIZE);
     if (validTasks.length === 0 || isUploading) return;
     setIsUploading(true);
-    isCancelledRef.current = false;
 
-    for (let i = 0; i < tasks.length; i++) {
-      if (isCancelledRef.current) break;
-      const task = tasks[i];
-      if (task.status === "done" || task.status === "error" || task.file.size > MAX_TELEGRAM_FILE_SIZE) continue;
-
-      setTasks((prev) =>
-        prev.map((t, idx) => (idx === i ? { ...t, status: "processing", progress: 5 } : t))
-      );
-
-      try {
-        const file = task.file;
-        const isVideo = file.type.startsWith("video/");
-        let width = 1920;
-        let height = 1080;
-        let blurHash = "LEHV6nWB2yk8pyo0adR*.7kCMdnj";
-        let thumbnailBase64 = "";
-        let duration = 0;
-
-        if (!isVideo) {
-          try {
-            const bhResult = await generateBlurHashAndThumbnail(file);
-            width = bhResult.width;
-            height = bhResult.height;
-            blurHash = bhResult.blurHash;
-            thumbnailBase64 = bhResult.thumbnailBase64;
-          } catch (e) {
-            console.warn("BlurHash skipped for image", file.name, e);
-          }
-        } else {
-          try {
-            const vResult = await generateVideoThumbnailAndMetadata(file);
-            width = vResult.width;
-            height = vResult.height;
-            blurHash = vResult.blurHash;
-            thumbnailBase64 = vResult.thumbnailBase64;
-            duration = vResult.duration;
-          } catch (e) {
-            console.warn("Video thumbnail generation skipped for", file.name, e);
-          }
-        }
-
-        const exif = await extractExifMetadata(file);
-        const CHUNK_SIZE = 512 * 1024; // Aligned directly with Telegram 512KB MTProto parts
-        const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
-
+    const dispatcher = new DynamicUploadDispatcher<UploadTask>({
+      items: validTasks,
+      executor: async (item, signal, onProgress) => {
+        return await uploadSingleTask(item, signal, onProgress);
+      },
+      onTaskStart: (item) => {
         setTasks((prev) =>
-          prev.map((t, idx) =>
-            idx === i
+          prev.map((t) => (t.id === item.id ? { ...t, status: "processing", progress: 5 } : t))
+        );
+      },
+      onTaskProgress: (item, uploadedBytes, percent) => {
+        setTasks((prev) =>
+          prev.map((t) =>
+            t.id === item.id
               ? {
                   ...t,
                   status: "uploading",
-                  progress: 0,
+                  progress: percent,
+                  uploadedBytes,
                 }
               : t
           )
         );
-
-        const completeData = await new Promise<{ success: boolean; item?: any; mediaId?: string; error?: string }>((resolve, reject) => {
-          const wsBaseUrl = WORKER_URL.replace(/^http:/, "ws:").replace(/^https:/, "wss:");
-          const ws = new WebSocket(`${wsBaseUrl}/api/media/upload/ws`);
-          ws.binaryType = "arraybuffer";
-          activeWsRef.current = ws;
-
-          let nextChunkToSend = 0;
-          let ackedChunks = 0;
-          let settled = false; // Guard against double resolve/reject
-          const PIPELINE_WINDOW = 4; // Sliding window of 4 active parts
-
-          const uploadStartTime = Date.now();
-          let lastSampleTime = Date.now();
-          let lastSampleAckedBytes = 0;
-
-          const settledResolve = (val: any) => { if (!settled) { settled = true; resolve(val); } };
-          const settledReject = (err: any) => { if (!settled) { settled = true; reject(err); } };
-
-          // 45-second inactivity watchdog
-          let watchdogTimer: any = null;
-          const resetWatchdog = () => {
-            if (watchdogTimer) clearTimeout(watchdogTimer);
-            watchdogTimer = setTimeout(() => {
-              try { ws.close(); } catch {}
-              settledReject(new Error("Upload connection timed out (no response from server)"));
-            }, 45000);
-          };
-
-          const sendChunk = async (chunkIndex: number) => {
-            if (chunkIndex >= totalChunks) return;
-            const startByte = chunkIndex * CHUNK_SIZE;
-            const endByte = Math.min(startByte + CHUNK_SIZE, file.size);
-            const sliceBlob = file.slice(startByte, endByte);
-            const sliceBuffer = await sliceBlob.arrayBuffer();
-
-            const frameBuffer = new Uint8Array(4 + sliceBuffer.byteLength);
-            const view = new DataView(frameBuffer.buffer);
-            view.setInt32(0, chunkIndex, false);
-            frameBuffer.set(new Uint8Array(sliceBuffer), 4);
-
-            if (ws.readyState === WebSocket.OPEN) {
-              ws.send(frameBuffer);
-              resetWatchdog();
-            }
-          };
-
-          const pumpPipeline = async () => {
-            while (nextChunkToSend < totalChunks && (nextChunkToSend - ackedChunks) < PIPELINE_WINDOW) {
-              const toSend = nextChunkToSend++;
-              await sendChunk(toSend); // await ensures slice completes before advancing window
-            }
-          };
-
-          ws.onopen = () => {
-            resetWatchdog();
-            ws.send(JSON.stringify({
-              type: "init",
-              fileName: file.name,
-              fileSize: file.size,
-              channelId,
-              mimeType: file.type || (isVideo ? "video/mp4" : "image/jpeg"),
-              totalChunks,
-              width,
-              height,
-              duration: isVideo && duration > 0 ? duration : null,
-              blurHash,
-              thumbnailBase64,
-              capturedAt: exif.capturedAt || new Date().toISOString(),
-            }));
-          };
-
-          ws.onmessage = async (event) => {
-            resetWatchdog();
-            try {
-              const data = JSON.parse(event.data);
-              if (data.type === "init_ok") {
-                nextChunkToSend = 0;
-                ackedChunks = 0;
-                await pumpPipeline();
-              } else if (data.type === "part_ack") {
-                ackedChunks++;
-                const uploadedBytes = Math.min(ackedChunks * CHUNK_SIZE, file.size);
-                const percent = data.progressPercent ?? Math.min(Math.round((uploadedBytes / file.size) * 100), 100);
-
-                // Compute rolling speed sample every 400ms+
-                const now = Date.now();
-                const deltaMs = now - lastSampleTime;
-                if (deltaMs >= 400) {
-                  const bytesDelta = uploadedBytes - lastSampleAckedBytes;
-                  const instantSpeed = (bytesDelta / deltaMs) * 1000;
-                  const speedText = formatSpeed(instantSpeed);
-                  setCurrentSpeed(speedText);
-                  lastSampleTime = now;
-                  lastSampleAckedBytes = uploadedBytes;
-                }
-
-                setTasks((prev) =>
-                  prev.map((t, idx) =>
-                    idx === i
-                      ? {
-                          ...t,
-                          status: "uploading",
-                          progress: percent,
-                          uploadedBytes,
-                        }
-                      : t
-                  )
-                );
-
-                await pumpPipeline();
-              } else if (data.type === "complete") {
-                if (watchdogTimer) clearTimeout(watchdogTimer);
-                const totalElapsedMs = Math.max(Date.now() - uploadStartTime, 1000);
-                const avgSpeedBytesPerSec = (file.size / totalElapsedMs) * 1000;
-                const durationFormatted = formatDuration(totalElapsedMs);
-                const speedFormatted = formatSpeed(avgSpeedBytesPerSec);
-
-                setTasks((prev) =>
-                  prev.map((t, idx) =>
-                    idx === i
-                      ? {
-                          ...t,
-                          status: "done",
-                          progress: 100,
-                          uploadedBytes: file.size,
-                          durationFormatted,
-                          speedFormatted,
-                        }
-                      : t
-                  )
-                );
-                try { ws.close(); } catch {}
-                settledResolve(data);
-              } else if (data.type === "error") {
-                if (watchdogTimer) clearTimeout(watchdogTimer);
-                try { ws.close(); } catch {}
-                settledReject(new Error(data.error || "Upload failed"));
-              }
-            } catch (parseErr) {
-              console.error("[Upload WS Parse Error]:", parseErr);
-            }
-          };
-
-          ws.onerror = () => {
-            if (watchdogTimer) clearTimeout(watchdogTimer);
-            settledReject(new Error("WebSocket upload connection failed"));
-          };
-
-          ws.onclose = (ev) => {
-            if (watchdogTimer) clearTimeout(watchdogTimer);
-            if (!ev.wasClean && ackedChunks < totalChunks) {
-              settledReject(new Error(`WebSocket connection closed unexpectedly (Code: ${ev.code})`));
-            }
-          };
-        });
-
-        if (!completeData.success) {
-          throw new Error(completeData.error || "Failed finalizing upload");
-        }
-
-        const mediaId = completeData.item?.id || completeData.mediaId;
-
-        if (exif.latitude && exif.longitude && mediaId) {
-          try {
-            await fetch("/api/tags/media-location", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                media_item_id: mediaId,
-                name: `GPS (${exif.latitude.toFixed(4)}, ${exif.longitude.toFixed(4)})`,
-                latitude: exif.latitude,
-                longitude: exif.longitude,
-                place_type: "landmark",
-                source: "exif",
-              }),
-            });
-          } catch {}
-        }
+      },
+      onTaskComplete: (item, _res, durationMs) => {
+        const durationFormatted = formatUploadDuration(durationMs);
+        const avgSpeed = durationMs > 0 ? (item.file.size / durationMs) * 1000 : 0;
+        const speedFormatted = formatUploadSpeed(avgSpeed);
 
         setTasks((prev) =>
-          prev.map((t, idx) =>
-            idx === i
+          prev.map((t) =>
+            t.id === item.id
               ? {
                   ...t,
                   status: "done",
                   progress: 100,
+                  uploadedBytes: item.file.size,
+                  durationFormatted,
+                  speedFormatted,
                 }
               : t
           )
         );
-      } catch (err: any) {
+      },
+      onTaskError: (item, err) => {
         setTasks((prev) =>
-          prev.map((t, idx) =>
-            idx === i ? { ...t, status: "error", error: err.message || "Upload failed" } : t
+          prev.map((t) =>
+            t.id === item.id
+              ? {
+                  ...t,
+                  status: "error",
+                  error: err.message || "Upload failed",
+                }
+              : t
           )
         );
-      }
-    }
+      },
+      onSpeedUpdate: (speedFormatted) => {
+        setCurrentSpeed(speedFormatted === "0 KB/s" ? null : speedFormatted);
+      },
+    });
 
-    activeWsRef.current = null;
+    dispatcherRef.current = dispatcher;
+    await dispatcher.start();
+
     setIsUploading(false);
     setCurrentSpeed(null);
     onUploadComplete();
