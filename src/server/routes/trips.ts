@@ -2,8 +2,7 @@ import { Hono } from "hono";
 import crypto from "crypto";
 import { getDb } from "../lib/db";
 import { resolveUserAuth } from "../lib/auth";
-import { getConnectedClient, getDefaultTelegramConfig } from "../lib/telegram";
-import { emitGalleryEvent, emitGalleryBatch, GalleryOp } from "../lib/ledger";
+import { dispatchLedgerEvent, dispatchLedgerBatch, GalleryOp } from "../lib/ledger";
 
 export const tripsRouter = new Hono();
 
@@ -188,41 +187,61 @@ tripsRouter.post("/:id/media", async (c) => {
       }
     }
 
-    // Emit Telegram WAL / Batch ledger event
-    try {
-      if (auth.sessionString && !remove) {
-        const placeholders = mediaItemIds.map(() => "?").join(",");
-        const mediaItems = await db.all(
-          `SELECT m.id, m.telegram_message_id, c.telegram_channel_id FROM media_items m
-           JOIN channels c ON c.id = m.channel_id WHERE m.id IN (${placeholders})`,
-          mediaItemIds
-        );
+    // Emit Telegram WAL / Batch ledger event (non-blocking)
+    if (!remove) {
+      const emitPromise = (async () => {
+        try {
+          const placeholders = mediaItemIds.map(() => "?").join(",");
+          const mediaItems = await db.all(
+            `SELECT m.id, m.channel_id, m.telegram_message_id, c.telegram_channel_id FROM media_items m
+             JOIN channels c ON c.id = m.channel_id WHERE m.id IN (${placeholders})`,
+            mediaItemIds
+          );
 
-        if (mediaItems.length > 0) {
-          const client = await getConnectedClient(auth.sessionString, auth.telegramConfig);
-          const channelTgId = mediaItems[0].telegram_channel_id;
-          const targetPeer = await getTargetPeer(client, channelTgId);
+          if (mediaItems.length > 0) {
+            const channelTgId = mediaItems[0].telegram_channel_id;
 
-          if (mediaItems.length >= 5) {
-            const ops: GalleryOp[] = [
-              {
-                op: "SET_TRIP",
-                refs: mediaItems.map((m: any) => m.telegram_message_id),
-                data: { trip: trip.name },
-              },
-            ];
-            await emitGalleryBatch(client, targetPeer, channelTgId, ops, (c.env as any)?.MASTER_ENCRYPTION_KEY);
-          } else {
-            for (const item of mediaItems) {
-              await emitGalleryEvent(client, targetPeer, item.telegram_message_id, "SET_TRIP", {
-                trip: trip.name,
-              }, (c.env as any)?.MASTER_ENCRYPTION_KEY);
+            if (mediaItems.length >= 5) {
+              const ops: GalleryOp[] = [
+                {
+                  op: "SET_TRIP",
+                  refs: mediaItems.map((m: any) => m.telegram_message_id),
+                  data: { trip: trip.name },
+                },
+              ];
+              await dispatchLedgerBatch({
+                c,
+                auth,
+                channelTgId,
+                channelDbId: mediaItems[0].channel_id,
+                items: mediaItems.map((m: any) => ({ id: m.id, telegram_message_id: m.telegram_message_id })),
+                ops,
+                db,
+              });
+            } else {
+              for (const item of mediaItems) {
+                await dispatchLedgerEvent({
+                  c,
+                  auth,
+                  channelTgId: item.telegram_channel_id,
+                  channelDbId: item.channel_id,
+                  mediaDbId: item.id,
+                  refMsgId: item.telegram_message_id,
+                  op: "SET_TRIP",
+                  data: { trip: trip.name },
+                  db,
+                });
+              }
             }
           }
+        } catch (e) {
+          console.warn("[EventLedger] Failed emitting trip media WAL:", e);
         }
+      })();
+
+      if ((c.executionCtx as any)?.waitUntil) {
+        c.executionCtx.waitUntil(emitPromise.catch(() => {}));
       }
-    } catch (e) {
-      console.warn("[EventLedger] Failed emitting trip media WAL:", e);
     }
 
     return c.json({ success: true, action: remove ? "removed" : "added", count: mediaItemIds.length });

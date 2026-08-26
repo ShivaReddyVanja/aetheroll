@@ -237,41 +237,52 @@ syncChannelRoute.post("/:id/sync", async (c) => {
       }
     }
 
-    // Pass 3: Auto-clean orphaned [GP_EVENT:v1] text messages & dangling replies from Telegram
-    const orphanedEventIds = new Set<number>();
+    // Pass 3: Record discovered WAL event message IDs into D1 & collect valid events for replay
     const validEvents: GalleryEvent[] = [];
 
     for (const rec of eventRecords) {
-      if (activeTgMediaMsgIds.has(rec.ref)) {
+      let isParentActive = activeTgMediaMsgIds.has(rec.ref);
+      let parentDbId: string | null = null;
+
+      if (rec.ref > 0) {
+        const dbParent = await db.get(
+          "SELECT id FROM media_items WHERE channel_id = ? AND telegram_message_id = ?",
+          [channel.id, rec.ref]
+        );
+        if (dbParent) {
+          isParentActive = true;
+          parentDbId = dbParent.id;
+          try {
+            await db.run(
+              `INSERT OR IGNORE INTO media_event_messages (id, channel_id, media_item_id, media_telegram_msg_id, event_telegram_msg_id)
+               VALUES (?, ?, ?, ?, ?)`,
+              [crypto.randomUUID(), channel.id, dbParent.id, rec.ref, rec.msgId]
+            );
+          } catch {}
+        }
+      }
+
+      if (isParentActive) {
         validEvents.push(rec.event);
-      } else {
-        // Target media message is no longer in Telegram! Mark event text message for cleanup
-        orphanedEventIds.add(rec.msgId);
       }
     }
 
     for (const rec of rawEventMessages) {
-      if (rec.ref && activeTgMediaMsgIds.has(rec.ref)) {
-        // Target media still exists in Telegram, keep
-      } else {
-        // Target media no longer in Telegram or unlinked event message -> mark for cleanup
-        orphanedEventIds.add(rec.msgId);
-      }
-    }
-
-    const orphanIdArray = Array.from(orphanedEventIds);
-    if (orphanIdArray.length > 0) {
-      const TG_BATCH_LIMIT = 100;
-      for (let i = 0; i < orphanIdArray.length; i += TG_BATCH_LIMIT) {
-        const chunk = orphanIdArray.slice(i, i + TG_BATCH_LIMIT);
+      if (rec.ref && rec.ref > 0) {
         try {
-          await client.deleteMessages(targetPeer, chunk, { revoke: true });
-          cleanedOrphanEventsCount += chunk.length;
-        } catch (delErr) {
-          console.warn("[EventLedger] Orphaned event cleanup warning:", delErr);
-        }
+          const dbParent = await db.get(
+            "SELECT id FROM media_items WHERE channel_id = ? AND telegram_message_id = ?",
+            [channel.id, rec.ref]
+          );
+          if (dbParent) {
+            await db.run(
+              `INSERT OR IGNORE INTO media_event_messages (id, channel_id, media_item_id, media_telegram_msg_id, event_telegram_msg_id)
+               VALUES (?, ?, ?, ?, ?)`,
+              [crypto.randomUUID(), channel.id, dbParent.id, rec.ref, rec.msgId]
+            );
+          }
+        } catch {}
       }
-      console.log(`[EventLedger] Cleaned ${cleanedOrphanEventsCount} orphaned event/reply messages from channel ${channel.name}`);
     }
 
     // Pass 4: Replay valid Event Sourcing Ledger (restores tags, trips, people, events, favorites, GPS)
