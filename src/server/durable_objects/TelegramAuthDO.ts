@@ -8,6 +8,7 @@ import { ParallelSegmentFetcher } from "./streaming/parallelSegmentFetcher.ts";
 import { StreamHandler } from "./streaming/streamHandler.ts";
 import { UploadWebSocketHandler } from "./upload/uploadWebSocketHandler.ts";
 import { UploadHttpHandler } from "./upload/uploadHttpHandler.ts";
+import { emitGalleryEvent, emitGalleryBatch } from "../lib/ledger.ts";
 
 export { SlidingWindowRatePacer, MAX_TELEGRAM_FILE_SIZE, toBigInt };
 export type * from "./common/types.ts";
@@ -183,6 +184,80 @@ export class TelegramAuthDO {
       return new Response(JSON.stringify({ success: true, message: "In-memory DO caches cleared" }), {
         headers: { "Content-Type": "application/json" },
       });
+    }
+
+    // 3.5b WAL Single Event Emit endpoint with persistent warm MTProto connection
+    if (url.pathname.includes("/api/ledger/emit") || url.pathname.endsWith("/ledger/emit")) {
+      try {
+        const { client, error } = await this.clientSessionManager.getOrConnectUserClient(request, effectiveEnv);
+        if (!client) {
+          return new Response(JSON.stringify({ error: error || "Unauthorized" }), {
+            status: 401,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+
+        const body = (await request.json().catch(() => ({}))) as any;
+        const { channelTgId, refMsgId, op, data, customKey } = body;
+
+        let targetPeer: any = channelTgId || "me";
+        if (targetPeer !== "me" && !targetPeer.startsWith("me_")) {
+          try { targetPeer = await client.getInputEntity(targetPeer); }
+          catch { try { targetPeer = await client.getEntity(targetPeer); } catch {} }
+        } else {
+          targetPeer = "me";
+        }
+
+        const encryptionKey = customKey || effectiveEnv.SESSION_ENCRYPTION_KEY;
+        const eventMsgId = await emitGalleryEvent(client, targetPeer, refMsgId, op, data, encryptionKey);
+
+        return new Response(JSON.stringify({ success: !!eventMsgId, eventMsgId: eventMsgId || null }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      } catch (err: any) {
+        console.error("[DO:LedgerEmit Error]:", err);
+        return new Response(JSON.stringify({ error: err.message || "Failed to emit WAL event" }), {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+    }
+
+    // 3.5c WAL Batch Manifest Emit endpoint with persistent warm MTProto connection
+    if (url.pathname.includes("/api/ledger/batch") || url.pathname.endsWith("/ledger/batch")) {
+      try {
+        const { client, error } = await this.clientSessionManager.getOrConnectUserClient(request, effectiveEnv);
+        if (!client) {
+          return new Response(JSON.stringify({ error: error || "Unauthorized" }), {
+            status: 401,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+
+        const body = (await request.json().catch(() => ({}))) as any;
+        const { channelTgId, ops, customKey } = body;
+
+        let targetPeer: any = channelTgId || "me";
+        if (targetPeer !== "me" && !targetPeer.startsWith("me_")) {
+          try { targetPeer = await client.getInputEntity(targetPeer); }
+          catch { try { targetPeer = await client.getEntity(targetPeer); } catch {} }
+        } else {
+          targetPeer = "me";
+        }
+
+        const encryptionKey = customKey || effectiveEnv.SESSION_ENCRYPTION_KEY;
+        const eventMsgId = await emitGalleryBatch(client, targetPeer, channelTgId, ops, encryptionKey);
+
+        return new Response(JSON.stringify({ success: !!eventMsgId, eventMsgId: eventMsgId || null }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      } catch (err: any) {
+        console.error("[DO:LedgerBatch Error]:", err);
+        return new Response(JSON.stringify({ error: err.message || "Failed to emit WAL batch" }), {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
     }
 
     // 3.6 Batch Delete media messages in Telegram with warm MTProto connection

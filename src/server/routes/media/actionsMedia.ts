@@ -3,7 +3,7 @@ import { getDb } from "../../lib/db.ts";
 import { resolveUserAuth } from "../../lib/auth.ts";
 import { getR2Storage } from "../../lib/r2.ts";
 import { getConnectedClient } from "../../lib/telegram.ts";
-import { emitGalleryEvent } from "../../lib/ledger.ts";
+import { dispatchLedgerEvent } from "../../lib/ledger.ts";
 
 export const actionsMediaRoute = new Hono();
 
@@ -34,23 +34,22 @@ actionsMediaRoute.post("/:id/favorite", async (c) => {
     const emitPromise = (async () => {
       try {
         const item = await db.get(
-          `SELECT m.telegram_message_id, c.telegram_channel_id FROM media_items m
+          `SELECT m.telegram_message_id, m.channel_id, c.telegram_channel_id FROM media_items m
            JOIN channels c ON c.id = m.channel_id
            WHERE m.id = ?`,
           [mediaId]
         );
-        if (item && auth.sessionString) {
-          const client = await getConnectedClient(auth.sessionString, auth.telegramConfig);
-          let targetPeer: any = item.telegram_channel_id;
-          if (targetPeer !== "me" && !targetPeer.startsWith("me_")) {
-            try {
-              targetPeer = await client.getInputEntity(targetPeer);
-            } catch {}
-          } else {
-            targetPeer = "me";
-          }
-          await emitGalleryEvent(client, targetPeer, item.telegram_message_id, "FAVORITE", {
-            fav: isFavorited,
+        if (item) {
+          await dispatchLedgerEvent({
+            c,
+            auth,
+            channelTgId: item.telegram_channel_id,
+            channelDbId: item.channel_id,
+            mediaDbId: mediaId,
+            refMsgId: item.telegram_message_id,
+            op: "FAVORITE",
+            data: { fav: isFavorited },
+            db,
           });
         }
       } catch (eventErr) {
@@ -97,12 +96,49 @@ actionsMediaRoute.post("/delete", async (c) => {
       media_ids
     );
 
+    // Fetch all linked WAL event message IDs for these media items
+    let eventRows: any[] = [];
+    const tgMsgIds = items.map((it) => it.telegram_message_id).filter(Boolean);
+    try {
+      if (tgMsgIds.length > 0) {
+        const tgPlaceholders = tgMsgIds.map(() => "?").join(",");
+        eventRows = await db.all(
+          `SELECT m.channel_id, m.media_item_id, m.media_telegram_msg_id, m.event_telegram_msg_id, c.telegram_channel_id
+           FROM media_event_messages m
+           JOIN channels c ON c.id = m.channel_id
+           WHERE m.media_item_id IN (${placeholders}) OR m.media_telegram_msg_id IN (${tgPlaceholders})`,
+          [...media_ids, ...tgMsgIds]
+        );
+      } else {
+        eventRows = await db.all(
+          `SELECT m.channel_id, m.media_item_id, m.media_telegram_msg_id, m.event_telegram_msg_id, c.telegram_channel_id
+           FROM media_event_messages m
+           JOIN channels c ON c.id = m.channel_id
+           WHERE m.media_item_id IN (${placeholders})`,
+          media_ids
+        );
+      }
+    } catch (e) {
+      console.warn("[MediaDelete] Error querying media_event_messages:", e);
+    }
+
     // 1. Batched D1 Database Deletions
     await db.run(`DELETE FROM media_favorites WHERE media_item_id IN (${placeholders})`, media_ids);
     await db.run(`DELETE FROM media_person_tags WHERE media_item_id IN (${placeholders})`, media_ids);
     await db.run(`DELETE FROM media_tags WHERE media_item_id IN (${placeholders})`, media_ids);
     await db.run(`DELETE FROM media_event_tags WHERE media_item_id IN (${placeholders})`, media_ids);
     await db.run(`DELETE FROM trip_media WHERE media_item_id IN (${placeholders})`, media_ids);
+    try {
+      if (tgMsgIds.length > 0) {
+        const tgPlaceholders = tgMsgIds.map(() => "?").join(",");
+        await db.run(
+          `DELETE FROM media_event_messages WHERE media_item_id IN (${placeholders}) OR media_telegram_msg_id IN (${tgPlaceholders})`,
+          [...media_ids, ...tgMsgIds]
+        );
+      } else {
+        await db.run(`DELETE FROM media_event_messages WHERE media_item_id IN (${placeholders})`, media_ids);
+      }
+    } catch {}
     await db.run(`DELETE FROM media_items WHERE id IN (${placeholders})`, media_ids);
 
     const deletedCount = items.length || media_ids.length;
@@ -118,14 +154,26 @@ actionsMediaRoute.post("/delete", async (c) => {
       })
     ).catch(() => {});
 
-    // 3. Batched Telegram Message Deletion grouped by target channel
+    // 3. Batched Telegram Message Deletion grouped by target channel (includes parent photo & WAL events)
     if (auth.sessionString && items.length > 0) {
-      const itemsByChannel = new Map<string, any[]>();
+      const itemsByChannel = new Map<string, Set<number>>();
       for (const item of items) {
         if (item.telegram_message_id && item.telegram_channel_id) {
-          const list = itemsByChannel.get(item.telegram_channel_id) || [];
-          list.push(item);
-          itemsByChannel.set(item.telegram_channel_id, list);
+          const set = itemsByChannel.get(item.telegram_channel_id) || new Set<number>();
+          set.add(Number(item.telegram_message_id));
+          itemsByChannel.set(item.telegram_channel_id, set);
+        }
+      }
+
+      for (const evt of eventRows) {
+        const item = items.find(
+          (it) => it.id === evt.media_item_id || String(it.telegram_message_id) === String(evt.media_telegram_msg_id)
+        );
+        const channelTgId = evt.telegram_channel_id || item?.telegram_channel_id;
+        if (channelTgId && evt.event_telegram_msg_id) {
+          const set = itemsByChannel.get(channelTgId) || new Set<number>();
+          set.add(Number(evt.event_telegram_msg_id));
+          itemsByChannel.set(channelTgId, set);
         }
       }
 
@@ -148,9 +196,9 @@ actionsMediaRoute.post("/delete", async (c) => {
             if (env?.TELEGRAM_TEST_MODE) headers.set("x-tg-test-mode", String(env.TELEGRAM_TEST_MODE));
             if (env?.SESSION_ENCRYPTION_KEY) headers.set("x-tg-enc-key", String(env.SESSION_ENCRYPTION_KEY));
 
-            const channelItems = Array.from(itemsByChannel.entries()).map(([channelTgId, list]) => ({
+            const channelItems = Array.from(itemsByChannel.entries()).map(([channelTgId, msgSet]) => ({
               channelTgId,
-              messageIds: list.map((it) => Number(it.telegram_message_id)).filter(Boolean),
+              messageIds: Array.from(msgSet).filter(Boolean),
             }));
 
             const deleteReq = new Request("https://internal.do/api/media/delete", {
@@ -170,7 +218,7 @@ actionsMediaRoute.post("/delete", async (c) => {
           try {
             const client = await getConnectedClient(auth.sessionString!, auth.telegramConfig);
 
-            for (const [channelTgId, channelItems] of itemsByChannel.entries()) {
+            for (const [channelTgId, msgSet] of itemsByChannel.entries()) {
               try {
                 let targetPeer: any = channelTgId;
                 if (targetPeer !== "me" && !targetPeer.startsWith("me_")) {
@@ -180,15 +228,7 @@ actionsMediaRoute.post("/delete", async (c) => {
                   targetPeer = "me";
                 }
 
-                const allIdsToDelete = new Set<number>();
-                for (const item of channelItems) {
-                  const msgId = Number(item.telegram_message_id);
-                  if (msgId) {
-                    allIdsToDelete.add(msgId);
-                  }
-                }
-
-                const idArray = Array.from(allIdsToDelete);
+                const idArray = Array.from(msgSet).filter(Boolean);
                 if (idArray.length === 0) continue;
 
                 const TG_BATCH_LIMIT = 100;

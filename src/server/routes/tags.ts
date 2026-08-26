@@ -2,8 +2,7 @@ import { Hono } from "hono";
 import crypto from "crypto";
 import { getDb } from "../lib/db";
 import { resolveUserAuth } from "../lib/auth";
-import { getConnectedClient, getDefaultTelegramConfig } from "../lib/telegram";
-import { emitGalleryEvent, emitGalleryBatch, GalleryOp } from "../lib/ledger";
+import { dispatchLedgerEvent, dispatchLedgerBatch, GalleryOp } from "../lib/ledger";
 
 export const tagsRouter = new Hono();
 
@@ -132,43 +131,61 @@ tagsRouter.post("/media-person", async (c) => {
       }
     }
 
-    // Telegram WAL / Batch ledger emit
-    try {
-      if (auth.sessionString && !remove) {
-        const placeholders = mediaItemIds.map(() => "?").join(",");
-        const mediaItems = await db.all(
-          `SELECT m.id, m.telegram_message_id, c.telegram_channel_id FROM media_items m
-           JOIN channels c ON c.id = m.channel_id WHERE m.id IN (${placeholders})`,
-          mediaItemIds
-        );
+    // Telegram WAL / Batch ledger emit (non-blocking)
+    if (!remove) {
+      const emitPromise = (async () => {
+        try {
+          const placeholders = mediaItemIds.map(() => "?").join(",");
+          const mediaItems = await db.all(
+            `SELECT m.id, m.channel_id, m.telegram_message_id, c.telegram_channel_id FROM media_items m
+             JOIN channels c ON c.id = m.channel_id WHERE m.id IN (${placeholders})`,
+            mediaItemIds
+          );
 
-        if (mediaItems.length > 0) {
-          const client = await getConnectedClient(auth.sessionString, auth.telegramConfig);
-          const channelTgId = mediaItems[0].telegram_channel_id;
-          const targetPeer = await getTargetPeer(client, channelTgId);
+          if (mediaItems.length > 0) {
+            const channelTgId = mediaItems[0].telegram_channel_id;
 
-          if (mediaItems.length >= 5) {
-            // Batch document upload for >= 5 photos
-            const ops: GalleryOp[] = [
-              {
-                op: "TAG_PEOPLE",
-                refs: mediaItems.map((m: any) => m.telegram_message_id),
-                data: { people: [person.name] },
-              },
-            ];
-            await emitGalleryBatch(client, targetPeer, channelTgId, ops, (c.env as any)?.MASTER_ENCRYPTION_KEY);
-          } else {
-            // Threaded reply for < 5 photos
-            for (const item of mediaItems) {
-              await emitGalleryEvent(client, targetPeer, item.telegram_message_id, "TAG_PEOPLE", {
-                people: [person.name],
-              }, (c.env as any)?.MASTER_ENCRYPTION_KEY);
+            if (mediaItems.length >= 5) {
+              const ops: GalleryOp[] = [
+                {
+                  op: "TAG_PEOPLE",
+                  refs: mediaItems.map((m: any) => m.telegram_message_id),
+                  data: { people: [person.name] },
+                },
+              ];
+              await dispatchLedgerBatch({
+                c,
+                auth,
+                channelTgId,
+                channelDbId: mediaItems[0].channel_id,
+                items: mediaItems.map((m: any) => ({ id: m.id, telegram_message_id: m.telegram_message_id })),
+                ops,
+                db,
+              });
+            } else {
+              for (const item of mediaItems) {
+                await dispatchLedgerEvent({
+                  c,
+                  auth,
+                  channelTgId: item.telegram_channel_id,
+                  channelDbId: item.channel_id,
+                  mediaDbId: item.id,
+                  refMsgId: item.telegram_message_id,
+                  op: "TAG_PEOPLE",
+                  data: { people: [person.name] },
+                  db,
+                });
+              }
             }
           }
+        } catch (e) {
+          console.warn("[EventLedger] Failed emitting person tag WAL:", e);
         }
+      })();
+
+      if ((c.executionCtx as any)?.waitUntil) {
+        c.executionCtx.waitUntil(emitPromise.catch(() => {}));
       }
-    } catch (e) {
-      console.warn("[EventLedger] Failed emitting person tag WAL:", e);
     }
 
     return c.json({ success: true, action: remove ? "removed" : "tagged", count: mediaItemIds.length });
@@ -282,41 +299,61 @@ tagsRouter.post("/media-tag", async (c) => {
       }
     }
 
-    // Emit Telegram WAL / Batch ledger event
-    try {
-      if (auth.sessionString && !remove) {
-        const placeholders = mediaItemIds.map(() => "?").join(",");
-        const mediaItems = await db.all(
-          `SELECT m.id, m.telegram_message_id, c.telegram_channel_id FROM media_items m
-           JOIN channels c ON c.id = m.channel_id WHERE m.id IN (${placeholders})`,
-          mediaItemIds
-        );
+    // Emit Telegram WAL / Batch ledger event (non-blocking)
+    if (!remove) {
+      const emitPromise = (async () => {
+        try {
+          const placeholders = mediaItemIds.map(() => "?").join(",");
+          const mediaItems = await db.all(
+            `SELECT m.id, m.channel_id, m.telegram_message_id, c.telegram_channel_id FROM media_items m
+             JOIN channels c ON c.id = m.channel_id WHERE m.id IN (${placeholders})`,
+            mediaItemIds
+          );
 
-        if (mediaItems.length > 0) {
-          const client = await getConnectedClient(auth.sessionString, auth.telegramConfig);
-          const channelTgId = mediaItems[0].telegram_channel_id;
-          const targetPeer = await getTargetPeer(client, channelTgId);
+          if (mediaItems.length > 0) {
+            const channelTgId = mediaItems[0].telegram_channel_id;
 
-          if (mediaItems.length >= 5) {
-            const ops: GalleryOp[] = [
-              {
-                op: "ADD_TAG",
-                refs: mediaItems.map((m: any) => m.telegram_message_id),
-                data: { tags: [tag.name] },
-              },
-            ];
-            await emitGalleryBatch(client, targetPeer, channelTgId, ops, (c.env as any)?.MASTER_ENCRYPTION_KEY);
-          } else {
-            for (const item of mediaItems) {
-              await emitGalleryEvent(client, targetPeer, item.telegram_message_id, "ADD_TAG", {
-                tags: [tag.name],
-              }, (c.env as any)?.MASTER_ENCRYPTION_KEY);
+            if (mediaItems.length >= 5) {
+              const ops: GalleryOp[] = [
+                {
+                  op: "ADD_TAG",
+                  refs: mediaItems.map((m: any) => m.telegram_message_id),
+                  data: { tags: [tag.name] },
+                },
+              ];
+              await dispatchLedgerBatch({
+                c,
+                auth,
+                channelTgId,
+                channelDbId: mediaItems[0].channel_id,
+                items: mediaItems.map((m: any) => ({ id: m.id, telegram_message_id: m.telegram_message_id })),
+                ops,
+                db,
+              });
+            } else {
+              for (const item of mediaItems) {
+                await dispatchLedgerEvent({
+                  c,
+                  auth,
+                  channelTgId: item.telegram_channel_id,
+                  channelDbId: item.channel_id,
+                  mediaDbId: item.id,
+                  refMsgId: item.telegram_message_id,
+                  op: "ADD_TAG",
+                  data: { tags: [tag.name] },
+                  db,
+                });
+              }
             }
           }
+        } catch (e) {
+          console.warn("[EventLedger] Failed emitting media tag WAL:", e);
         }
+      })();
+
+      if ((c.executionCtx as any)?.waitUntil) {
+        c.executionCtx.waitUntil(emitPromise.catch(() => {}));
       }
-    } catch (e) {
-      console.warn("[EventLedger] Failed emitting media tag WAL:", e);
     }
 
     return c.json({ success: true, action: remove ? "removed" : "tagged", count: mediaItemIds.length });
@@ -413,41 +450,61 @@ tagsRouter.post("/media-event", async (c) => {
       }
     }
 
-    // Emit Telegram WAL / Batch ledger event
-    try {
-      if (auth.sessionString && !remove) {
-        const placeholders = mediaItemIds.map(() => "?").join(",");
-        const mediaItems = await db.all(
-          `SELECT m.id, m.telegram_message_id, c.telegram_channel_id FROM media_items m
-           JOIN channels c ON c.id = m.channel_id WHERE m.id IN (${placeholders})`,
-          mediaItemIds
-        );
+    // Emit Telegram WAL / Batch ledger event (non-blocking)
+    if (!remove) {
+      const emitPromise = (async () => {
+        try {
+          const placeholders = mediaItemIds.map(() => "?").join(",");
+          const mediaItems = await db.all(
+            `SELECT m.id, m.channel_id, m.telegram_message_id, c.telegram_channel_id FROM media_items m
+             JOIN channels c ON c.id = m.channel_id WHERE m.id IN (${placeholders})`,
+            mediaItemIds
+          );
 
-        if (mediaItems.length > 0) {
-          const client = await getConnectedClient(auth.sessionString, auth.telegramConfig);
-          const channelTgId = mediaItems[0].telegram_channel_id;
-          const targetPeer = await getTargetPeer(client, channelTgId);
+          if (mediaItems.length > 0) {
+            const channelTgId = mediaItems[0].telegram_channel_id;
 
-          if (mediaItems.length >= 5) {
-            const ops: GalleryOp[] = [
-              {
-                op: "SET_EVENT",
-                refs: mediaItems.map((m: any) => m.telegram_message_id),
-                data: { event: ev.name },
-              },
-            ];
-            await emitGalleryBatch(client, targetPeer, channelTgId, ops, (c.env as any)?.MASTER_ENCRYPTION_KEY);
-          } else {
-            for (const item of mediaItems) {
-              await emitGalleryEvent(client, targetPeer, item.telegram_message_id, "SET_EVENT", {
-                event: ev.name,
-              }, (c.env as any)?.MASTER_ENCRYPTION_KEY);
+            if (mediaItems.length >= 5) {
+              const ops: GalleryOp[] = [
+                {
+                  op: "SET_EVENT",
+                  refs: mediaItems.map((m: any) => m.telegram_message_id),
+                  data: { event: ev.name },
+                },
+              ];
+              await dispatchLedgerBatch({
+                c,
+                auth,
+                channelTgId,
+                channelDbId: mediaItems[0].channel_id,
+                items: mediaItems.map((m: any) => ({ id: m.id, telegram_message_id: m.telegram_message_id })),
+                ops,
+                db,
+              });
+            } else {
+              for (const item of mediaItems) {
+                await dispatchLedgerEvent({
+                  c,
+                  auth,
+                  channelTgId: item.telegram_channel_id,
+                  channelDbId: item.channel_id,
+                  mediaDbId: item.id,
+                  refMsgId: item.telegram_message_id,
+                  op: "SET_EVENT",
+                  data: { event: ev.name },
+                  db,
+                });
+              }
             }
           }
+        } catch (e) {
+          console.warn("[EventLedger] Failed emitting event tag WAL:", e);
         }
+      })();
+
+      if ((c.executionCtx as any)?.waitUntil) {
+        c.executionCtx.waitUntil(emitPromise.catch(() => {}));
       }
-    } catch (e) {
-      console.warn("[EventLedger] Failed emitting event tag WAL:", e);
     }
 
     return c.json({ success: true, action: remove ? "removed" : "tagged", count: mediaItemIds.length });
@@ -489,20 +546,18 @@ tagsRouter.post("/media-geo", async (c) => {
       );
     }
 
-    // Emit Telegram WAL
-    try {
-      if (auth.sessionString) {
+    // Emit Telegram WAL (non-blocking)
+    const emitPromise = (async () => {
+      try {
         const placeholders = mediaItemIds.map(() => "?").join(",");
         const mediaItems = await db.all(
-          `SELECT m.id, m.telegram_message_id, c.telegram_channel_id FROM media_items m
+          `SELECT m.id, m.channel_id, m.telegram_message_id, c.telegram_channel_id FROM media_items m
            JOIN channels c ON c.id = m.channel_id WHERE m.id IN (${placeholders})`,
           mediaItemIds
         );
 
         if (mediaItems.length > 0) {
-          const client = await getConnectedClient(auth.sessionString, auth.telegramConfig);
           const channelTgId = mediaItems[0].telegram_channel_id;
-          const targetPeer = await getTargetPeer(client, channelTgId);
 
           if (mediaItems.length >= 5) {
             const ops: GalleryOp[] = [
@@ -512,18 +567,38 @@ tagsRouter.post("/media-geo", async (c) => {
                 data: { gps: { lat, lng, alt: alt || undefined } },
               },
             ];
-            await emitGalleryBatch(client, targetPeer, channelTgId, ops, (c.env as any)?.MASTER_ENCRYPTION_KEY);
+            await dispatchLedgerBatch({
+              c,
+              auth,
+              channelTgId,
+              channelDbId: mediaItems[0].channel_id,
+              items: mediaItems.map((m: any) => ({ id: m.id, telegram_message_id: m.telegram_message_id })),
+              ops,
+              db,
+            });
           } else {
             for (const item of mediaItems) {
-              await emitGalleryEvent(client, targetPeer, item.telegram_message_id, "SET_LOCATION", {
-                gps: { lat, lng, alt: alt || undefined },
-              }, (c.env as any)?.MASTER_ENCRYPTION_KEY);
+              await dispatchLedgerEvent({
+                c,
+                auth,
+                channelTgId: item.telegram_channel_id,
+                channelDbId: item.channel_id,
+                mediaDbId: item.id,
+                refMsgId: item.telegram_message_id,
+                op: "SET_LOCATION",
+                data: { gps: { lat, lng, alt: alt || undefined } },
+                db,
+              });
             }
           }
         }
+      } catch (e) {
+        console.warn("[EventLedger] Failed emitting geo WAL:", e);
       }
-    } catch (e) {
-      console.warn("[EventLedger] Failed emitting geo WAL:", e);
+    })();
+
+    if ((c.executionCtx as any)?.waitUntil) {
+      c.executionCtx.waitUntil(emitPromise.catch(() => {}));
     }
 
     return c.json({ success: true, count: mediaItemIds.length });
