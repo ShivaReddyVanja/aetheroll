@@ -375,10 +375,20 @@ export class UploadHttpHandler {
       );
 
       // Emit WAL Event in background
-      await emitGalleryEvent(client, targetPeer, realMessageId, "CREATE", {
+      const eventMsgId = await emitGalleryEvent(client, targetPeer, realMessageId, "CREATE", {
         blur_hash: blur_hash || "LEHV6nWB2yk8pyo0adR*.7kCMdnj",
         captured_at: captured_at || new Date().toISOString(),
-      });
+      }).catch(() => null);
+
+      if (eventMsgId) {
+        try {
+          await db.run(
+            `INSERT OR IGNORE INTO media_event_messages (id, channel_id, media_item_id, media_telegram_msg_id, event_telegram_msg_id)
+             VALUES (?, ?, ?, ?, ?)`,
+            [crypto.randomUUID(), uploadSession.channelId, mediaId, realMessageId, eventMsgId]
+          );
+        } catch {}
+      }
 
       // Remove session
       this.uploadSessions.delete(upload_id);
@@ -604,10 +614,20 @@ export class UploadHttpHandler {
       );
 
       // Emit Telegram WAL Event in background
-      await emitGalleryEvent(client, targetPeer, realMessageId, "CREATE", {
+      const eventMsgId = await emitGalleryEvent(client, targetPeer, realMessageId, "CREATE", {
         blur_hash: blurHash,
         captured_at: capturedAt,
-      });
+      }).catch(() => null);
+
+      if (eventMsgId) {
+        try {
+          await db.run(
+            `INSERT OR IGNORE INTO media_event_messages (id, channel_id, media_item_id, media_telegram_msg_id, event_telegram_msg_id)
+             VALUES (?, ?, ?, ?, ?)`,
+            [crypto.randomUUID(), channelId, mediaId, realMessageId, eventMsgId]
+          );
+        } catch {}
+      }
 
       return new Response(
         JSON.stringify({ success: true, mediaId, telegramMessageId: realMessageId }),

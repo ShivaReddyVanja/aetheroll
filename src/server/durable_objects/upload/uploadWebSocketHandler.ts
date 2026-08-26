@@ -200,10 +200,20 @@ export class UploadWebSocketHandler {
         );
 
         // Background WAL event
-        await emitGalleryEvent(client, uploadState.targetPeer, realMessageId, "CREATE", {
+        const eventMsgId = await emitGalleryEvent(client, uploadState.targetPeer, realMessageId, "CREATE", {
           blur_hash: uploadState.blurHash,
           captured_at: uploadState.capturedAt,
-        }).catch(() => {});
+        }).catch(() => null);
+
+        if (eventMsgId) {
+          try {
+            await db.run(
+              `INSERT OR IGNORE INTO media_event_messages (id, channel_id, media_item_id, media_telegram_msg_id, event_telegram_msg_id)
+               VALUES (?, ?, ?, ?, ?)`,
+              [crypto.randomUUID(), uploadState.channelId, mediaId, realMessageId, eventMsgId]
+            );
+          } catch {}
+        }
 
         ws.send(
           JSON.stringify({
@@ -228,6 +238,9 @@ export class UploadWebSocketHandler {
           })
         );
         logToClient("UPLOAD_COMPLETE_DONE", { mediaId });
+        try {
+          ws.close(1000, "Upload complete");
+        } catch {}
       } catch (finalizeErr: any) {
         console.error("[UploadFinalize Error]:", finalizeErr);
         logToClient("UPLOAD_FINALIZE_ERROR", { error: finalizeErr.message });
