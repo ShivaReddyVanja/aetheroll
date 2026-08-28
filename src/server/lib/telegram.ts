@@ -352,6 +352,11 @@ export async function verifyPhoneCode(
   try {
     const cfg = config && typeof config === "object" && "apiId" in config ? config : getDefaultTelegramConfig(config);
 
+    if (!client.connected) {
+      console.log("[MTProto] Reconnecting disconnected client for phone verification...");
+      await client.connect();
+    }
+
     if (password) {
       // 2FA password verification
       try {

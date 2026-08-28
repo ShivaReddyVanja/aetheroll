@@ -70,7 +70,7 @@ export class PhoneAuthHandler {
         client,
         phoneNumber: cleanPhone,
         phoneCodeHash,
-        expires: Date.now() + 10 * 60 * 1000,
+        expires: Date.now() + 15 * 60 * 1000,
       });
 
       return new Response(

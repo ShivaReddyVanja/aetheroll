@@ -52,7 +52,7 @@ phoneAuthRoute.post("/phone/send-code", async (c) => {
       client,
       phoneNumber: cleanPhone,
       phoneCodeHash,
-      expires: Date.now() + 10 * 60 * 1000, // 10 minutes expiry
+      expires: Date.now() + 15 * 60 * 1000, // 15 minutes expiry
     });
 
     return c.json({
