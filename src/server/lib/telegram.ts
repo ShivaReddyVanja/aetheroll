@@ -303,43 +303,51 @@ export async function getUserChannels(client: TelegramClient): Promise<Array<{
 }
 
 /**
- * Initiates phone number verification code sending
+ * Initiates phone number verification code sending (Stateless & Serverless safe)
  */
 export async function sendPhoneCode(
   phoneNumber: string,
   config?: TelegramConfig | any
 ): Promise<{
-  client: TelegramClient;
   phoneCodeHash: string;
+  phoneAuthSessionString: string;
   isCodeViaApp?: boolean;
 }> {
   const cfg = config && typeof config === "object" && "apiId" in config ? config : getDefaultTelegramConfig(config);
   const client = createTelegramClient("", cfg);
   await client.connect();
 
-  const res = await client.sendCode(
-    {
-      apiId: cfg.apiId,
-      apiHash: cfg.apiHash,
-    },
-    phoneNumber
-  );
+  try {
+    const res = await client.sendCode(
+      {
+        apiId: cfg.apiId,
+        apiHash: cfg.apiHash,
+      },
+      phoneNumber
+    );
 
-  return {
-    client,
-    phoneCodeHash: res.phoneCodeHash,
-    isCodeViaApp: res.isCodeViaApp,
-  };
+    const phoneAuthSessionString = (client.session as any).save();
+
+    return {
+      phoneCodeHash: res.phoneCodeHash,
+      phoneAuthSessionString,
+      isCodeViaApp: res.isCodeViaApp,
+    };
+  } finally {
+    try {
+      await client.disconnect();
+    } catch {}
+  }
 }
 
 /**
- * Completes phone number sign-in with code (and optional 2FA password)
+ * Completes phone number sign-in with code & optional 2FA (Stateless & Serverless safe)
  */
 export async function verifyPhoneCode(
-  client: TelegramClient,
   phoneNumber: string,
   phoneCodeHash: string,
   phoneCode: string,
+  phoneAuthSessionString: string,
   password?: string,
   config?: TelegramConfig | any
 ): Promise<{
@@ -349,16 +357,19 @@ export async function verifyPhoneCode(
   user?: any;
   error?: string;
 }> {
+  if (!phoneAuthSessionString || phoneAuthSessionString.trim() === "") {
+    return {
+      success: false,
+      error: "Session expired or missing session key. Please request a new verification code.",
+    };
+  }
+
+  const cfg = config && typeof config === "object" && "apiId" in config ? config : getDefaultTelegramConfig(config);
+  const client = createTelegramClient(phoneAuthSessionString, cfg);
+  await client.connect();
+
   try {
-    const cfg = config && typeof config === "object" && "apiId" in config ? config : getDefaultTelegramConfig(config);
-
-    if (!client.connected) {
-      console.log("[MTProto] Reconnecting disconnected client for phone verification...");
-      await client.connect();
-    }
-
     if (password) {
-      // 2FA password verification
       try {
         const user = await client.signInWithPassword(
           { apiId: cfg.apiId, apiHash: cfg.apiHash },
@@ -387,57 +398,77 @@ export async function verifyPhoneCode(
         return {
           success: false,
           requires2FA: true,
-          error: "Incorrect 2FA password. Please try again.",
+          error: err?.errorMessage === "PASSWORD_HASH_INVALID" ? "Incorrect 2FA password" : err.message,
         };
       }
     }
 
-    // Code verification via RPC Api.auth.SignIn
-    try {
-      const signInResult = await client.invoke(
+    const doSignIn = async (targetClient: TelegramClient) => {
+      return await targetClient.invoke(
         new Api.auth.SignIn({
           phoneNumber,
           phoneCodeHash,
           phoneCode,
         })
       );
+    };
 
-      const auth = signInResult as any;
-      let authUser = auth?.user || auth;
-      if (!authUser || !authUser.id) {
-        try {
-          authUser = await client.getMe();
-        } catch {}
-      }
-
-      const sessionString = (client.session as any).save();
-      return {
-        success: true,
-        sessionString,
-        user: authUser,
-      };
+    let signInResult: any;
+    try {
+      signInResult = await doSignIn(client);
     } catch (err: any) {
-      if (err?.errorMessage === "SESSION_PASSWORD_NEEDED" || err?.message?.includes("SESSION_PASSWORD_NEEDED")) {
-        return {
-          success: false,
-          requires2FA: true,
-        };
+      if (err?.errorMessage?.startsWith("PHONE_MIGRATE_") || err?.errorMessage?.startsWith("USER_MIGRATE_")) {
+        const dcId = Number(err.errorMessage.replace(/\D/g, ""));
+        if (dcId) {
+          console.log(`[MTProto] Migrating phone sign-in to DC ${dcId}...`);
+          await (client as any)._switchDC(dcId);
+          signInResult = await doSignIn(client);
+        } else {
+          throw err;
+        }
+      } else {
+        throw err;
       }
-      if (err?.errorMessage === "PHONE_CODE_INVALID") {
-        return { success: false, error: "Invalid verification code. Please check the code sent to your Telegram app." };
-      }
-      if (err?.errorMessage === "PHONE_CODE_EXPIRED") {
-        return { success: false, error: "Verification code expired. Please request a new code." };
-      }
-      throw err;
     }
+
+    const auth = signInResult as any;
+    let authUser = auth?.user || auth;
+    if (!authUser || !authUser.id) {
+      try {
+        authUser = await client.getMe();
+      } catch {}
+    }
+
+    const sessionString = (client.session as any).save();
+    return {
+      success: true,
+      sessionString,
+      user: authUser,
+    };
   } catch (err: any) {
-    console.error("[MTProto] Phone auth error:", err);
+    if (err?.errorMessage === "SESSION_PASSWORD_NEEDED" || err?.message?.includes("SESSION_PASSWORD_NEEDED")) {
+      return {
+        success: false,
+        requires2FA: true,
+      };
+    }
+    if (err?.errorMessage === "PHONE_CODE_INVALID") {
+      return { success: false, error: "Invalid verification code. Please check your Telegram app." };
+    }
+    if (err?.errorMessage === "PHONE_CODE_EXPIRED") {
+      return { success: false, error: "Verification code expired. Please request a new code." };
+    }
+    console.error("[MTProto] Phone verify error:", err);
     return {
       success: false,
       error: err.message || "Failed to verify phone code",
     };
+  } finally {
+    try {
+      await client.disconnect();
+    } catch {}
   }
 }
+
 
 

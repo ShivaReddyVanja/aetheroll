@@ -13,11 +13,13 @@ import type { ActiveSessionEntry } from "../common/types.ts";
 
 export class QrAuthHandler {
   activeSessions: Map<string, ActiveSessionEntry>;
+  pendingClaims: Map<string, { sessionToken: string; user: any; expires: number }>;
   env: any;
 
   constructor(env: any) {
     this.env = env;
     this.activeSessions = new Map();
+    this.pendingClaims = new Map();
   }
 
   async handleWebSocket(ws: WebSocket, envObj?: any) {
@@ -122,16 +124,20 @@ export class QrAuthHandler {
           [sessionId, userId, expiresAt]
         );
 
+        // Create a one-time claim token for the frontend to exchange for a cookie
+        const qrClaimId = crypto.randomUUID();
+        this.pendingClaims.set(qrClaimId, {
+          sessionToken,
+          user: { id: userId, telegramUserId, displayName },
+          expires: Date.now() + 2 * 60 * 1000, // 2 minutes TTL
+        });
+
         try {
           ws.send(
             JSON.stringify({
               type: "authenticated",
-              sessionToken,
-              user: {
-                id: userId,
-                telegramUserId,
-                displayName,
-              },
+              qrClaimId, // send claim ID, NOT sessionToken
+              user: { id: userId, telegramUserId, displayName },
             })
           );
         } catch {}
@@ -280,7 +286,6 @@ export class QrAuthHandler {
         const response = new Response(
           JSON.stringify({
             success: true,
-            sessionToken,
             user: {
               id: userId,
               telegramUserId,
@@ -314,5 +319,60 @@ export class QrAuthHandler {
         headers: { "Content-Type": "application/json" },
       });
     }
+  }
+
+  async handleClaimHttp(envObj?: any, request?: Request): Promise<Response> {
+    const origin = request?.headers?.get("origin") || "*";
+    const isBuiltByShiva = origin.includes("builtbyshiva.com");
+    const domainPart = isBuiltByShiva ? "; Domain=.builtbyshiva.com" : "";
+
+    const body = (await request?.json().catch(() => ({}))) as any;
+    const { qrClaimId } = body || {};
+
+    if (!qrClaimId) {
+      return new Response(JSON.stringify({ error: "qrClaimId required" }), {
+        status: 400,
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": origin,
+          "Access-Control-Allow-Credentials": "true",
+        },
+      });
+    }
+
+    // Cleanup expired claims
+    const now = Date.now();
+    for (const [id, claim] of this.pendingClaims.entries()) {
+      if (claim.expires < now) this.pendingClaims.delete(id);
+    }
+
+    const claim = this.pendingClaims.get(qrClaimId);
+    if (!claim || claim.expires < Date.now()) {
+      this.pendingClaims.delete(qrClaimId);
+      return new Response(
+        JSON.stringify({ error: "Claim expired or invalid. Please scan QR code again." }),
+        {
+          status: 400,
+          headers: {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+          },
+        }
+      );
+    }
+
+    // One-time use: delete immediately
+    this.pendingClaims.delete(qrClaimId);
+
+    const cookieValue = `tg_session=${claim.sessionToken}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=2592000${domainPart}`;
+    return new Response(JSON.stringify({ success: true, user: claim.user }), {
+      headers: {
+        "Content-Type": "application/json",
+        "Set-Cookie": cookieValue,
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Credentials": "true",
+      },
+    });
   }
 }

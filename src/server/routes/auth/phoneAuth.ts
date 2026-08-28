@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { setCookie } from "hono/cookie";
 import crypto from "crypto";
 import { getDb } from "../../lib/db.ts";
-import { encryptSession } from "../../lib/crypto.ts";
+import { encryptSession, decryptSession } from "../../lib/crypto.ts";
 import { generateCompositeSessionToken } from "../../lib/auth.ts";
 import { sendPhoneCode, verifyPhoneCode } from "../../lib/telegram.ts";
 import { getAuthCookieOptions } from "./utils.ts";
@@ -12,16 +12,19 @@ export const phoneAuthRoute = new Hono();
 // Active in-memory phone login sessions
 const activePhoneLoginSessions = new Map<
   string,
-  { client: any; phoneNumber: string; phoneCodeHash: string; expires: number }
+  {
+    phoneNumber: string;
+    phoneCodeHash: string;
+    encryptedPhoneAuthSessionString: string;
+    expires: number;
+    attempts: number;
+  }
 >();
 
 function cleanupExpiredPhoneSessions() {
   const now = Date.now();
   for (const [id, session] of activePhoneLoginSessions.entries()) {
     if (session.expires < now) {
-      try {
-        session.client.disconnect();
-      } catch {}
       activePhoneLoginSessions.delete(id);
     }
   }
@@ -45,14 +48,20 @@ phoneAuthRoute.post("/phone/send-code", async (c) => {
       return c.json({ error: "Please enter a valid phone number with country code (e.g. +1234567890)" }, 400);
     }
 
-    const { client, phoneCodeHash, isCodeViaApp } = await sendPhoneCode(cleanPhone, c.env);
+    const { phoneCodeHash, phoneAuthSessionString, isCodeViaApp } = await sendPhoneCode(cleanPhone, c.env);
     const phoneAuthId = crypto.randomUUID();
 
+    const encryptedPhoneAuthSessionString = await encryptSession(
+      phoneAuthSessionString,
+      (c.env as any)?.SESSION_ENCRYPTION_KEY
+    );
+
     activePhoneLoginSessions.set(phoneAuthId, {
-      client,
       phoneNumber: cleanPhone,
       phoneCodeHash,
+      encryptedPhoneAuthSessionString,
       expires: Date.now() + 15 * 60 * 1000, // 15 minutes expiry
+      attempts: 0,
     });
 
     return c.json({
@@ -79,13 +88,32 @@ phoneAuthRoute.post("/phone/verify", async (c) => {
     }
 
     const activeSession = activePhoneLoginSessions.get(phoneAuthId)!;
-    const { client, phoneNumber, phoneCodeHash } = activeSession;
+
+    // Rate limit / brute-force protection: Max 5 attempts
+    if (activeSession.attempts >= 5) {
+      activePhoneLoginSessions.delete(phoneAuthId);
+      return c.json({ error: "Too many failed attempts. Please request a new verification code." }, 429);
+    }
+    activeSession.attempts++;
+
+    // Validate 5-digit verification code format unless providing 2FA password
+    const cleanCode = (phoneCode || "").toString().trim();
+    if (!password && (!cleanCode || !/^\d{5}$/.test(cleanCode))) {
+      return c.json({ error: "Invalid verification code format. Code must be a 5-digit number." }, 400);
+    }
+
+    const { phoneNumber, phoneCodeHash, encryptedPhoneAuthSessionString } = activeSession;
+
+    const phoneAuthSessionString = await decryptSession(
+      encryptedPhoneAuthSessionString,
+      (c.env as any)?.SESSION_ENCRYPTION_KEY
+    );
 
     const result = await verifyPhoneCode(
-      client,
       phoneNumber,
       phoneCodeHash,
-      phoneCode,
+      cleanCode,
+      phoneAuthSessionString,
       password,
       c.env
     );
@@ -141,7 +169,6 @@ phoneAuthRoute.post("/phone/verify", async (c) => {
 
     return c.json({
       success: true,
-      sessionToken,
       user: {
         id: userId,
         telegramUserId,
