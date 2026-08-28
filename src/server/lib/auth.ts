@@ -41,6 +41,7 @@ export function extractSessionToken(
     const c = source as Context;
     rawToken =
       getCookie(c, "tg_session") ||
+      getCookie(c, "aetheroll_session") ||
       c.req.header("x-tg-session") ||
       c.req.query("session_token");
 
@@ -54,8 +55,10 @@ export function extractSessionToken(
     // Standard Request object
     const req = source as Request;
     const cookieHeader = req.headers.get("cookie") || "";
-    const match = cookieHeader.match(/(?:^|;\s*)tg_session=([^;]+)/);
-    if (match) rawToken = decodeURIComponent(match[1]);
+    const tgMatch = cookieHeader.match(/(?:^|;\s*)tg_session=([^;]+)/);
+    const aeMatch = cookieHeader.match(/(?:^|;\s*)aetheroll_session=([^;]+)/);
+    if (tgMatch) rawToken = decodeURIComponent(tgMatch[1]);
+    else if (aeMatch) rawToken = decodeURIComponent(aeMatch[1]);
 
     if (!rawToken) {
       rawToken = req.headers.get("x-tg-session");
