@@ -375,11 +375,11 @@ export function QRCodeModal({ onLoginSuccess }: QRCodeModalProps) {
                         const country = TOP_COUNTRIES.find((c) => c.code === e.target.value);
                         if (country) setSelectedCountry(country);
                       }}
-                      className="bg-slate-950 text-slate-200 border border-slate-800 rounded-l-xl px-2 py-2.5 text-xs focus:outline-none focus:border-blue-500 border-r-0 cursor-pointer min-w-[95px]"
+                      className="w-[105px] shrink-0 bg-slate-950 text-slate-200 border border-slate-800 rounded-l-xl px-2 py-2.5 text-xs focus:outline-none focus:border-blue-500 border-r-0 cursor-pointer truncate"
                     >
                       {TOP_COUNTRIES.map((country) => (
                         <option key={country.code} value={country.code} className="bg-slate-900 text-white">
-                          {country.flag} {country.dialCode === "custom" ? "Custom" : country.dialCode} ({country.name})
+                          {country.flag} {country.dialCode === "custom" ? "Custom" : country.dialCode}
                         </option>
                       ))}
                     </select>
@@ -391,7 +391,7 @@ export function QRCodeModal({ onLoginSuccess }: QRCodeModalProps) {
                         value={customDialCode}
                         onChange={(e) => setCustomDialCode(e.target.value)}
                         placeholder="+1"
-                        className="w-16 bg-slate-950 border border-slate-800 border-r-0 px-2 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+                        className="w-16 shrink-0 bg-slate-950 border border-slate-800 border-r-0 px-2 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
                       />
                     ) : null}
 
@@ -402,7 +402,7 @@ export function QRCodeModal({ onLoginSuccess }: QRCodeModalProps) {
                       onChange={(e) => setLocalNumber(e.target.value)}
                       placeholder="98765 43210"
                       required
-                      className="flex-1 w-full bg-slate-950 border border-slate-800 rounded-r-xl px-3 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+                      className="flex-1 min-w-0 bg-slate-950 border border-slate-800 rounded-r-xl px-3 py-2.5 text-sm font-medium text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
                     />
                   </div>
                 </div>
