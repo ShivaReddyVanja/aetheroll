@@ -3,6 +3,7 @@ import { SlidingWindowRatePacer, MAX_TELEGRAM_FILE_SIZE, toBigInt } from "./comm
 import { TelemetryLogger } from "./telemetry/telemetryLogger.ts";
 import { ClientSessionManager } from "./auth/clientSessionManager.ts";
 import { QrAuthHandler } from "./auth/qrAuthHandler.ts";
+import { PhoneAuthHandler } from "./auth/phoneAuthHandler.ts";
 import { MediaLocationResolver } from "./streaming/mediaLocationResolver.ts";
 import { ParallelSegmentFetcher } from "./streaming/parallelSegmentFetcher.ts";
 import { StreamHandler } from "./streaming/streamHandler.ts";
@@ -26,6 +27,7 @@ export class TelegramAuthDO {
   telemetryLogger: TelemetryLogger;
   clientSessionManager: ClientSessionManager;
   qrAuthHandler: QrAuthHandler;
+  phoneAuthHandler: PhoneAuthHandler;
   mediaLocationResolver: MediaLocationResolver;
   segmentFetcher: ParallelSegmentFetcher;
   streamHandler: StreamHandler;
@@ -40,6 +42,7 @@ export class TelegramAuthDO {
     this.telemetryLogger = new TelemetryLogger(state, env);
     this.clientSessionManager = new ClientSessionManager();
     this.qrAuthHandler = new QrAuthHandler(env);
+    this.phoneAuthHandler = new PhoneAuthHandler(env);
     this.mediaLocationResolver = new MediaLocationResolver();
     this.segmentFetcher = new ParallelSegmentFetcher();
     this.streamHandler = new StreamHandler();
@@ -420,6 +423,17 @@ export class TelegramAuthDO {
       return this.qrAuthHandler.handleCheckHttp(body?.qrId, effectiveEnv, request);
     }
 
+    // 7. Phone Auth Send Code endpoint
+    if ((url.pathname.endsWith("/phone/send-code") || url.pathname.includes("/send-code")) && request.method === "POST") {
+      return this.phoneAuthHandler.handleSendCodeHttp(effectiveEnv, request);
+    }
+
+    // 8. Phone Auth Verify Code endpoint
+    if ((url.pathname.endsWith("/phone/verify") || url.pathname.includes("/verify")) && request.method === "POST") {
+      return this.phoneAuthHandler.handleVerifyCodeHttp(effectiveEnv, request);
+    }
+
     return new Response("Not found in Auth DO", { status: 404 });
   }
 }
+

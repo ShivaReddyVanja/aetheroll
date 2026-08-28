@@ -194,7 +194,14 @@ export function QRCodeModal({ onLoginSuccess }: QRCodeModalProps) {
         body: JSON.stringify({ phoneNumber }),
       });
 
-      const data = await res.json();
+      const resText = await res.text();
+      let data: any = {};
+      try {
+        data = JSON.parse(resText);
+      } catch {
+        throw new Error(resText || "Server returned invalid response");
+      }
+
       if (!res.ok || data.error) {
         throw new Error(data.error || "Failed to send code");
       }
@@ -225,7 +232,13 @@ export function QRCodeModal({ onLoginSuccess }: QRCodeModalProps) {
         }),
       });
 
-      const data = await res.json();
+      const resText = await res.text();
+      let data: any = {};
+      try {
+        data = JSON.parse(resText);
+      } catch {
+        throw new Error(resText || "Server returned invalid response");
+      }
 
       if (data.requires2FA) {
         setPhoneStep("2fa");
