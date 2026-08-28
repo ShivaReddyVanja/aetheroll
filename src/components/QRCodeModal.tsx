@@ -121,16 +121,6 @@ export function QRCodeModal({ onLoginSuccess }: QRCodeModalProps) {
             const checkData = await checkRes.json();
             if (checkData.success && checkData.user) {
               clearInterval(pollInterval);
-              if (checkData.sessionToken) {
-                try {
-                  await fetch(`${getApiBaseUrl()}/api/auth/session`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    credentials: "include",
-                    body: JSON.stringify({ sessionToken: checkData.sessionToken }),
-                  });
-                } catch {}
-              }
               onLoginSuccess(checkData.user);
             }
           } catch {}
@@ -157,13 +147,15 @@ export function QRCodeModal({ onLoginSuccess }: QRCodeModalProps) {
             setQrLoading(false);
           } else if (data.type === "authenticated" && data.user) {
             ws.close();
-            if (data.sessionToken) {
-              await fetch(`${getApiBaseUrl()}/api/auth/session`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                credentials: "include",
-                body: JSON.stringify({ sessionToken: data.sessionToken }),
-              });
+            if (data.qrClaimId) {
+              try {
+                await fetch(`${getApiBaseUrl()}/api/auth/qr/claim`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  credentials: "include",
+                  body: JSON.stringify({ qrClaimId: data.qrClaimId }),
+                });
+              } catch {}
             }
             onLoginSuccess(data.user);
           } else if (data.type === "expired") {
@@ -219,6 +211,12 @@ export function QRCodeModal({ onLoginSuccess }: QRCodeModalProps) {
     const prefix = selectedCountry.dialCode === "custom" ? customDialCode : selectedCountry.dialCode;
     const cleanDigits = localNumber.replace(/[^\d]/g, "");
     const fullNumber = `${prefix}${cleanDigits}`;
+
+    if (selectedCountry.dialCode === "custom" && !/^\+\d{1,4}$/.test(customDialCode.trim())) {
+      setPhoneError("Please enter a valid country code (e.g. +1, +44).");
+      setPhoneLoading(false);
+      return;
+    }
 
     if (!cleanDigits || cleanDigits.length < 5) {
       setPhoneError("Please enter a valid phone number.");
@@ -290,17 +288,6 @@ export function QRCodeModal({ onLoginSuccess }: QRCodeModalProps) {
 
       if (!res.ok || data.error || !data.success) {
         throw new Error(data.error || "Verification failed");
-      }
-
-      if (data.sessionToken) {
-        try {
-          await fetch(`${getApiBaseUrl()}/api/auth/session`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            credentials: "include",
-            body: JSON.stringify({ sessionToken: data.sessionToken }),
-          });
-        } catch {}
       }
 
       onLoginSuccess(data.user);
@@ -452,7 +439,7 @@ export function QRCodeModal({ onLoginSuccess }: QRCodeModalProps) {
                     onChange={(e) => setPhoneCode(e.target.value.trim())}
                     placeholder="12345"
                     required
-                    maxLength={6}
+                    maxLength={5}
                     autoFocus
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-center tracking-[0.25em] text-base font-bold text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 transition"
                   />

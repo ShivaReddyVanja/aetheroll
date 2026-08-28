@@ -125,7 +125,6 @@ qrPollingRoute.post("/qr/check", async (c) => {
 
       return c.json({
         success: true,
-        sessionToken,
         user: {
           id: userId,
           telegramUserId,

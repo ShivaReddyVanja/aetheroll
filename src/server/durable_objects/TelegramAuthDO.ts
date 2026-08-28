@@ -423,13 +423,18 @@ export class TelegramAuthDO {
       return this.qrAuthHandler.handleCheckHttp(body?.qrId, effectiveEnv, request);
     }
 
+    // 6b. QR Auth Claim endpoint (one-time cookie claim from WS qrClaimId)
+    if (url.pathname.endsWith("/qr/claim") && request.method === "POST") {
+      return this.qrAuthHandler.handleClaimHttp(effectiveEnv, request);
+    }
+
     // 7. Phone Auth Send Code endpoint
-    if ((url.pathname.endsWith("/phone/send-code") || url.pathname.includes("/send-code")) && request.method === "POST") {
+    if ((url.pathname.endsWith("/phone/send-code") || url.pathname.endsWith("/send-code")) && request.method === "POST") {
       return this.phoneAuthHandler.handleSendCodeHttp(effectiveEnv, request);
     }
 
     // 8. Phone Auth Verify Code endpoint
-    if ((url.pathname.endsWith("/phone/verify") || url.pathname.includes("/verify")) && request.method === "POST") {
+    if ((url.pathname.endsWith("/phone/verify") || url.pathname.endsWith("/verify")) && request.method === "POST") {
       return this.phoneAuthHandler.handleVerifyCodeHttp(effectiveEnv, request);
     }
 

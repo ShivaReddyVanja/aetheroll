@@ -1,13 +1,19 @@
 import crypto from "crypto";
 import { getDb } from "../../lib/db.ts";
-import { encryptSession } from "../../lib/crypto.ts";
+import { encryptSession, decryptSession } from "../../lib/crypto.ts";
 import { generateCompositeSessionToken } from "../../lib/auth.ts";
 import { sendPhoneCode, verifyPhoneCode } from "../../lib/telegram.ts";
 
 export class PhoneAuthHandler {
   activeSessions: Map<
     string,
-    { client: any; phoneNumber: string; phoneCodeHash: string; expires: number }
+    {
+      phoneNumber: string;
+      phoneCodeHash: string;
+      encryptedPhoneAuthSessionString: string;
+      expires: number;
+      attempts: number;
+    }
   >;
   env: any;
 
@@ -20,9 +26,6 @@ export class PhoneAuthHandler {
     const now = Date.now();
     for (const [id, session] of this.activeSessions.entries()) {
       if (session.expires < now) {
-        try {
-          session.client.disconnect();
-        } catch {}
         this.activeSessions.delete(id);
       }
     }
@@ -63,14 +66,21 @@ export class PhoneAuthHandler {
         );
       }
 
-      const { client, phoneCodeHash, isCodeViaApp } = await sendPhoneCode(cleanPhone, targetEnv);
+      const { phoneCodeHash, phoneAuthSessionString, isCodeViaApp } = await sendPhoneCode(cleanPhone, targetEnv);
       const phoneAuthId = crypto.randomUUID();
 
+      // Encrypt MTProto AuthKey session string before storing in memory
+      const encryptedPhoneAuthSessionString = await encryptSession(
+        phoneAuthSessionString,
+        targetEnv?.SESSION_ENCRYPTION_KEY
+      );
+
       this.activeSessions.set(phoneAuthId, {
-        client,
         phoneNumber: cleanPhone,
         phoneCodeHash,
+        encryptedPhoneAuthSessionString,
         expires: Date.now() + 15 * 60 * 1000,
+        attempts: 0,
       });
 
       return new Response(
@@ -128,13 +138,53 @@ export class PhoneAuthHandler {
       }
 
       const activeSession = this.activeSessions.get(phoneAuthId)!;
-      const { client, phoneNumber, phoneCodeHash } = activeSession;
+
+      // Rate limit / brute-force protection: Max 5 attempts per verification session
+      if (activeSession.attempts >= 5) {
+        this.activeSessions.delete(phoneAuthId);
+        return new Response(
+          JSON.stringify({ error: "Too many failed attempts. Please request a new verification code." }),
+          {
+            status: 429,
+            headers: {
+              "Content-Type": "application/json",
+              "Access-Control-Allow-Origin": origin,
+              "Access-Control-Allow-Credentials": "true",
+            },
+          }
+        );
+      }
+      activeSession.attempts++;
+
+      // Validate 5-digit verification code format unless providing 2FA password
+      const cleanCode = (phoneCode || "").toString().trim();
+      if (!password && (!cleanCode || !/^\d{5}$/.test(cleanCode))) {
+        return new Response(
+          JSON.stringify({ error: "Invalid verification code format. Code must be a 5-digit number." }),
+          {
+            status: 400,
+            headers: {
+              "Content-Type": "application/json",
+              "Access-Control-Allow-Origin": origin,
+              "Access-Control-Allow-Credentials": "true",
+            },
+          }
+        );
+      }
+
+      const { phoneNumber, phoneCodeHash, encryptedPhoneAuthSessionString } = activeSession;
+
+      // Decrypt MTProto session string
+      const phoneAuthSessionString = await decryptSession(
+        encryptedPhoneAuthSessionString,
+        targetEnv?.SESSION_ENCRYPTION_KEY
+      );
 
       const result = await verifyPhoneCode(
-        client,
         phoneNumber,
         phoneCodeHash,
-        phoneCode,
+        cleanCode,
+        phoneAuthSessionString,
         password,
         targetEnv
       );
@@ -166,7 +216,7 @@ export class PhoneAuthHandler {
         );
       }
 
-      // Success! Save session and user to database
+      // Success! Save session and user to database and scrub temporary auth session
       this.activeSessions.delete(phoneAuthId);
       const db = getDb(targetEnv?.DB);
       const telegramUserId = result.user.id?.toString() || result.user.id;
@@ -207,7 +257,6 @@ export class PhoneAuthHandler {
       return new Response(
         JSON.stringify({
           success: true,
-          sessionToken,
           user: {
             id: userId,
             telegramUserId,
