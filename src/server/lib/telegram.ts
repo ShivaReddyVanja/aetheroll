@@ -301,3 +301,138 @@ export async function getUserChannels(client: TelegramClient): Promise<Array<{
 
   return channels;
 }
+
+/**
+ * Initiates phone number verification code sending
+ */
+export async function sendPhoneCode(
+  phoneNumber: string,
+  config?: TelegramConfig | any
+): Promise<{
+  client: TelegramClient;
+  phoneCodeHash: string;
+  isCodeViaApp?: boolean;
+}> {
+  const cfg = config && typeof config === "object" && "apiId" in config ? config : getDefaultTelegramConfig(config);
+  const client = createTelegramClient("", cfg);
+  await client.connect();
+
+  const res = await client.sendCode(
+    {
+      apiId: cfg.apiId,
+      apiHash: cfg.apiHash,
+    },
+    phoneNumber
+  );
+
+  return {
+    client,
+    phoneCodeHash: res.phoneCodeHash,
+    isCodeViaApp: res.isCodeViaApp,
+  };
+}
+
+/**
+ * Completes phone number sign-in with code (and optional 2FA password)
+ */
+export async function verifyPhoneCode(
+  client: TelegramClient,
+  phoneNumber: string,
+  phoneCodeHash: string,
+  phoneCode: string,
+  password?: string,
+  config?: TelegramConfig | any
+): Promise<{
+  success: boolean;
+  requires2FA?: boolean;
+  sessionString?: string;
+  user?: any;
+  error?: string;
+}> {
+  try {
+    const cfg = config && typeof config === "object" && "apiId" in config ? config : getDefaultTelegramConfig(config);
+
+    if (password) {
+      // 2FA password verification
+      try {
+        const user = await client.signInWithPassword(
+          { apiId: cfg.apiId, apiHash: cfg.apiHash },
+          {
+            password: async () => password,
+            onError: (err) => {
+              console.error("[MTProto] 2FA error:", err);
+            },
+          }
+        );
+
+        let authUser = (user as any)?.user || user;
+        if (!authUser || !authUser.id) {
+          try {
+            authUser = await client.getMe();
+          } catch {}
+        }
+
+        const sessionString = (client.session as any).save();
+        return {
+          success: true,
+          sessionString,
+          user: authUser,
+        };
+      } catch (err: any) {
+        return {
+          success: false,
+          requires2FA: true,
+          error: "Incorrect 2FA password. Please try again.",
+        };
+      }
+    }
+
+    // Code verification via RPC Api.auth.SignIn
+    try {
+      const signInResult = await client.invoke(
+        new Api.auth.SignIn({
+          phoneNumber,
+          phoneCodeHash,
+          phoneCode,
+        })
+      );
+
+      const auth = signInResult as any;
+      let authUser = auth?.user || auth;
+      if (!authUser || !authUser.id) {
+        try {
+          authUser = await client.getMe();
+        } catch {}
+      }
+
+      const sessionString = (client.session as any).save();
+      return {
+        success: true,
+        sessionString,
+        user: authUser,
+      };
+    } catch (err: any) {
+      if (err?.errorMessage === "SESSION_PASSWORD_NEEDED" || err?.message?.includes("SESSION_PASSWORD_NEEDED")) {
+        return {
+          success: false,
+          requires2FA: true,
+        };
+      }
+      if (err?.errorMessage === "PHONE_CODE_INVALID") {
+        return { success: false, error: "Invalid verification code. Please check the code sent to your Telegram app." };
+      }
+      if (err?.errorMessage === "PHONE_CODE_EXPIRED") {
+        return { success: false, error: "Verification code expired. Please request a new code." };
+      }
+      throw err;
+    }
+  } catch (err: any) {
+    console.error("[MTProto] Phone auth error:", err);
+    return {
+      success: false,
+      error: err.message || "Failed to verify phone code",
+    };
+  }
+}
+
+
