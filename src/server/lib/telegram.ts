@@ -318,20 +318,45 @@ export async function sendPhoneCode(
   await client.connect();
 
   try {
-    const res = await client.sendCode(
-      {
-        apiId: cfg.apiId,
-        apiHash: cfg.apiHash,
-      },
-      phoneNumber
-    );
+    const doSendCode = async (targetClient: TelegramClient) => {
+      return await targetClient.invoke(
+        new Api.auth.SendCode({
+          phoneNumber,
+          apiId: cfg.apiId,
+          apiHash: cfg.apiHash,
+          settings: new Api.CodeSettings({
+            allowFlashcall: false,
+            currentNumber: false,
+            allowAppHash: true,
+          }),
+        })
+      );
+    };
+
+    let res: any;
+    try {
+      res = await doSendCode(client);
+    } catch (err: any) {
+      if (err?.errorMessage?.startsWith("PHONE_MIGRATE_") || err?.errorMessage?.startsWith("USER_MIGRATE_")) {
+        const dcId = Number(err.errorMessage.replace(/\D/g, ""));
+        if (dcId) {
+          console.log(`[MTProto PhoneAuth] Migrating phone sendCode to DC ${dcId}...`);
+          await (client as any)._switchDC(dcId);
+          res = await doSendCode(client);
+        } else {
+          throw err;
+        }
+      } else {
+        throw err;
+      }
+    }
 
     const phoneAuthSessionString = (client.session as any).save();
 
     return {
       phoneCodeHash: res.phoneCodeHash,
       phoneAuthSessionString,
-      isCodeViaApp: res.isCodeViaApp,
+      isCodeViaApp: res.isCodeViaApp || res.type instanceof Api.auth.SentCodeTypeApp,
     };
   } finally {
     try {
