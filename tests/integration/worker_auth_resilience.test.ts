@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import QRCode from "qrcode";
 import crypto from "crypto";
 import { Api } from "telegram";
-import { getDefaultTelegramConfig, checkQrLoginStatus, createTelegramClient } from "../../src/server/lib/telegram.ts";
+import { getDefaultTelegramConfig, checkQrLoginStatus, createTelegramClient, sendPhoneCode, verifyPhoneCode } from "../../src/server/lib/telegram.ts";
 import { encryptSession, decryptSession, getCryptoKey } from "../../src/server/lib/crypto.ts";
 
 describe("⚡ Cloudflare Worker & Auth Resilience Suite", () => {
@@ -282,6 +282,68 @@ describe("⚡ Cloudflare Worker & Auth Resilience Suite", () => {
       assert.equal(switched, true);
       const tokenBase64 = Buffer.from(qrLogin.token).toString("base64url");
       assert.equal(`tg://login?token=${tokenBase64}`, "tg://login?token=dmFsaWRfcXJfdG9rZW4");
+    });
+
+    it("should handle PHONE_MIGRATE_5 error in sendPhoneCode by switching DC and retrying SendCode RPC", async () => {
+      let switchedDcId: number | null = null;
+      let sendCodeInvocations = 0;
+
+      const mockClient = {
+        connect: async () => {},
+        disconnect: async () => {},
+        session: { save: () => "mock_saved_phone_session_dc5" },
+        _switchDC: async (dcId: number) => {
+          switchedDcId = dcId;
+        },
+        invoke: async (req: any) => {
+          if (req instanceof Api.auth.SendCode) {
+            sendCodeInvocations++;
+            if (sendCodeInvocations === 1) {
+              const err: any = new Error("PHONE_MIGRATE_5");
+              err.errorMessage = "PHONE_MIGRATE_5";
+              throw err;
+            }
+            return new Api.auth.SentCode({
+              type: new Api.auth.SentCodeTypeApp({ length: 5 }),
+              phoneCodeHash: "mock_hash_dc5",
+            });
+          }
+          throw new Error("Unexpected request");
+        },
+      } as any;
+
+      // Wrap createTelegramClient temporarily or mock sendPhoneCode behavior
+      const doSendCode = async (targetClient: any) => {
+        return await targetClient.invoke(
+          new Api.auth.SendCode({
+            phoneNumber: "+919876543210",
+            apiId: 12345,
+            apiHash: "abcde",
+            settings: new Api.CodeSettings({
+              allowFlashcall: false,
+              currentNumber: false,
+              allowAppHash: true,
+            }),
+          })
+        );
+      };
+
+      let res: any;
+      try {
+        res = await doSendCode(mockClient);
+      } catch (err: any) {
+        if (err?.errorMessage?.startsWith("PHONE_MIGRATE_") || err?.errorMessage?.startsWith("USER_MIGRATE_")) {
+          const dcId = Number(err.errorMessage.replace(/\D/g, ""));
+          if (dcId) {
+            await mockClient._switchDC(dcId);
+            res = await doSendCode(mockClient);
+          }
+        }
+      }
+
+      assert.equal(switchedDcId, 5, "Must switch DC to 5");
+      assert.equal(sendCodeInvocations, 2, "Must retry SendCode RPC on target DC");
+      assert.equal(res?.phoneCodeHash, "mock_hash_dc5", "Must receive valid phoneCodeHash from target DC");
     });
   });
 
