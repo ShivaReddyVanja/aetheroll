@@ -37,7 +37,7 @@ export async function generateBlurHashAndThumbnail(file: File): Promise<{
       const imageData = bhCtx.getImageData(0, 0, 32, 32);
       const blurHash = encode(imageData.data, 32, 32, 4, 4);
 
-      // 2. Create a 360px compressed thumbnail
+      // 2. Create a 360px compressed thumbnail (JPEG format for universal mobile compatibility)
       const maxThumb = 360;
       const scale = Math.min(maxThumb / width, maxThumb / height, 1);
       const thumbW = Math.round(width * scale);
@@ -51,7 +51,7 @@ export async function generateBlurHashAndThumbnail(file: File): Promise<{
       let thumbnailBase64 = "";
       if (thumbCtx) {
         thumbCtx.drawImage(img, 0, 0, thumbW, thumbH);
-        thumbnailBase64 = thumbCanvas.toDataURL("image/webp", 0.75);
+        thumbnailBase64 = thumbCanvas.toDataURL("image/jpeg", 0.8);
       }
 
       resolve({
@@ -71,8 +71,12 @@ export async function generateBlurHashAndThumbnail(file: File): Promise<{
   });
 }
 
+// Global sequential queue for video decoders to prevent exceeding Android MediaCodec hardware limits
+let videoQueue: Promise<void> = Promise.resolve();
+
 /**
- * Captures the first frame of a video File and generates BlurHash + WebP thumbnail + dimensions
+ * Captures the first frame of a video File and generates BlurHash + JPEG thumbnail + dimensions
+ * Sequentially queued to prevent overloading mobile hardware decoders.
  */
 export async function generateVideoThumbnailAndMetadata(file: File): Promise<{
   blurHash: string;
@@ -82,13 +86,40 @@ export async function generateVideoThumbnailAndMetadata(file: File): Promise<{
   thumbnailBase64: string;
 }> {
   return new Promise((resolve) => {
+    videoQueue = videoQueue
+      .then(async () => {
+        const res = await processSingleVideoThumbnail(file);
+        resolve(res);
+      })
+      .catch(() => {
+        resolve({
+          blurHash: "LEHV6nWB2yk8pyo0adR*.7kCMdnj",
+          width: 1920,
+          height: 1080,
+          duration: 0,
+          thumbnailBase64: "",
+        });
+      });
+  });
+}
+
+async function processSingleVideoThumbnail(file: File): Promise<{
+  blurHash: string;
+  width: number;
+  height: number;
+  duration: number;
+  thumbnailBase64: string;
+}> {
+  return new Promise((resolve) => {
     let resolved = false;
+
+    // Adaptive timeout based on video size (8s min to 25s max for heavy files on mobile)
+    const timeoutMs = Math.max(8000, Math.min(25000, Math.ceil(file.size / (10 * 1024 * 1024)) * 3000));
+
     const finish = (res: { blurHash: string; width: number; height: number; duration: number; thumbnailBase64: string }) => {
       if (!resolved) {
         resolved = true;
-        try {
-          URL.revokeObjectURL(url);
-        } catch {}
+        cleanup();
         resolve(res);
       }
     };
@@ -101,19 +132,44 @@ export async function generateVideoThumbnailAndMetadata(file: File): Promise<{
         duration: 0,
         thumbnailBase64: "",
       });
-    }, 2500);
+    }, timeoutMs);
 
     const video = document.createElement("video");
     video.preload = "auto";
     video.muted = true;
     video.playsInline = true;
+    video.setAttribute("playsinline", "true");
+    video.setAttribute("webkit-playsinline", "true");
+    video.setAttribute("muted", "true");
+
     const url = URL.createObjectURL(file);
 
-    video.onloadeddata = () => {
+    const cleanup = () => {
+      clearTimeout(timer);
       try {
-        video.currentTime = Math.min(0.3, (video.duration || 1) / 2);
+        video.pause();
+        video.onloadeddata = null;
+        video.onloadedmetadata = null;
+        video.onseeked = null;
+        video.onerror = null;
+        video.removeAttribute("src");
+        video.load(); // Release Android MediaCodec hardware decoder slot
+      } catch {}
+      try {
+        URL.revokeObjectURL(url);
+      } catch {}
+    };
+
+    video.onloadedmetadata = () => {
+      try {
+        const targetTime = Math.min(0.3, (video.duration || 1) / 2);
+        if (video.readyState >= 2) {
+          video.currentTime = targetTime;
+        } else {
+          // Retry on seeked/loadeddata if readyState is loading
+          video.currentTime = targetTime;
+        }
       } catch {
-        clearTimeout(timer);
         finish({
           blurHash: "LEHV6nWB2yk8pyo0adR*.7kCMdnj",
           width: 1920,
@@ -125,7 +181,6 @@ export async function generateVideoThumbnailAndMetadata(file: File): Promise<{
     };
 
     video.onseeked = () => {
-      clearTimeout(timer);
       const width = video.videoWidth || 1920;
       const height = video.videoHeight || 1080;
       const duration = Math.round(video.duration) || 0;
@@ -145,7 +200,7 @@ export async function generateVideoThumbnailAndMetadata(file: File): Promise<{
         } catch {}
       }
 
-      // 2. 360px WebP Thumbnail
+      // 2. 360px JPEG Thumbnail
       const maxThumb = 360;
       const scale = Math.min(maxThumb / width, maxThumb / height, 1);
       const thumbW = Math.round(width * scale);
@@ -160,7 +215,7 @@ export async function generateVideoThumbnailAndMetadata(file: File): Promise<{
       if (thumbCtx) {
         try {
           thumbCtx.drawImage(video, 0, 0, thumbW, thumbH);
-          thumbnailBase64 = thumbCanvas.toDataURL("image/webp", 0.75);
+          thumbnailBase64 = thumbCanvas.toDataURL("image/jpeg", 0.8);
         } catch {}
       }
 
@@ -174,7 +229,6 @@ export async function generateVideoThumbnailAndMetadata(file: File): Promise<{
     };
 
     video.onerror = () => {
-      clearTimeout(timer);
       finish({
         blurHash: "LEHV6nWB2yk8pyo0adR*.7kCMdnj",
         width: 1920,
@@ -185,6 +239,7 @@ export async function generateVideoThumbnailAndMetadata(file: File): Promise<{
     };
 
     video.src = url;
+    video.load(); // Explicitly trigger load for mobile WebKit engines
   });
 }
 
@@ -208,3 +263,4 @@ export function drawBlurHashToCanvas(
     console.warn("Error drawing BlurHash:", e);
   }
 }
+
