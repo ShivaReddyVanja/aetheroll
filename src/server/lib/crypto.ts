@@ -110,12 +110,12 @@ export async function decryptSession(
   const candidateKeys = [
     secretKey,
     process.env.SESSION_ENCRYPTION_KEY,
-    "default_secret_key",
-    "telegram_gallery_secret_key",
-  ].filter((k, idx, self) => k && k.trim() !== "" && self.indexOf(k) === idx);
+  ].filter((k, idx, self): k is string => typeof k === "string" && k.trim() !== "" && self.indexOf(k) === idx);
 
   if (candidateKeys.length === 0) {
-    candidateKeys.push("default_secret_key");
+    throw new Error(
+      "Missing required environment variable: SESSION_ENCRYPTION_KEY. Please configure SESSION_ENCRYPTION_KEY secret in environment."
+    );
   }
 
   const combined = Buffer.from(cipherTextBase64, "base64");
@@ -181,7 +181,7 @@ export async function decryptSession(
     } catch {}
   }
 
-  throw new Error("Decryption failed: Unsupported state or unable to authenticate data");
+  throw new Error("Session decryption failed: Invalid encryption key or session expired. Please log in again.");
 }
 
 /**
