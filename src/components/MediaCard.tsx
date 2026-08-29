@@ -179,12 +179,12 @@ export function MediaCard({
       onClick={() => onClick(item)}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
-      className={`group relative cursor-pointer overflow-hidden rounded-md bg-[var(--card-bg)] transition-all duration-150 select-none h-44 sm:h-52 md:h-60 flex-shrink-0 ${
-        isSelected ? "ring-4 ring-blue-500 ring-offset-2 scale-[0.98]" : "hover:brightness-95"
+      className={`group relative cursor-pointer overflow-hidden rounded-sm sm:rounded-md bg-[var(--card-bg)] transition-all duration-150 select-none w-full aspect-square sm:aspect-[var(--item-aspect-ratio)] sm:h-52 md:h-60 flex-shrink-0 ${
+        isSelected ? "ring-2 sm:ring-4 ring-blue-500 ring-offset-1 sm:ring-offset-2 scale-[0.98]" : "hover:brightness-95"
       }`}
       style={{
-        aspectRatio: `${Math.max(item.width, 100)} / ${Math.max(item.height, 100)}`,
-      }}
+        "--item-aspect-ratio": `${Math.max(item.width, 100)} / ${Math.max(item.height, 100)}`,
+      } as React.CSSProperties}
     >
       {/* 1. BlurHash Background Canvas */}
       <canvas
@@ -323,19 +323,19 @@ export function MediaCard({
       {/* Video Badge / Duration / Loading Indicator */}
       {isVideo && (
         <div
-          className={`absolute top-2.5 right-2.5 flex items-center gap-1 px-2 py-0.5 rounded-full bg-black/60 backdrop-blur-sm text-white text-[11px] font-medium tracking-wide transition-opacity z-10 ${
+          className={`absolute top-1 right-1 sm:top-2.5 sm:right-2.5 flex items-center gap-0.5 sm:gap-1 px-1.5 sm:px-2 py-0.5 rounded-full bg-black/60 backdrop-blur-sm text-white text-[9px] sm:text-[11px] font-medium tracking-wide transition-opacity z-10 ${
             isPlayingPreview && isVideoReady ? "opacity-30" : "opacity-100"
           }`}
         >
           {isPlayingPreview && !isVideoReady ? (
             <>
-              <span>Loading</span>
-              <Loader2 className="w-3 h-3 text-blue-400 animate-spin" />
+              <span className="hidden sm:inline">Loading</span>
+              <Loader2 className="w-2.5 h-2.5 sm:w-3 sm:h-3 text-blue-400 animate-spin" />
             </>
           ) : (
             <>
               <span>{item.duration_seconds ? formatDuration(item.duration_seconds) : "Video"}</span>
-              <Play className="w-3 h-3 fill-white" />
+              <Play className="w-2.5 h-2.5 sm:w-3 sm:h-3 fill-white" />
             </>
           )}
         </div>
