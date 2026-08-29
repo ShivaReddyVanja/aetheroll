@@ -60,10 +60,22 @@ export function UploaderModal({
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const activeSocketsRef = useRef<Map<string, WebSocket>>(new Map());
+  const preWarmedSocketsRef = useRef<Map<string, WebSocket>>(new Map());
   const dispatcherRef = useRef<DynamicUploadDispatcher<UploadTask> | null>(null);
   const metadataCacheRef = useRef<Map<string, any>>(new Map());
 
   const formatFileSize = (bytes: number) => formatUploadFileSize(bytes);
+
+  const getOrCreateSocket = (taskId: string) => {
+    let ws = preWarmedSocketsRef.current.get(taskId) || activeSocketsRef.current.get(taskId);
+    if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+      const wsBaseUrl = WORKER_URL.replace(/^http:/, "ws:").replace(/^https:/, "wss:");
+      ws = new WebSocket(`${wsBaseUrl}/api/media/upload/ws`);
+      ws.binaryType = "arraybuffer";
+      preWarmedSocketsRef.current.set(taskId, ws);
+    }
+    return ws;
+  };
 
   const prefetchMetadataForTask = async (task: UploadTask) => {
     if (metadataCacheRef.current.has(task.id)) return metadataCacheRef.current.get(task.id);
@@ -122,11 +134,12 @@ export function UploaderModal({
     });
     setTasks((prev) => [...prev, ...newTasks]);
 
-    // Pre-warm metadata for new items in background
-    setTimeout(() => {
+    // Pre-warm WebSockets & prefetch metadata sequentially in background
+    setTimeout(async () => {
       for (const t of newTasks) {
         if (t.status === "pending") {
-          prefetchMetadataForTask(t).catch(() => {});
+          getOrCreateSocket(t.id);
+          await prefetchMetadataForTask(t).catch(() => {});
         }
       }
     }, 50);
@@ -134,12 +147,13 @@ export function UploaderModal({
 
   const handleRemoveTask = (id: string) => {
     // If the removed task is active, abort it and close its WebSocket
-    const ws = activeSocketsRef.current.get(id);
+    const ws = activeSocketsRef.current.get(id) || preWarmedSocketsRef.current.get(id);
     if (ws) {
       try {
         ws.close();
       } catch {}
       activeSocketsRef.current.delete(id);
+      preWarmedSocketsRef.current.delete(id);
     }
     metadataCacheRef.current.delete(id);
     dispatcherRef.current?.abortTask(id);
@@ -153,7 +167,13 @@ export function UploaderModal({
         ws.close();
       } catch {}
     }
+    for (const [, ws] of preWarmedSocketsRef.current.entries()) {
+      try {
+        ws.close();
+      } catch {}
+    }
     activeSocketsRef.current.clear();
+    preWarmedSocketsRef.current.clear();
     metadataCacheRef.current.clear();
     setIsUploading(false);
     setCurrentSpeed(null);
@@ -181,9 +201,8 @@ export function UploaderModal({
     const file = task.file;
     const isVideo = file.type.startsWith("video/");
 
-    // Use pre-warmed metadata or generate if not cached yet
-    const meta = await prefetchMetadataForTask(task);
-    const { width, height, blurHash, thumbnailBase64, duration, exif } = meta;
+    // Initiate metadata prefetch in background if not resolved yet
+    const metaPromise = prefetchMetadataForTask(task);
 
     if (signal.aborted) {
       throw new Error("Upload cancelled");
@@ -193,20 +212,21 @@ export function UploaderModal({
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
 
     const completeData = await new Promise<{ success: boolean; item?: any; mediaId?: string; error?: string }>((resolve, reject) => {
-      const wsBaseUrl = WORKER_URL.replace(/^http:/, "ws:").replace(/^https:/, "wss:");
-      const ws = new WebSocket(`${wsBaseUrl}/api/media/upload/ws`);
-      ws.binaryType = "arraybuffer";
+      // Reuse pre-warmed socket or create new one
+      const ws = getOrCreateSocket(task.id);
       activeSocketsRef.current.set(task.id, ws);
+      preWarmedSocketsRef.current.delete(task.id);
 
       let nextChunkToSend = 0;
       let ackedChunks = 0;
       let settled = false;
-      const PIPELINE_WINDOW = 4; // Sliding window of 4 active parts
+      const PIPELINE_WINDOW = 8; // Scaled sliding window (8 x 512KB = 4MB un-acked pipeline)
 
       const settledResolve = (val: any) => {
         if (!settled) {
           settled = true;
           activeSocketsRef.current.delete(task.id);
+          preWarmedSocketsRef.current.delete(task.id);
           resolve(val);
         }
       };
@@ -215,6 +235,7 @@ export function UploaderModal({
         if (!settled) {
           settled = true;
           activeSocketsRef.current.delete(task.id);
+          preWarmedSocketsRef.current.delete(task.id);
           reject(err);
         }
       };
@@ -269,27 +290,32 @@ export function UploaderModal({
         }
       };
 
-      ws.onopen = () => {
+      const sendInitFrame = async () => {
         resetWatchdog();
+        const meta = await metaPromise;
+        const { width, height, blurHash, thumbnailBase64, duration, exif } = meta;
+
         const sessionCookie = typeof document !== "undefined"
           ? document.cookie.split("; ").find((r) => r.startsWith("tg_session="))?.split("=")[1]
           : undefined;
 
-        ws.send(JSON.stringify({
-          type: "init",
-          token: sessionCookie,
-          fileName: file.name,
-          fileSize: file.size,
-          channelId,
-          mimeType: file.type || (isVideo ? "video/mp4" : "image/jpeg"),
-          totalChunks,
-          width,
-          height,
-          duration: isVideo && duration > 0 ? duration : null,
-          blurHash,
-          thumbnailBase64,
-          capturedAt: exif.capturedAt || new Date().toISOString(),
-        }));
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: "init",
+            token: sessionCookie,
+            fileName: file.name,
+            fileSize: file.size,
+            channelId,
+            mimeType: file.type || (isVideo ? "video/mp4" : "image/jpeg"),
+            totalChunks,
+            width,
+            height,
+            duration: isVideo && duration > 0 ? duration : null,
+            blurHash,
+            thumbnailBase64,
+            capturedAt: exif?.capturedAt || new Date().toISOString(),
+          }));
+        }
       };
 
       ws.onmessage = async (event) => {
@@ -334,11 +360,22 @@ export function UploaderModal({
           settledReject(new Error(`WebSocket connection closed unexpectedly (Code: ${ev.code})`));
         }
       };
+
+      if (ws.readyState === WebSocket.OPEN) {
+        sendInitFrame();
+      } else {
+        ws.onopen = () => {
+          sendInitFrame();
+        };
+      }
     });
 
     if (!completeData.success) {
       throw new Error(completeData.error || "Failed finalizing upload");
     }
+
+    const meta = await metaPromise;
+    const exif = meta?.exif || {};
 
     const mediaId = completeData.item?.id || completeData.mediaId;
     if (exif.latitude && exif.longitude && mediaId) {
