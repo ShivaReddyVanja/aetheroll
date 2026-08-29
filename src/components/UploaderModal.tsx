@@ -271,8 +271,13 @@ export function UploaderModal({
 
       ws.onopen = () => {
         resetWatchdog();
+        const sessionCookie = typeof document !== "undefined"
+          ? document.cookie.split("; ").find((r) => r.startsWith("tg_session="))?.split("=")[1]
+          : undefined;
+
         ws.send(JSON.stringify({
           type: "init",
+          token: sessionCookie,
           fileName: file.name,
           fileSize: file.size,
           channelId,

@@ -1,11 +1,10 @@
 import { Hono } from "hono";
-import { setCookie, deleteCookie } from "hono/cookie";
 import { getDb } from "../../lib/db.ts";
 import {
   extractSessionToken,
   resolveUserAuth,
 } from "../../lib/auth.ts";
-import { getAuthCookieOptions } from "./utils.ts";
+import { getAuthCookieOptions, appendCleanSingleAuthCookieHeaders, appendCleanClearAuthCookieHeaders } from "./utils.ts";
 
 export const sessionRoutes = new Hono();
 
@@ -15,9 +14,11 @@ export const sessionRoutes = new Hono();
  */
 sessionRoutes.post("/session", async (c) => {
   try {
-    const { sessionToken } = await c.req.json();
-    if (!sessionToken) {
-      return c.json({ error: "sessionToken required" }, 400);
+    const body = await c.req.json().catch(() => ({}));
+    const { sessionToken } = body;
+
+    if (!sessionToken || typeof sessionToken !== "string") {
+      return c.json({ error: "Session token is required" }, 400);
     }
 
     const parsed = extractSessionToken(sessionToken);
@@ -36,7 +37,10 @@ sessionRoutes.post("/session", async (c) => {
       return c.json({ error: "Invalid or expired session token" }, 401);
     }
 
-    setCookie(c, "tg_session", sessionToken, getAuthCookieOptions(c));
+    const host = c.req.header("host") || "";
+    const origin = c.req.header("origin") || "";
+    const isBuiltByShiva = host.includes("builtbyshiva.com") || origin.includes("builtbyshiva.com");
+    appendCleanSingleAuthCookieHeaders(c.res.headers, sessionToken, isBuiltByShiva);
 
     return c.json({ success: true });
   } catch (error: any) {
@@ -76,8 +80,11 @@ sessionRoutes.post("/logout", async (c) => {
   if (parsed) {
     const db = getDb((c.env as any)?.DB);
     await db.run("DELETE FROM user_sessions WHERE id = ?", [parsed.sessionId]);
-    deleteCookie(c, "tg_session");
   }
+  const host = c.req.header("host") || "";
+  const origin = c.req.header("origin") || "";
+  const isBuiltByShiva = host.includes("builtbyshiva.com") || origin.includes("builtbyshiva.com");
+  appendCleanClearAuthCookieHeaders(c.res.headers, isBuiltByShiva);
   return c.json({ success: true });
 });
 

@@ -5,7 +5,7 @@ import { getDb } from "../../lib/db.ts";
 import { encryptSession, decryptSession } from "../../lib/crypto.ts";
 import { generateCompositeSessionToken } from "../../lib/auth.ts";
 import { sendPhoneCode, verifyPhoneCode } from "../../lib/telegram.ts";
-import { getAuthCookieOptions, forwardToAuthDO } from "./utils.ts";
+import { getAuthCookieOptions, forwardToAuthDO, appendCleanSingleAuthCookieHeaders } from "./utils.ts";
 
 export const phoneAuthRoute = new Hono();
 
@@ -171,9 +171,11 @@ phoneAuthRoute.post("/phone/verify", async (c) => {
       [sessionId, userId, expiresAt]
     );
 
-    // Set HttpOnly session cookie
-    const cookieOpts = getAuthCookieOptions(c);
-    setCookie(c, "tg_session", sessionToken, cookieOpts);
+    // Set HttpOnly single clean session cookie
+    const host = c.req.header("host") || "";
+    const origin = c.req.header("origin") || "";
+    const isBuiltByShiva = host.includes("builtbyshiva.com") || origin.includes("builtbyshiva.com");
+    appendCleanSingleAuthCookieHeaders(c.res.headers, sessionToken, isBuiltByShiva);
 
     return c.json({
       success: true,

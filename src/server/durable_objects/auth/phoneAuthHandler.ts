@@ -3,6 +3,7 @@ import { getDb } from "../../lib/db.ts";
 import { encryptSession, decryptSession } from "../../lib/crypto.ts";
 import { generateCompositeSessionToken } from "../../lib/auth.ts";
 import { sendPhoneCode, verifyPhoneCode } from "../../lib/telegram.ts";
+import { appendCleanSingleAuthCookieHeaders } from "../../routes/auth/utils.ts";
 
 export class PhoneAuthHandler {
   activeSessions: Map<
@@ -254,7 +255,13 @@ export class PhoneAuthHandler {
         [sessionId, userId, expiresAt]
       );
 
-      const cookieValue = `tg_session=${sessionToken}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=2592000${domainPart}`;
+      const headers = new Headers({
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Credentials": "true",
+      });
+      appendCleanSingleAuthCookieHeaders(headers, sessionToken, isBuiltByShiva);
+
       return new Response(
         JSON.stringify({
           success: true,
@@ -264,14 +271,7 @@ export class PhoneAuthHandler {
             displayName,
           },
         }),
-        {
-          headers: {
-            "Content-Type": "application/json",
-            "Set-Cookie": cookieValue,
-            "Access-Control-Allow-Origin": origin,
-            "Access-Control-Allow-Credentials": "true",
-          },
-        }
+        { headers }
       );
     } catch (err: any) {
       console.error("[PhoneAuthDO Verify Error]:", err);

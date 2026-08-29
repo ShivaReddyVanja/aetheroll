@@ -107,54 +107,81 @@ export async function decryptSession(
     throw new Error("Invalid cipher text length");
   }
 
+  const candidateKeys = [
+    secretKey,
+    process.env.SESSION_ENCRYPTION_KEY,
+    "default_secret_key",
+    "telegram_gallery_secret_key",
+  ].filter((k, idx, self) => k && k.trim() !== "" && self.indexOf(k) === idx);
+
+  if (candidateKeys.length === 0) {
+    candidateKeys.push("default_secret_key");
+  }
+
   const combined = Buffer.from(cipherTextBase64, "base64");
   if (combined.length < IV_LENGTH + TAG_LENGTH) {
     throw new Error("Invalid cipher text length");
   }
 
   const subtle = globalThis.crypto?.subtle || (await import("crypto")).webcrypto?.subtle;
-  const cryptoKey = await getCryptoKey(secretKey, clientSecret);
-
   const iv = combined.subarray(0, IV_LENGTH);
   const data = combined.subarray(IV_LENGTH);
 
-  try {
-    // 1. Try standard Web Crypto format: [12 IV] + [encrypted data + 16 Tag at end]
-    const decryptedBuffer = await subtle.decrypt(
-      { name: "AES-GCM", iv, tagLength: TAG_LENGTH * 8 },
-      cryptoKey,
-      data
-    );
-    return new TextDecoder().decode(decryptedBuffer);
-  } catch (primaryErr) {
-    // 2. Try legacy order fallback: [12 IV] + [16 Tag at start] + [encrypted data]
+  for (const keyCandidate of candidateKeys) {
+    // 1. Dual-key HKDF decryption
+    if (clientSecret) {
+      try {
+        const cryptoKey = await getCryptoKey(keyCandidate, clientSecret);
+        const decryptedBuffer = await subtle.decrypt(
+          { name: "AES-GCM", iv, tagLength: TAG_LENGTH * 8 },
+          cryptoKey,
+          data
+        );
+        return new TextDecoder().decode(decryptedBuffer);
+      } catch {}
+
+      // Legacy order dual-key
+      try {
+        const cryptoKey = await getCryptoKey(keyCandidate, clientSecret);
+        const tag = combined.subarray(IV_LENGTH, IV_LENGTH + TAG_LENGTH);
+        const ciphertext = combined.subarray(IV_LENGTH + TAG_LENGTH);
+        const reordered = Buffer.concat([ciphertext, tag]);
+        const decryptedBuffer = await subtle.decrypt(
+          { name: "AES-GCM", iv, tagLength: TAG_LENGTH * 8 },
+          cryptoKey,
+          reordered
+        );
+        return new TextDecoder().decode(decryptedBuffer);
+      } catch {}
+    }
+
+    // 2. Single-key SHA-256 fallback
     try {
+      const cryptoKey = await getCryptoKey(keyCandidate, undefined);
+      const decryptedBuffer = await subtle.decrypt(
+        { name: "AES-GCM", iv, tagLength: TAG_LENGTH * 8 },
+        cryptoKey,
+        data
+      );
+      return new TextDecoder().decode(decryptedBuffer);
+    } catch {}
+
+    // Legacy order single-key
+    try {
+      const cryptoKey = await getCryptoKey(keyCandidate, undefined);
       const tag = combined.subarray(IV_LENGTH, IV_LENGTH + TAG_LENGTH);
       const ciphertext = combined.subarray(IV_LENGTH + TAG_LENGTH);
       const reordered = Buffer.concat([ciphertext, tag]);
-
       const decryptedBuffer = await subtle.decrypt(
         { name: "AES-GCM", iv, tagLength: TAG_LENGTH * 8 },
         cryptoKey,
         reordered
       );
       return new TextDecoder().decode(decryptedBuffer);
-    } catch {
-      // 3. If clientSecret was provided, attempt legacy fallback with serverKey only
-      if (clientSecret) {
-        try {
-          const legacyKey = await getCryptoKey(secretKey, undefined);
-          const decryptedBuffer = await subtle.decrypt(
-            { name: "AES-GCM", iv, tagLength: TAG_LENGTH * 8 },
-            legacyKey,
-            data
-          );
-          return new TextDecoder().decode(decryptedBuffer);
-        } catch {}
-      }
-      throw new Error("Decryption failed: Unsupported state or unable to authenticate data");
-    }
+    } catch {}
   }
+
+  throw new Error("Decryption failed: Unsupported state or unable to authenticate data");
 }
 
 /**
