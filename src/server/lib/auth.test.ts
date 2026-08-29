@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   extractSessionToken,
+  extractAllSessionTokens,
   generateCompositeSessionToken,
 } from "./auth.ts";
 
@@ -86,4 +87,21 @@ describe("🔍 Unified Abstracted Auth Token Extraction Suite", () => {
     assert.equal(parsed.clientSecret, TEST_CLIENT_SECRET);
     assert.equal(parsed.fullToken, COMPOSITE_TOKEN);
   });
+
+  it("8. should extract all candidate tokens when multiple tg_session cookies exist in header", () => {
+    const OLD_TOKEN = "old-session-id.old-secret";
+    const NEW_TOKEN = "new-session-id.new-secret";
+    const req = new Request("https://example.com/api/media", {
+      headers: {
+        Cookie: `tg_session=${OLD_TOKEN}; aetheroll_session=ae-id.ae-secret; tg_session=${NEW_TOKEN}`,
+      },
+    });
+
+    const candidates = extractAllSessionTokens(req);
+    assert.equal(candidates.length, 3);
+    assert.equal(candidates[0].sessionId, "old-session-id");
+    assert.equal(candidates[1].sessionId, "ae-id");
+    assert.equal(candidates[2].sessionId, "new-session-id");
+  });
 });
+

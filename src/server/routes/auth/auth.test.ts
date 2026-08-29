@@ -105,4 +105,46 @@ describe("⚡ Auth Routes Suite", () => {
     assert.equal(res.status, 200);
     assert.equal(forwarded, true);
   });
+
+  it("7. POST /qr/claim should return 400 when AUTH_DO is not configured", async () => {
+    const res = await authRouter.request("http://localhost/qr/claim", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ qrClaimId: "test-claim-id" }),
+    });
+    assert.equal(res.status, 400);
+    const body = await res.json();
+    assert.match(body.error, /Durable Object disabled/i);
+  });
+
+  it("8. POST /qr/claim should forward to AUTH_DO with request body when configured", async () => {
+    let forwarded = false;
+    let receivedClaimId = "";
+    const mockAuthDO = {
+      idFromName: () => "mock-id",
+      get: () => ({
+        fetch: async (req: Request) => {
+          forwarded = true;
+          const body = await req.json();
+          receivedClaimId = body.qrClaimId;
+          return new Response(JSON.stringify({ success: true }), { status: 200 });
+        },
+      }),
+    };
+
+    const res = await authRouter.request(
+      "http://localhost/qr/claim",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ qrClaimId: "test-claim-id" }),
+      },
+      { AUTH_DO: mockAuthDO }
+    );
+
+    assert.equal(res.status, 200);
+    assert.equal(forwarded, true);
+    assert.equal(receivedClaimId, "test-claim-id");
+  });
 });
+

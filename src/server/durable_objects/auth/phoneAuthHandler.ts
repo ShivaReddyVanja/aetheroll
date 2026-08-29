@@ -114,7 +114,8 @@ export class PhoneAuthHandler {
 
   async handleVerifyCodeHttp(envObj?: any, request?: Request): Promise<Response> {
     const origin = request?.headers?.get("origin") || "*";
-    const isBuiltByShiva = origin.includes("builtbyshiva.com");
+    const host = request?.headers?.get("host") || "";
+    const isBuiltByShiva = host.includes("builtbyshiva.com") || origin.includes("builtbyshiva.com");
     const domainPart = isBuiltByShiva ? "; Domain=.builtbyshiva.com" : "";
     this.cleanupExpiredSessions();
 

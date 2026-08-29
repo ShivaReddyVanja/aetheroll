@@ -139,3 +139,16 @@ qrPollingRoute.post("/qr/check", async (c) => {
     return c.json({ error: error.message || "Failed checking login status" }, 500);
   }
 });
+
+/**
+ * POST /qr/claim
+ * Claims session token cookie after WS QR authentication completes
+ */
+qrPollingRoute.post("/qr/claim", async (c) => {
+  if ((c.env as any)?.AUTH_DO) {
+    return forwardToAuthDO(c);
+  }
+
+  return c.json({ error: "Durable Object disabled or not available for QR claim." }, 400);
+});
+

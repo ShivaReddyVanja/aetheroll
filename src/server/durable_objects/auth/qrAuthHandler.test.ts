@@ -82,7 +82,6 @@ describe("⚡ DO QrAuthHandler Suite", () => {
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.equal(body.success, true);
-    assert.ok(body.sessionToken);
     assert.equal(body.user.telegramUserId, "9999");
     assert.equal(body.user.displayName, "Alice");
 

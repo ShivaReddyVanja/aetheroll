@@ -87,7 +87,7 @@ export class QrAuthHandler {
 
       if (user && !isCancelled) {
         const sessionString = (client.session as any).save();
-        const db = getDb(this.env?.DB);
+        const db = getDb(targetEnv?.DB || this.env?.DB);
         const telegramUserId = (user as any).id?.toString() || (user as any).id;
         const displayName =
           [(user as any).firstName, (user as any).lastName].filter(Boolean).join(" ") ||
@@ -98,7 +98,7 @@ export class QrAuthHandler {
         const { sessionId, clientSecret, sessionToken } = generateCompositeSessionToken();
         const encryptedSession = await encryptSession(
           sessionString,
-          this.env?.SESSION_ENCRYPTION_KEY,
+          targetEnv?.SESSION_ENCRYPTION_KEY || this.env?.SESSION_ENCRYPTION_KEY,
           clientSecret
         );
 
@@ -214,7 +214,8 @@ export class QrAuthHandler {
 
   async handleCheckHttp(qrId?: string, envObj?: any, request?: Request): Promise<Response> {
     const origin = request?.headers?.get("origin") || "*";
-    const isBuiltByShiva = origin.includes("builtbyshiva.com");
+    const host = request?.headers?.get("host") || "";
+    const isBuiltByShiva = host.includes("builtbyshiva.com") || origin.includes("builtbyshiva.com");
     const domainPart = isBuiltByShiva ? "; Domain=.builtbyshiva.com" : "";
 
     if (!qrId) {
@@ -323,7 +324,8 @@ export class QrAuthHandler {
 
   async handleClaimHttp(envObj?: any, request?: Request): Promise<Response> {
     const origin = request?.headers?.get("origin") || "*";
-    const isBuiltByShiva = origin.includes("builtbyshiva.com");
+    const host = request?.headers?.get("host") || "";
+    const isBuiltByShiva = host.includes("builtbyshiva.com") || origin.includes("builtbyshiva.com");
     const domainPart = isBuiltByShiva ? "; Domain=.builtbyshiva.com" : "";
 
     const body = (await request?.json().catch(() => ({}))) as any;
