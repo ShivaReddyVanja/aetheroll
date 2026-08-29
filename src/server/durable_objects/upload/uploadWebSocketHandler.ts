@@ -2,7 +2,7 @@ import { Api, helpers } from "telegram";
 import crypto from "crypto";
 import { getDb } from "../../lib/db.ts";
 import { decryptSession, generateAetherollSignature } from "../../lib/crypto.ts";
-import { extractSessionToken } from "../../lib/auth.ts";
+import { extractSessionToken, extractAllSessionTokens } from "../../lib/auth.ts";
 import { getR2Storage } from "../../lib/r2.ts";
 import { getDefaultTelegramConfig, getConnectedClient } from "../../lib/telegram.ts";
 import { emitGalleryEvent } from "../../lib/ledger.ts";
@@ -391,21 +391,31 @@ export class UploadWebSocketHandler {
 
           if (msg.type === "init") {
             logToClient("INIT_RECEIVED", { fileName: msg.fileName, fileSize: msg.fileSize, totalParts: msg.totalChunks });
-            const parsed = extractSessionToken(msg.token || request);
-            if (!parsed) {
+            const candidates = extractAllSessionTokens(msg.token || request);
+            if (candidates.length === 0) {
               ws.send(JSON.stringify({ type: "error", error: "Authentication token required" }));
               return;
             }
 
             const db = getDb(envObj?.DB);
-            const session = await db.get(
-              `SELECT u.id as user_id, u.session_string FROM user_sessions s
-               JOIN users u ON u.id = s.user_id
-               WHERE s.id = ? AND s.expires_at > CURRENT_TIMESTAMP`,
-              [parsed.sessionId]
-            );
+            let session: any = null;
+            let parsed: any = null;
 
-            if (!session) {
+            for (const candidate of candidates) {
+              const res = await db.get(
+                `SELECT u.id as user_id, u.session_string FROM user_sessions s
+                 JOIN users u ON u.id = s.user_id
+                 WHERE s.id = ? AND s.expires_at > CURRENT_TIMESTAMP`,
+                [candidate.sessionId]
+              );
+              if (res) {
+                session = res;
+                parsed = candidate;
+                break;
+              }
+            }
+
+            if (!session || !parsed) {
               logToClient("AUTH_FAILED", "Session token invalid or expired");
               ws.send(JSON.stringify({ type: "error", error: "Unauthorized session token" }));
               return;

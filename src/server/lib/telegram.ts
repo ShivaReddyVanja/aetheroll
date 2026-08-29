@@ -303,6 +303,31 @@ export async function getUserChannels(client: TelegramClient): Promise<Array<{
 }
 
 /**
+ * Helper to convert raw Telegram RPC errors into user-friendly messages
+ */
+export function formatTelegramError(err: any): Error {
+  const msg = err?.errorMessage || err?.message || "";
+  const floodMatch = msg.match(/FLOOD_WAIT_(\d+)/i) || msg.match(/wait of (\d+) seconds/i);
+  if (floodMatch) {
+    const seconds = parseInt(floodMatch[1], 10);
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    let timeStr = "";
+    if (hours > 0) {
+      timeStr = `${hours} hour${hours > 1 ? "s" : ""}${minutes > 0 ? ` and ${minutes} minute${minutes > 1 ? "s" : ""}` : ""}`;
+    } else if (minutes > 0) {
+      timeStr = `${minutes} minute${minutes > 1 ? "s" : ""}`;
+    } else {
+      timeStr = `${seconds} seconds`;
+    }
+    return new Error(
+      `Too many OTP requests for this phone number. Telegram requires waiting ${timeStr} before requesting a new code. You can log in immediately using QR Code!`
+    );
+  }
+  return err;
+}
+
+/**
  * Initiates phone number verification code sending (Stateless & Serverless safe)
  */
 export async function sendPhoneCode(
@@ -344,10 +369,10 @@ export async function sendPhoneCode(
           await (client as any)._switchDC(dcId);
           res = await doSendCode(client);
         } else {
-          throw err;
+          throw formatTelegramError(err);
         }
       } else {
-        throw err;
+        throw formatTelegramError(err);
       }
     }
 
@@ -358,6 +383,8 @@ export async function sendPhoneCode(
       phoneAuthSessionString,
       isCodeViaApp: res.isCodeViaApp || res.type instanceof Api.auth.SentCodeTypeApp,
     };
+  } catch (err: any) {
+    throw formatTelegramError(err);
   } finally {
     try {
       await client.disconnect();

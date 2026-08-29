@@ -1,4 +1,4 @@
-import { extractSessionToken } from "../../lib/auth.ts";
+import { extractAllSessionTokens } from "../../lib/auth.ts";
 import { getDb } from "../../lib/db.ts";
 import { decryptSession } from "../../lib/crypto.ts";
 import { getDefaultTelegramConfig, getConnectedClient } from "../../lib/telegram.ts";
@@ -20,46 +20,53 @@ export class ClientSessionManager {
   ): Promise<{ client: any; userId?: string; sessionId?: string; error?: string }> {
     this.sweepIdleClients();
 
-    const parsed = extractSessionToken(request);
-    if (!parsed) {
+    const candidates = extractAllSessionTokens(request);
+    if (candidates.length === 0) {
       return { client: null, error: "Unauthorized: Missing session token" };
     }
 
-    const cached = this.userClients.get(parsed.fullToken) || this.userClients.get(parsed.sessionId);
-    if (cached && cached.client && cached.client.connected) {
-      cached.lastUsed = Date.now();
-      return { client: cached.client, userId: (cached.client as any).__userId, sessionId: parsed.sessionId };
+    // Check RAM cache for any candidate
+    for (const parsed of candidates) {
+      const cached = this.userClients.get(parsed.fullToken) || this.userClients.get(parsed.sessionId);
+      if (cached && cached.client && cached.client.connected) {
+        cached.lastUsed = Date.now();
+        return { client: cached.client, userId: (cached.client as any).__userId, sessionId: parsed.sessionId };
+      }
     }
 
     const db = getDb(envObj?.DB);
-    const session = await db.get(
-      `SELECT u.id as user_id, u.telegram_user_id, u.display_name, u.session_string, s.expires_at
-       FROM user_sessions s
-       JOIN users u ON u.id = s.user_id
-       WHERE s.id = ? AND s.expires_at > CURRENT_TIMESTAMP`,
-      [parsed.sessionId]
-    );
+    let lastError = "Unauthorized: Session not found or expired";
 
-    if (!session) {
-      return { client: null, error: "Unauthorized: Session not found or expired" };
+    for (const parsed of candidates) {
+      try {
+        const session = await db.get(
+          `SELECT u.id as user_id, u.telegram_user_id, u.display_name, u.session_string, s.expires_at
+           FROM user_sessions s
+           JOIN users u ON u.id = s.user_id
+           WHERE s.id = ? AND s.expires_at > CURRENT_TIMESTAMP`,
+          [parsed.sessionId]
+        );
+
+        if (!session) continue;
+
+        const decrypted = await decryptSession(
+          session.session_string,
+          envObj?.SESSION_ENCRYPTION_KEY,
+          parsed.clientSecret
+        );
+        const config = getDefaultTelegramConfig(envObj);
+        const client = await getConnectedClient(decrypted, config);
+        (client as any).__userId = session.user_id;
+
+        this.userClients.set(parsed.fullToken, { client, lastUsed: Date.now() });
+        this.userClients.set(parsed.sessionId, { client, lastUsed: Date.now() });
+        return { client, userId: session.user_id, sessionId: parsed.sessionId };
+      } catch (decryptErr: any) {
+        lastError = "Unauthorized: Session decryption failed";
+      }
     }
 
-    try {
-      const decrypted = await decryptSession(
-        session.session_string,
-        envObj?.SESSION_ENCRYPTION_KEY,
-        parsed.clientSecret
-      );
-      const config = getDefaultTelegramConfig(envObj);
-      const client = await getConnectedClient(decrypted, config);
-      (client as any).__userId = session.user_id;
-
-      this.userClients.set(parsed.fullToken, { client, lastUsed: Date.now() });
-      this.userClients.set(parsed.sessionId, { client, lastUsed: Date.now() });
-      return { client, userId: session.user_id, sessionId: parsed.sessionId };
-    } catch (decryptErr: any) {
-      return { client: null, error: "Unauthorized: Session decryption failed" };
-    }
+    return { client: null, error: lastError };
   }
 
   /**

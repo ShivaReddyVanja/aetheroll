@@ -9,6 +9,7 @@ import {
   startQrLogin,
   checkQrLoginStatus,
 } from "../../lib/telegram.ts";
+import { appendCleanSingleAuthCookieHeaders } from "../../routes/auth/utils.ts";
 import type { ActiveSessionEntry } from "../common/types.ts";
 
 export class QrAuthHandler {
@@ -283,7 +284,13 @@ export class QrAuthHandler {
           [sessionId, userId, expiresAt]
         );
 
-        const cookieValue = `tg_session=${sessionToken}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=2592000${domainPart}`;
+        const headers = new Headers({
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": origin,
+          "Access-Control-Allow-Credentials": "true",
+        });
+        appendCleanSingleAuthCookieHeaders(headers, sessionToken, isBuiltByShiva);
+
         const response = new Response(
           JSON.stringify({
             success: true,
@@ -293,14 +300,7 @@ export class QrAuthHandler {
               displayName,
             },
           }),
-          {
-            headers: {
-              "Content-Type": "application/json",
-              "Set-Cookie": cookieValue,
-              "Access-Control-Allow-Origin": origin,
-              "Access-Control-Allow-Credentials": "true",
-            },
-          }
+          { headers }
         );
         this.activeSessions.delete(qrId);
         return response;
@@ -326,7 +326,6 @@ export class QrAuthHandler {
     const origin = request?.headers?.get("origin") || "*";
     const host = request?.headers?.get("host") || "";
     const isBuiltByShiva = host.includes("builtbyshiva.com") || origin.includes("builtbyshiva.com");
-    const domainPart = isBuiltByShiva ? "; Domain=.builtbyshiva.com" : "";
 
     const body = (await request?.json().catch(() => ({}))) as any;
     const { qrClaimId } = body || {};
@@ -367,14 +366,13 @@ export class QrAuthHandler {
     // One-time use: delete immediately
     this.pendingClaims.delete(qrClaimId);
 
-    const cookieValue = `tg_session=${claim.sessionToken}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=2592000${domainPart}`;
-    return new Response(JSON.stringify({ success: true, user: claim.user }), {
-      headers: {
-        "Content-Type": "application/json",
-        "Set-Cookie": cookieValue,
-        "Access-Control-Allow-Origin": origin,
-        "Access-Control-Allow-Credentials": "true",
-      },
+    const headers = new Headers({
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": origin,
+      "Access-Control-Allow-Credentials": "true",
     });
+    appendCleanSingleAuthCookieHeaders(headers, claim.sessionToken, isBuiltByShiva);
+
+    return new Response(JSON.stringify({ success: true, user: claim.user }), { headers });
   }
 }

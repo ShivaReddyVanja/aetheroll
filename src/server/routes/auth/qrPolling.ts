@@ -11,6 +11,7 @@ import {
   cleanupExpiredLoginSessions,
   getAuthCookieOptions,
   forwardToAuthDO,
+  appendCleanSingleAuthCookieHeaders,
 } from "./utils.ts";
 
 export const qrPollingRoute = new Hono();
@@ -117,8 +118,11 @@ qrPollingRoute.post("/qr/check", async (c) => {
         [sessionId, userId, expiresAt]
       );
 
-      // Set HttpOnly cookie with composite token
-      setCookie(c, "tg_session", sessionToken, getAuthCookieOptions(c));
+      // Set HttpOnly single clean session cookie
+      const host = c.req.header("host") || "";
+      const origin = c.req.header("origin") || "";
+      const isBuiltByShiva = host.includes("builtbyshiva.com") || origin.includes("builtbyshiva.com");
+      appendCleanSingleAuthCookieHeaders(c.res.headers, sessionToken, isBuiltByShiva);
 
       // Cleanup memory session
       activeLoginSessions.delete(qrId);
