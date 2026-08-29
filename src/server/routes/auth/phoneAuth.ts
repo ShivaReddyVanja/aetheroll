@@ -5,7 +5,7 @@ import { getDb } from "../../lib/db.ts";
 import { encryptSession, decryptSession } from "../../lib/crypto.ts";
 import { generateCompositeSessionToken } from "../../lib/auth.ts";
 import { sendPhoneCode, verifyPhoneCode } from "../../lib/telegram.ts";
-import { getAuthCookieOptions } from "./utils.ts";
+import { getAuthCookieOptions, forwardToAuthDO } from "./utils.ts";
 
 export const phoneAuthRoute = new Hono();
 
@@ -35,6 +35,10 @@ function cleanupExpiredPhoneSessions() {
  * Body: { phoneNumber: string }
  */
 phoneAuthRoute.post("/phone/send-code", async (c) => {
+  if ((c.env as any)?.AUTH_DO) {
+    return forwardToAuthDO(c);
+  }
+
   try {
     cleanupExpiredPhoneSessions();
     const { phoneNumber } = await c.req.json();
@@ -79,6 +83,10 @@ phoneAuthRoute.post("/phone/send-code", async (c) => {
  * Body: { phoneAuthId: string, phoneCode: string, password?: string }
  */
 phoneAuthRoute.post("/phone/verify", async (c) => {
+  if ((c.env as any)?.AUTH_DO) {
+    return forwardToAuthDO(c);
+  }
+
   try {
     cleanupExpiredPhoneSessions();
     const { phoneAuthId, phoneCode, password } = await c.req.json();
@@ -165,7 +173,7 @@ phoneAuthRoute.post("/phone/verify", async (c) => {
 
     // Set HttpOnly session cookie
     const cookieOpts = getAuthCookieOptions(c);
-    setCookie(c, "aetheroll_session", sessionToken, cookieOpts);
+    setCookie(c, "tg_session", sessionToken, cookieOpts);
 
     return c.json({
       success: true,

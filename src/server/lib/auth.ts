@@ -29,75 +29,96 @@ export interface AuthContext {
  * 3. Header 'x-tg-session: <token>'
  * 4. Query param 'session_token'
  */
-export function extractSessionToken(
+/**
+ * Extracts all candidate session tokens across cookies, headers, and query parameters
+ */
+export function extractAllSessionTokens(
   source: Context | Request | { headers?: Headers; url?: string } | any
-): ParsedSessionToken | null {
-  let rawToken: string | undefined | null = null;
+): ParsedSessionToken[] {
+  const rawTokens: string[] = [];
+  let cookieHeader = "";
+  let headerSession: string | null = null;
+  let authHeader: string | null = null;
+  let urlSessionToken: string | null = null;
 
   if (typeof source === "string") {
-    rawToken = source;
+    rawTokens.push(source);
   } else if (source && typeof source.req === "object") {
     // Hono Context
     const c = source as Context;
-    rawToken =
-      getCookie(c, "tg_session") ||
-      getCookie(c, "aetheroll_session") ||
-      c.req.header("x-tg-session") ||
-      c.req.query("session_token");
-
-    if (!rawToken) {
-      const authHeader = c.req.header("authorization") || c.req.header("Authorization");
-      if (authHeader && authHeader.startsWith("Bearer ")) {
-        rawToken = authHeader.slice(7).trim();
-      }
-    }
+    cookieHeader = c.req.header("cookie") || c.req.header("Cookie") || "";
+    headerSession = c.req.header("x-tg-session") || null;
+    authHeader = c.req.header("authorization") || c.req.header("Authorization") || null;
+    urlSessionToken = c.req.query("session_token") || null;
   } else if (source instanceof Request || (source && typeof source.headers?.get === "function")) {
-    // Standard Request object
     const req = source as Request;
-    const cookieHeader = req.headers.get("cookie") || "";
-    const tgMatch = cookieHeader.match(/(?:^|;\s*)tg_session=([^;]+)/);
-    const aeMatch = cookieHeader.match(/(?:^|;\s*)aetheroll_session=([^;]+)/);
-    if (tgMatch) rawToken = decodeURIComponent(tgMatch[1]);
-    else if (aeMatch) rawToken = decodeURIComponent(aeMatch[1]);
-
-    if (!rawToken) {
-      rawToken = req.headers.get("x-tg-session");
-    }
-    if (!rawToken) {
-      const authHeader = req.headers.get("authorization") || req.headers.get("Authorization");
-      if (authHeader && authHeader.startsWith("Bearer ")) {
-        rawToken = authHeader.slice(7).trim();
-      }
-    }
-    if (!rawToken && req.url) {
+    cookieHeader = req.headers.get("cookie") || req.headers.get("Cookie") || "";
+    headerSession = req.headers.get("x-tg-session");
+    authHeader = req.headers.get("authorization") || req.headers.get("Authorization");
+    if (req.url) {
       try {
         const url = new URL(req.url);
-        rawToken = url.searchParams.get("session_token");
+        urlSessionToken = url.searchParams.get("session_token");
       } catch {}
     }
   }
 
-  if (!rawToken || rawToken.trim() === "" || rawToken === "default") {
-    return null;
+  // Extract all tg_session and aetheroll_session cookies (handles duplicate/stale cookie headers)
+  if (cookieHeader) {
+    const matches = cookieHeader.matchAll(/(?:^|;\s*)(?:tg_session|aetheroll_session)=([^;]+)/g);
+    for (const match of matches) {
+      if (match[1]) {
+        try {
+          rawTokens.push(decodeURIComponent(match[1]));
+        } catch {
+          rawTokens.push(match[1]);
+        }
+      }
+    }
   }
 
-  const clean = rawToken.trim();
-  const parts = clean.split(".");
+  if (headerSession) rawTokens.push(headerSession);
+  if (authHeader && authHeader.startsWith("Bearer ")) {
+    rawTokens.push(authHeader.slice(7).trim());
+  }
+  if (urlSessionToken) rawTokens.push(urlSessionToken);
 
-  if (parts.length >= 2 && parts[0] && parts[1]) {
-    return {
-      fullToken: clean,
-      sessionId: parts[0],
-      clientSecret: parts.slice(1).join("."),
-    };
+  const results: ParsedSessionToken[] = [];
+  const seen = new Set<string>();
+
+  for (const raw of rawTokens) {
+    if (!raw || raw.trim() === "" || raw === "default") continue;
+    const clean = raw.trim();
+    if (seen.has(clean)) continue;
+    seen.add(clean);
+
+    const parts = clean.split(".");
+    if (parts.length >= 2 && parts[0] && parts[1]) {
+      results.push({
+        fullToken: clean,
+        sessionId: parts[0],
+        clientSecret: parts.slice(1).join("."),
+      });
+    } else {
+      results.push({
+        fullToken: clean,
+        sessionId: clean,
+        clientSecret: undefined,
+      });
+    }
   }
 
-  // Legacy single-part token
-  return {
-    fullToken: clean,
-    sessionId: clean,
-    clientSecret: undefined,
-  };
+  return results;
+}
+
+/**
+ * Single source of truth for extracting primary session token
+ */
+export function extractSessionToken(
+  source: Context | Request | { headers?: Headers; url?: string } | any
+): ParsedSessionToken | null {
+  const all = extractAllSessionTokens(source);
+  return all.length > 0 ? all[0] : null;
 }
 
 /**
@@ -121,44 +142,50 @@ export function generateCompositeSessionToken(): {
  * Resolves user authentication from Hono Context, verifying against database and decrypting session with dual-key in volatile RAM
  */
 export async function resolveUserAuth(c: Context): Promise<AuthContext> {
-  const parsed = extractSessionToken(c);
-  if (!parsed) {
+  const candidates = extractAllSessionTokens(c);
+  if (candidates.length === 0) {
     return { authenticated: false, error: "No session token provided" };
   }
 
-  try {
-    const db = getDb((c.env as any)?.DB);
-    const session = await db.get(
-      `SELECT u.id as user_id, u.telegram_user_id, u.display_name, u.session_string, s.expires_at
-       FROM user_sessions s
-       JOIN users u ON u.id = s.user_id
-       WHERE s.id = ? AND s.expires_at > CURRENT_TIMESTAMP`,
-      [parsed.sessionId]
-    );
+  const db = getDb((c.env as any)?.DB);
+  const serverKey = (c.env as any)?.SESSION_ENCRYPTION_KEY || process.env.SESSION_ENCRYPTION_KEY;
+  let lastError = "Session expired or not found";
 
-    if (!session) {
-      return { authenticated: false, error: "Session expired or not found" };
+  for (const parsed of candidates) {
+    try {
+      const session = await db.get(
+        `SELECT u.id as user_id, u.telegram_user_id, u.display_name, u.session_string, s.expires_at
+         FROM user_sessions s
+         JOIN users u ON u.id = s.user_id
+         WHERE s.id = ? AND s.expires_at > CURRENT_TIMESTAMP`,
+        [parsed.sessionId]
+      );
+
+      if (!session) {
+        continue;
+      }
+
+      const decryptedSession = await decryptSession(
+        session.session_string,
+        serverKey,
+        parsed.clientSecret
+      );
+
+      const config = getDefaultTelegramConfig(c.env);
+
+      return {
+        authenticated: true,
+        sessionId: parsed.sessionId,
+        userId: session.user_id,
+        telegramUserId: session.telegram_user_id,
+        displayName: session.display_name,
+        sessionString: decryptedSession,
+        telegramConfig: config,
+      };
+    } catch (err: any) {
+      lastError = err?.message || "Authentication failed";
     }
-
-    const serverKey = (c.env as any)?.SESSION_ENCRYPTION_KEY || process.env.SESSION_ENCRYPTION_KEY;
-    const decryptedSession = await decryptSession(
-      session.session_string,
-      serverKey,
-      parsed.clientSecret
-    );
-
-    const config = getDefaultTelegramConfig(c.env);
-
-    return {
-      authenticated: true,
-      sessionId: parsed.sessionId,
-      userId: session.user_id,
-      telegramUserId: session.telegram_user_id,
-      displayName: session.display_name,
-      sessionString: decryptedSession,
-      telegramConfig: config,
-    };
-  } catch (err: any) {
-    return { authenticated: false, error: err?.message || "Authentication failed" };
   }
+
+  return { authenticated: false, error: lastError };
 }

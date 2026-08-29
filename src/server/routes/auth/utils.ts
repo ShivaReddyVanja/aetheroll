@@ -41,9 +41,19 @@ export function forwardToAuthDO(c: any) {
   if (c.env?.TELEGRAM_TEST_MODE) headers.set("x-tg-test-mode", String(c.env.TELEGRAM_TEST_MODE));
   if (c.env?.SESSION_ENCRYPTION_KEY) headers.set("x-tg-enc-key", String(c.env.SESSION_ENCRYPTION_KEY));
 
-  const req = new Request(c.req.url, {
-    method: c.req.method,
+  const method = c.req.method.toUpperCase();
+  const hasBody = method !== "GET" && method !== "HEAD";
+
+  const reqInit: RequestInit = {
+    method,
     headers,
-  });
+  };
+
+  if (hasBody && c.req.raw?.body) {
+    reqInit.body = c.req.raw.body;
+    (reqInit as any).duplex = "half";
+  }
+
+  const req = new Request(c.req.url, reqInit);
   return stub.fetch(req);
 }
