@@ -10,6 +10,8 @@ import { StreamHandler } from "./streaming/streamHandler.ts";
 import { UploadWebSocketHandler } from "./upload/uploadWebSocketHandler.ts";
 import { UploadHttpHandler } from "./upload/uploadHttpHandler.ts";
 import { emitGalleryEvent, emitGalleryBatch } from "../lib/ledger.ts";
+import { getDb } from "../lib/db.ts";
+import { BillingCollector, D1BillingRepository, type BillingPurpose } from "../lib/billing/index.ts";
 
 export { SlidingWindowRatePacer, MAX_TELEGRAM_FILE_SIZE, toBigInt };
 export type * from "./common/types.ts";
@@ -106,10 +108,57 @@ export class TelegramAuthDO {
   }
 
   /**
-   * Main Durable Object HTTP / WebSocket fetch dispatcher
+   * Helper to classify route purpose for billing metrics
+   */
+  private classifyPurpose(pathname: string): BillingPurpose {
+    if (pathname.includes("/upload")) return "UPLOAD_FILE";
+    if (pathname.includes("/logs/stream") || pathname.includes("/stream-logs")) return "GENERAL";
+    if (pathname.includes("/stream")) return "STREAM_MEDIA";
+    if (pathname.includes("/ledger/emit")) return "WAL_EMIT";
+    if (pathname.includes("/ledger/batch")) return "WAL_BATCH";
+    if (pathname.includes("/delete")) return "MEDIA_DELETE";
+    if (pathname.includes("/thumbnail")) return "THUMBNAIL_FETCH";
+    if (pathname.includes("/ws") || pathname.includes("/qr") || pathname.includes("/phone")) return "AUTH";
+    return "GENERAL";
+  }
+
+  /**
+   * Main Durable Object HTTP / WebSocket fetch dispatcher with billing metrics tracking
    */
   async fetch(request: Request): Promise<Response> {
+    const startTime = performance.now();
     const url = new URL(request.url);
+    const purpose = this.classifyPurpose(url.pathname);
+
+    let response: Response;
+    try {
+      response = await this.handleFetch(request, url);
+    } catch (err: any) {
+      response = new Response(JSON.stringify({ error: err.message || "Internal DO Error" }), { status: 500 });
+    }
+
+    const durationMs = Math.round(performance.now() - startTime);
+
+    if (this.env?.DB) {
+      const resolvedUserId = this.clientSessionManager.resolveUserIdFromRequest(request) || "anonymous";
+      const flushPromise = (async () => {
+        const collector = new BillingCollector();
+        collector.addDoInvocation(durationMs);
+        const repo = new D1BillingRepository(getDb(this.env.DB));
+        await collector.flush(resolvedUserId, purpose, repo);
+      })().catch((err) => {
+        console.error("[TelegramAuthDO] Billing metrics flush failed:", err);
+      });
+
+      if (this.state && typeof this.state.waitUntil === "function") {
+        this.state.waitUntil(flushPromise);
+      }
+    }
+
+    return response;
+  }
+
+  private async handleFetch(request: Request, url: URL): Promise<Response> {
 
     const headerApiId = request.headers.get("x-tg-api-id");
     const headerApiHash = request.headers.get("x-tg-api-hash");

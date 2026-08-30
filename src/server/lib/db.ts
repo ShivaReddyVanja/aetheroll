@@ -2,11 +2,16 @@ import Database from "better-sqlite3";
 import fs from "fs";
 import path from "path";
 
+export interface QueryOptions {
+  skipBilling?: boolean;
+  collector?: any;
+}
+
 export interface DatabaseInterface {
-  all<T = any>(sql: string, params?: any[]): Promise<T[]>;
-  get<T = any>(sql: string, params?: any[]): Promise<T | null>;
-  run(sql: string, params?: any[]): Promise<{ changes: number; lastInsertRowid?: number | bigint }>;
-  exec(sql: string): Promise<void>;
+  all<T = any>(sql: string, params?: any[], options?: QueryOptions): Promise<T[]>;
+  get<T = any>(sql: string, params?: any[], options?: QueryOptions): Promise<T | null>;
+  run(sql: string, params?: any[], options?: QueryOptions): Promise<{ changes: number; lastInsertRowid?: number | bigint }>;
+  exec(sql: string, options?: QueryOptions): Promise<void>;
 }
 
 // Global SQLite instance for local Node/Next.js dev
@@ -100,26 +105,45 @@ export function getDb(cloudflareD1?: any): DatabaseInterface {
   // If running inside Cloudflare Worker with D1 binding
   if (cloudflareD1 && typeof cloudflareD1.prepare === "function") {
     return {
-      async all<T = any>(sql: string, params: any[] = []): Promise<T[]> {
+      async all<T = any>(sql: string, params: any[] = [], options?: QueryOptions): Promise<T[]> {
         const cleanParams = params.map(sanitizeD1Param);
         const stmt = cloudflareD1.prepare(sql).bind(...cleanParams);
-        const { results } = await stmt.all();
-        return results as T[];
+        const res = await stmt.all();
+        const results = (res.results ?? []) as T[];
+        if (options?.collector && !options?.skipBilling) {
+          const readRows = res.meta?.rows_read ?? results.length;
+          const writeRows = res.meta?.rows_written ?? 0;
+          options.collector.addD1Query(readRows, writeRows);
+        }
+        return results;
       },
-      async get<T = any>(sql: string, params: any[] = []): Promise<T | null> {
+      async get<T = any>(sql: string, params: any[] = [], options?: QueryOptions): Promise<T | null> {
         const cleanParams = params.map(sanitizeD1Param);
         const stmt = cloudflareD1.prepare(sql).bind(...cleanParams);
-        const result = await stmt.first();
-        return (result ?? null) as T | null;
+        const res = await stmt.first();
+        const result = (res ?? null) as T | null;
+        if (options?.collector && !options?.skipBilling) {
+          options.collector.addD1Query(1, 0);
+        }
+        return result;
       },
-      async run(sql: string, params: any[] = []): Promise<{ changes: number }> {
+      async run(sql: string, params: any[] = [], options?: QueryOptions): Promise<{ changes: number }> {
         const cleanParams = params.map(sanitizeD1Param);
         const stmt = cloudflareD1.prepare(sql).bind(...cleanParams);
         const res = await stmt.run();
-        return { changes: res.meta?.changes ?? 0 };
+        const changes = res.meta?.changes ?? 0;
+        if (options?.collector && !options?.skipBilling) {
+          const readRows = res.meta?.rows_read ?? 0;
+          const writeRows = res.meta?.rows_written ?? changes;
+          options.collector.addD1Query(readRows, writeRows);
+        }
+        return { changes };
       },
-      async exec(sql: string): Promise<void> {
+      async exec(sql: string, options?: QueryOptions): Promise<void> {
         await cloudflareD1.exec(sql);
+        if (options?.collector && !options?.skipBilling) {
+          options.collector.addD1Query(0, 0);
+        }
       },
     };
   }
@@ -127,22 +151,35 @@ export function getDb(cloudflareD1?: any): DatabaseInterface {
   // Fallback to local SQLite (better-sqlite3) for local Next.js dev server
   const db = getLocalDatabase();
   return {
-    async all<T = any>(sql: string, params: any[] = []): Promise<T[]> {
+    async all<T = any>(sql: string, params: any[] = [], options?: QueryOptions): Promise<T[]> {
       const stmt = db.prepare(sql);
-      return stmt.all(...params) as T[];
+      const res = stmt.all(...params) as T[];
+      if (options?.collector && !options?.skipBilling) {
+        options.collector.addD1Query(res.length, 0);
+      }
+      return res;
     },
-    async get<T = any>(sql: string, params: any[] = []): Promise<T | null> {
+    async get<T = any>(sql: string, params: any[] = [], options?: QueryOptions): Promise<T | null> {
       const stmt = db.prepare(sql);
       const res = stmt.get(...params);
+      if (options?.collector && !options?.skipBilling) {
+        options.collector.addD1Query(res ? 1 : 0, 0);
+      }
       return (res ?? null) as T | null;
     },
-    async run(sql: string, params: any[] = []): Promise<{ changes: number; lastInsertRowid?: number | bigint }> {
+    async run(sql: string, params: any[] = [], options?: QueryOptions): Promise<{ changes: number; lastInsertRowid?: number | bigint }> {
       const stmt = db.prepare(sql);
       const res = stmt.run(...params);
+      if (options?.collector && !options?.skipBilling) {
+        options.collector.addD1Query(0, res.changes);
+      }
       return { changes: res.changes, lastInsertRowid: res.lastInsertRowid };
     },
-    async exec(sql: string): Promise<void> {
+    async exec(sql: string, options?: QueryOptions): Promise<void> {
       db.exec(sql);
+      if (options?.collector && !options?.skipBilling) {
+        options.collector.addD1Query(0, 0);
+      }
     },
   };
 }

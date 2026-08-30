@@ -9,6 +9,7 @@ import { tagsRouter } from "./routes/tags";
 import { streamRouter } from "./routes/stream";
 import { logsRouter } from "./routes/logs";
 import { tripsRouter } from "./routes/trips";
+import { billingRouter } from "./routes/billing";
 
 export const app = new Hono().basePath("/api");
 
@@ -71,6 +72,7 @@ app.route("/tags", tagsRouter);
 app.route("/trips", tripsRouter);
 app.route("/stream", streamRouter);
 app.route("/logs", logsRouter);
+app.route("/billing", billingRouter);
 
 import { PINWHEEL_FAVICON_SVG } from "../lib/brand";
 
