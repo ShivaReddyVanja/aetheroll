@@ -29,7 +29,7 @@ describe("⚡ Auth Routes Suite", () => {
     });
     assert.equal(res.status, 400);
     const body = await res.json();
-    assert.match(body.error, /sessionToken required/i);
+    assert.match(body.error, /session.*token.*required/i);
   });
 
   it("2. POST /session should set cookie for valid composite session token", async () => {

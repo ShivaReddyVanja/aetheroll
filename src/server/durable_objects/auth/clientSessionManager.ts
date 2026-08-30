@@ -70,6 +70,20 @@ export class ClientSessionManager {
   }
 
   /**
+   * Resolves userId from warm RAM session cache without hitting D1 database
+   */
+  resolveUserIdFromRequest(request: Request): string | null {
+    const candidates = extractAllSessionTokens(request);
+    for (const parsed of candidates) {
+      const cached = this.userClients.get(parsed.fullToken) || this.userClients.get(parsed.sessionId);
+      if (cached && cached.client && (cached.client as any).__userId) {
+        return (cached.client as any).__userId;
+      }
+    }
+    return null;
+  }
+
+  /**
    * 15-minute sliding inactivity sweeper that disconnects idle sessions from RAM
    */
   sweepIdleClients() {
