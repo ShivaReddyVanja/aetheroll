@@ -19,6 +19,7 @@ import {
   RefreshCw,
   Users,
 } from "lucide-react";
+import { apiFetch } from "../lib/config.ts";
 
 interface SettingsModalProps {
   isDarkMode: boolean;
@@ -49,7 +50,7 @@ export function SettingsModal({ isDarkMode, onToggleTheme, onClose }: SettingsMo
     setLoadingUserMetrics(true);
     setMetricsError(null);
     try {
-      const res = await fetch(`/api/billing/me?date=${date}`);
+      const res = await apiFetch(`/api/billing/me?date=${date}`);
       if (!res.ok) {
         if (res.status === 401) throw new Error("Please log in to view your billing metrics");
         throw new Error("Failed to load user metrics");
@@ -68,7 +69,7 @@ export function SettingsModal({ isDarkMode, onToggleTheme, onClose }: SettingsMo
     setLoadingSystemMetrics(true);
     setMetricsError(null);
     try {
-      const res = await fetch(`/api/billing/summary?date=${date}`);
+      const res = await apiFetch(`/api/billing/summary?date=${date}`);
       if (!res.ok) {
         if (res.status === 401) throw new Error("Unauthorized: Admin session required");
         throw new Error("Failed to load system metrics");
