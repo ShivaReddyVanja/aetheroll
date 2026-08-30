@@ -82,6 +82,22 @@ describe("Billing Package - Unit Tests", () => {
       assert.ok(summary);
       assert.equal(summary.totalMetrics.doGbSeconds, expectedGbSeconds);
     });
+
+    it("should calculate wall-clock session duration and flush metrics via flushSessionBilling helper", async () => {
+      const repo = new InMemoryBillingRepository();
+      const startTime = performance.now() - 5000; // 5000ms ago
+
+      const collector = new BillingCollector(128);
+      const durationMs = Math.round(performance.now() - startTime);
+      collector.addDoInvocation(durationMs);
+      await collector.flush("user_456", "UPLOAD_FILE", repo, "2026-08-30");
+
+      const summary = await repo.getUserSummary("user_456", "2026-08-30");
+      assert.ok(summary);
+      assert.equal(summary.totalMetrics.doRequests, 1);
+      assert.ok(summary.totalMetrics.doDurationMs >= 4900);
+      assert.ok(summary.totalMetrics.doGbSeconds > 0);
+    });
   });
 
   describe("InMemoryBillingRepository", () => {

@@ -19,6 +19,7 @@ export interface AuthContext {
   displayName?: string;
   sessionString?: string;
   telegramConfig?: TelegramConfig;
+  isAdmin?: boolean;
   error?: string;
 }
 
@@ -173,6 +174,17 @@ export async function resolveUserAuth(c: Context): Promise<AuthContext> {
 
       const config = getDefaultTelegramConfig(c.env);
 
+      const adminIdsStr =
+        (c.env as any)?.ADMIN_TELEGRAM_USER_IDS || process.env.ADMIN_TELEGRAM_USER_IDS || "";
+
+      let isAdmin = false;
+      if (adminIdsStr && adminIdsStr.trim() !== "") {
+        const adminIds = adminIdsStr.split(",").map((s: string) => s.trim());
+        isAdmin =
+          adminIds.includes(String(session.telegram_user_id)) ||
+          adminIds.includes(String(session.user_id));
+      }
+
       return {
         authenticated: true,
         sessionId: parsed.sessionId,
@@ -181,6 +193,7 @@ export async function resolveUserAuth(c: Context): Promise<AuthContext> {
         displayName: session.display_name,
         sessionString: decryptedSession,
         telegramConfig: config,
+        isAdmin,
       };
     } catch (err: any) {
       lastError = err?.message || "Authentication failed";

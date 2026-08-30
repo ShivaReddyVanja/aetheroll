@@ -5,6 +5,7 @@ import { TelemetryLogger } from "../telemetry/telemetryLogger.ts";
 import { ClientSessionManager } from "../auth/clientSessionManager.ts";
 import { MediaLocationResolver } from "./mediaLocationResolver.ts";
 import { ParallelSegmentFetcher } from "./parallelSegmentFetcher.ts";
+import { flushSessionBilling } from "../../lib/billing/index.ts";
 
 export class StreamHandler {
   streamAbortController: AbortController;
@@ -22,6 +23,21 @@ export class StreamHandler {
     ratePacer: SlidingWindowRatePacer,
     logger: TelemetryLogger
   ): Promise<Response> {
+    const streamStartTime = performance.now();
+    let billingFlushed = false;
+    let activeUserId: string | undefined;
+
+    const flushStreamBilling = () => {
+      if (billingFlushed) return;
+      billingFlushed = true;
+      return flushSessionBilling({
+        startTime: streamStartTime,
+        userId: activeUserId,
+        purpose: "STREAM_MEDIA",
+        dbBinding: envObj?.DB,
+      });
+    };
+
     try {
       const url = new URL(request.url);
       const mediaId = url.searchParams.get("media_id");
@@ -38,6 +54,7 @@ export class StreamHandler {
         "abort",
         () => {
           this.streamAbortController.abort();
+          flushStreamBilling();
           logger.logEvent(
             "STREAM",
             "warn",
@@ -49,6 +66,7 @@ export class StreamHandler {
 
       const { client, userId, error } = await clientSessionManager.getOrConnectUserClient(request, envObj);
       if (!client) return new Response(error || "Unauthorized", { status: 401 });
+      activeUserId = userId;
 
       const db = getDb(envObj?.DB);
       const item = await db.get(
@@ -230,6 +248,8 @@ export class StreamHandler {
             ? "video/webm"
             : "video/mp4"
           : item.mime_type || "image/jpeg";
+
+      flushStreamBilling();
 
       return new Response(exactSlice as any, {
         status: 206,

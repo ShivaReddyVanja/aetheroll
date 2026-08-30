@@ -8,6 +8,7 @@ import { getDefaultTelegramConfig, getConnectedClient } from "../../lib/telegram
 import { emitGalleryEvent } from "../../lib/ledger.ts";
 import { SlidingWindowRatePacer, MAX_TELEGRAM_FILE_SIZE } from "../common/ratePacer.ts";
 import { ClientSessionManager } from "../auth/clientSessionManager.ts";
+import { flushSessionBilling } from "../../lib/billing/index.ts";
 
 export class UploadWebSocketHandler {
   async handleUploadWebSocket(
@@ -21,6 +22,19 @@ export class UploadWebSocketHandler {
     let uploadAbortController = new AbortController();
     const TG_PART_SIZE = 512 * 1024;
     const UPLOAD_CONCURRENCY = 4;
+    const wsStartTime = performance.now();
+    let billingFlushed = false;
+
+    const flushWsBilling = (userIdOverride?: string) => {
+      if (billingFlushed) return;
+      billingFlushed = true;
+      return flushSessionBilling({
+        startTime: wsStartTime,
+        userId: userIdOverride || uploadState?.userId,
+        purpose: "UPLOAD_FILE",
+        dbBinding: envObj?.DB,
+      });
+    };
 
     const logToClient = (stage: string, detail: any) => {
       console.log(`[UploadWS:${stage}]`, detail);
@@ -238,12 +252,14 @@ export class UploadWebSocketHandler {
           })
         );
         logToClient("UPLOAD_COMPLETE_DONE", { mediaId });
+        await flushWsBilling();
         try {
           ws.close(1000, "Upload complete");
         } catch {}
       } catch (finalizeErr: any) {
         console.error("[UploadFinalize Error]:", finalizeErr);
         logToClient("UPLOAD_FINALIZE_ERROR", { error: finalizeErr.message });
+        await flushWsBilling();
         try {
           ws.send(JSON.stringify({ type: "error", error: finalizeErr.message || "Failed finalizing upload" }));
         } catch {}
@@ -368,6 +384,7 @@ export class UploadWebSocketHandler {
     ws.addEventListener("close", (ev: any) => {
       uploadAbortController.abort();
       console.log(`[UploadWS] Client disconnected (code: ${ev?.code}, reason: ${ev?.reason})`);
+      flushWsBilling();
     });
 
     ws.addEventListener("error", (err: any) => {

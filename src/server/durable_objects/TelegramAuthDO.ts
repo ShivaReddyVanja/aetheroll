@@ -11,7 +11,7 @@ import { UploadWebSocketHandler } from "./upload/uploadWebSocketHandler.ts";
 import { UploadHttpHandler } from "./upload/uploadHttpHandler.ts";
 import { emitGalleryEvent, emitGalleryBatch } from "../lib/ledger.ts";
 import { getDb } from "../lib/db.ts";
-import { BillingCollector, D1BillingRepository, type BillingPurpose } from "../lib/billing/index.ts";
+import { flushSessionBilling, type BillingPurpose } from "../lib/billing/index.ts";
 
 export { SlidingWindowRatePacer, MAX_TELEGRAM_FILE_SIZE, toBigInt };
 export type * from "./common/types.ts";
@@ -137,17 +137,13 @@ export class TelegramAuthDO {
       response = new Response(JSON.stringify({ error: err.message || "Internal DO Error" }), { status: 500 });
     }
 
-    const durationMs = Math.round(performance.now() - startTime);
-
     if (this.env?.DB) {
       const resolvedUserId = this.clientSessionManager.resolveUserIdFromRequest(request) || "anonymous";
-      const flushPromise = (async () => {
-        const collector = new BillingCollector();
-        collector.addDoInvocation(durationMs);
-        const repo = new D1BillingRepository(getDb(this.env.DB));
-        await collector.flush(resolvedUserId, purpose, repo);
-      })().catch((err) => {
-        console.error("[TelegramAuthDO] Billing metrics flush failed:", err);
+      const flushPromise = flushSessionBilling({
+        startTime,
+        userId: resolvedUserId,
+        purpose,
+        dbBinding: this.env.DB,
       });
 
       if (this.state && typeof this.state.waitUntil === "function") {

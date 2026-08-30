@@ -179,7 +179,7 @@ export function MediaCard({
       onClick={() => onClick(item)}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
-      className={`group relative cursor-pointer overflow-hidden rounded-sm sm:rounded-md bg-[var(--card-bg)] transition-all duration-150 select-none w-full aspect-square sm:aspect-[var(--item-aspect-ratio)] sm:h-52 md:h-60 flex-shrink-0 ${
+      className={`group relative cursor-pointer overflow-hidden rounded-sm sm:rounded-md bg-[var(--card-bg)] transition-all duration-150 select-none w-full sm:w-auto aspect-square sm:aspect-[var(--item-aspect-ratio)] h-28 sm:h-32 md:h-36 lg:h-44 xl:h-48 2xl:h-52 flex-shrink-0 ${
         isSelected ? "ring-2 sm:ring-4 ring-blue-500 ring-offset-1 sm:ring-offset-2 scale-[0.98]" : "hover:brightness-95"
       }`}
       style={{

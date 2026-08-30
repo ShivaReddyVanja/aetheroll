@@ -11,6 +11,7 @@ import {
 } from "../../lib/telegram.ts";
 import { appendCleanSingleAuthCookieHeaders } from "../../routes/auth/utils.ts";
 import type { ActiveSessionEntry } from "../common/types.ts";
+import { flushSessionBilling } from "../../lib/billing/index.ts";
 
 export class QrAuthHandler {
   activeSessions: Map<string, ActiveSessionEntry>;
@@ -26,9 +27,24 @@ export class QrAuthHandler {
   async handleWebSocket(ws: WebSocket, envObj?: any) {
     let client: any = null;
     let isCancelled = false;
+    const qrStartTime = performance.now();
+    let billingFlushed = false;
+    const targetEnv = envObj || this.env;
+
+    const flushAuthBilling = (userId?: string) => {
+      if (billingFlushed) return;
+      billingFlushed = true;
+      return flushSessionBilling({
+        startTime: qrStartTime,
+        userId,
+        purpose: "AUTH",
+        dbBinding: targetEnv?.DB,
+      });
+    };
 
     ws.addEventListener("close", () => {
       isCancelled = true;
+      flushAuthBilling();
       try {
         if (client) client.disconnect();
       } catch {}
@@ -36,13 +52,13 @@ export class QrAuthHandler {
 
     ws.addEventListener("error", () => {
       isCancelled = true;
+      flushAuthBilling();
       try {
         if (client) client.disconnect();
       } catch {}
     });
 
     try {
-      const targetEnv = envObj || this.env;
       const config = getDefaultTelegramConfig(targetEnv);
       client = createTelegramClient(config);
       await client.connect();
@@ -124,6 +140,8 @@ export class QrAuthHandler {
           "INSERT INTO user_sessions (id, user_id, expires_at) VALUES (?, ?, ?)",
           [sessionId, userId, expiresAt]
         );
+
+        flushAuthBilling(userId);
 
         // Create a one-time claim token for the frontend to exchange for a cookie
         const qrClaimId = crypto.randomUUID();

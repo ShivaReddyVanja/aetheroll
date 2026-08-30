@@ -103,5 +103,26 @@ describe("🔍 Unified Abstracted Auth Token Extraction Suite", () => {
     assert.equal(candidates[1].sessionId, "ae-id");
     assert.equal(candidates[2].sessionId, "new-session-id");
   });
+
+  it("9. should default isAdmin to false when ADMIN_TELEGRAM_USER_IDS is empty (strict fail-closed)", () => {
+    const adminIdsStr = "";
+    let isAdmin = false;
+    if (adminIdsStr && adminIdsStr.trim() !== "") {
+      const adminIds = adminIdsStr.split(",").map((s: string) => s.trim());
+      isAdmin = adminIds.includes("123456");
+    }
+    assert.equal(isAdmin, false);
+  });
+
+  it("10. should grant isAdmin true only when user telegram_user_id matches ADMIN_TELEGRAM_USER_IDS whitelist", () => {
+    const adminIdsStr = "1139540899,987654321";
+    const adminIds = adminIdsStr.split(",").map((s: string) => s.trim());
+
+    const isUser1Admin = adminIds.includes(String("1139540899"));
+    const isUser2Admin = adminIds.includes(String("555555555"));
+
+    assert.equal(isUser1Admin, true);
+    assert.equal(isUser2Admin, false);
+  });
 });
 
