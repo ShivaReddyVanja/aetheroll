@@ -54,6 +54,7 @@
   "vars": {
     "TELEGRAM_API_ID": "12345678",
     "TELEGRAM_TEST_MODE": "false",
-    "ENABLE_TELEMETRY": "false"
+    "ENABLE_TELEMETRY": "false",
+    "ADMIN_TELEGRAM_USER_IDS": "1139540899"
   }
 }

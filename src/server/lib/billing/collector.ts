@@ -1,5 +1,7 @@
 import type { BillingMetrics, BillingPurpose, BillingStorageRepository } from "./types.ts";
 import { calculateGbSeconds, createEmptyMetrics } from "./calculator.ts";
+import { D1BillingRepository } from "./repository.ts";
+import { getDb } from "../db.ts";
 
 /**
  * Thread-safe / Request-scoped metrics collector that accumulates usage for a single request lifetime.
@@ -68,5 +70,28 @@ export class BillingCollector {
       await storageRepo.saveMetrics(userId || "anonymous", purpose, date, metricsToFlush);
       this.reset();
     }
+  }
+}
+
+/**
+ * Reusable helper to flush wall-clock duration & DO invocations for any request or stream session.
+ */
+export async function flushSessionBilling(options: {
+  startTime: number;
+  userId?: string | null;
+  purpose: BillingPurpose | string;
+  dbBinding?: any;
+  collector?: BillingCollector;
+}): Promise<void> {
+  const durationMs = Math.round(performance.now() - options.startTime);
+  if (durationMs <= 0 || !options.dbBinding) return;
+
+  try {
+    const collector = options.collector || new BillingCollector();
+    collector.addDoInvocation(durationMs);
+    const repo = new D1BillingRepository(getDb(options.dbBinding));
+    await collector.flush(options.userId || "anonymous", options.purpose, repo);
+  } catch (err) {
+    console.error(`[SessionBilling] Failed to flush ${options.purpose} metrics:`, err);
   }
 }

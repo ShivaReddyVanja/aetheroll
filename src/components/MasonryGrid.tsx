@@ -166,8 +166,8 @@ export function MasonryGrid({
               </span>
             </div>
 
-            {/* Mobile: 4 items per row square grid. Desktop: Google Photos Natural Aspect Ratio Horizontal Row Flow */}
-            <div className="grid grid-cols-4 sm:flex sm:flex-wrap gap-1 sm:gap-1.5 items-start">
+            {/* Mobile: 3 items per row square grid. Desktop: Fluid Dynamic Natural Aspect Ratio Row Flow */}
+            <div className="grid grid-cols-3 sm:flex sm:flex-wrap gap-1 sm:gap-1.5 items-start">
               {groupItems.map((item) => (
                 <MediaCard
                   key={item.id}

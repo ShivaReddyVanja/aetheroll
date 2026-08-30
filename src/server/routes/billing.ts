@@ -24,6 +24,7 @@ billingRouter.get("/me", async (c) => {
   if (!userSummary) {
     return c.json({
       userId: auth.userId,
+      isAdmin: !!auth.isAdmin,
       periodDate: targetDate,
       message: "No recorded billable consumption for this period",
       totalMetrics: {
@@ -44,7 +45,10 @@ billingRouter.get("/me", async (c) => {
     });
   }
 
-  return c.json(userSummary);
+  return c.json({
+    ...userSummary,
+    isAdmin: !!auth.isAdmin,
+  });
 });
 
 /**
@@ -55,6 +59,9 @@ billingRouter.get("/summary", async (c) => {
   const auth = await resolveUserAuth(c);
   if (!auth.authenticated || !auth.userId) {
     return c.json({ error: "Unauthorized" }, 401);
+  }
+  if (!auth.isAdmin) {
+    return c.json({ error: "Forbidden: Admin access required" }, 403);
   }
 
   const targetDate = c.req.query("date") || new Date().toISOString().split("T")[0];

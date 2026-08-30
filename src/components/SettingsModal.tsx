@@ -84,6 +84,11 @@ export function SettingsModal({ isDarkMode, onToggleTheme, onClose }: SettingsMo
   };
 
   useEffect(() => {
+    // Initial fetch to check user auth & admin status
+    fetchUserMetrics(targetDate);
+  }, []);
+
+  useEffect(() => {
     if (activeTab === "billing") {
       fetchUserMetrics(targetDate);
     } else if (activeTab === "admin") {
@@ -145,17 +150,21 @@ export function SettingsModal({ isDarkMode, onToggleTheme, onClose }: SettingsMo
             <BarChart3 className="w-3.5 h-3.5 text-blue-500" />
             <span>Usage & Billing</span>
           </button>
-          <button
-            onClick={() => setActiveTab("admin")}
-            className={`px-3 py-1.5 rounded-full flex items-center gap-1.5 whitespace-nowrap transition-colors ${
-              activeTab === "admin"
-                ? "bg-[var(--bg-active-pill)] text-[var(--text-active-pill)] font-semibold"
-                : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]"
-            }`}
-          >
-            <Shield className="w-3.5 h-3.5 text-emerald-500" />
-            <span>Admin Console</span>
-          </button>
+
+          {/* Admin Console Tab - Rendered ONLY if user is verified as Admin */}
+          {userMetrics?.isAdmin && (
+            <button
+              onClick={() => setActiveTab("admin")}
+              className={`px-3 py-1.5 rounded-full flex items-center gap-1.5 whitespace-nowrap transition-colors ${
+                activeTab === "admin"
+                  ? "bg-[var(--bg-active-pill)] text-[var(--text-active-pill)] font-semibold"
+                  : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]"
+              }`}
+            >
+              <Shield className="w-3.5 h-3.5 text-emerald-500" />
+              <span>Admin Console</span>
+            </button>
+          )}
         </div>
 
         {/* Tab 1: Appearance */}
