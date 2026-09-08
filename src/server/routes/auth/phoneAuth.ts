@@ -179,6 +179,7 @@ phoneAuthRoute.post("/phone/verify", async (c) => {
 
     return c.json({
       success: true,
+      sessionToken,
       user: {
         id: userId,
         telegramUserId,

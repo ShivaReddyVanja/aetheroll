@@ -265,6 +265,7 @@ export class PhoneAuthHandler {
       return new Response(
         JSON.stringify({
           success: true,
+          sessionToken,
           user: {
             id: userId,
             telegramUserId,
