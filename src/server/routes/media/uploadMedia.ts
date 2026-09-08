@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { getCookie } from "hono/cookie";
 import crypto from "crypto";
 import { Api } from "telegram";
-import { CustomFile } from "telegram/client/uploads.js";
+import { CustomFile, uploadFile } from "telegram/client/uploads.js";
 import { getDb } from "../../lib/db.ts";
 import { decryptSession, generateAetherollSignature } from "../../lib/crypto.ts";
 import { resolveUserAuth } from "../../lib/auth.ts";
@@ -133,10 +133,15 @@ uploadMediaRoute.post("/upload", async (c) => {
       (c.env as any)?.SESSION_ENCRYPTION_KEY
     );
 
-    const sentMsg = await client.sendFile(targetPeer, {
+    const inputFile = await uploadFile(client, {
       file: customFile,
+      workers: 4,
+      maxBufferSize: 2 * 1024 * 1024 * 1024,
+    });
+
+    const sentMsg = await client.sendFile(targetPeer, {
+      file: inputFile,
       caption: signature,
-      workers: 1,
       forceDocument: true,
       attributes: [
         new Api.DocumentAttributeFilename({

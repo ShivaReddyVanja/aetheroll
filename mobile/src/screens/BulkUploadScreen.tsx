@@ -13,25 +13,36 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { launchImageLibrary, Asset } from 'react-native-image-picker';
 import {
+  CloudUpload,
+  Play,
+  Pause,
+  RotateCcw,
+  Trash2,
+  Image as ImageIcon,
+  Video as VideoIcon,
+  CheckCircle2,
+  AlertCircle,
+  Zap,
+  Clock,
+  Plus,
+  Layers,
+  Battery,
+} from 'lucide-react-native';
+import {
   BackupManager,
   BackupItem,
   BackupStats,
   BackupListenerPayload,
+  NativeBackgroundService,
+  formatUploadFileSize,
 } from '../services/backup';
 import { getStoredActiveChannel } from '../services/secureStorage';
 import { apiFetch } from '../services/api';
 
-function formatBytes(bytes: number): string {
-  if (!bytes || bytes <= 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(k)), sizes.length - 1);
-  return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
-}
-
 export function BulkUploadScreen() {
   const insets = useSafeAreaInsets();
   const [queue, setQueue] = useState<BackupItem[]>([]);
+  const [activeItems, setActiveItems] = useState<BackupItem[]>([]);
   const [stats, setStats] = useState<BackupStats>({
     total: 0,
     completed: 0,
@@ -40,11 +51,16 @@ export function BulkUploadScreen() {
     inProgress: 0,
     bytesUploaded: 0,
     totalBytes: 0,
+    speedFormatted: '0 KB/s',
+    speedBytesPerSec: 0,
+    etaFormatted: '--',
+    activeWorkers: 0,
   });
   const [isSyncing, setIsSyncing] = useState(false);
-  const [currentItem, setCurrentItem] = useState<BackupItem | undefined>();
   const [activeChannel, setActiveChannel] = useState<{ id: string; name: string } | null>(null);
   const [isPicking, setIsPicking] = useState(false);
+  const [isBatteryOptimized, setIsBatteryOptimized] = useState(false);
+  const [dismissBatteryBanner, setDismissBatteryBanner] = useState(false);
 
   // Load active channel
   useEffect(() => {
@@ -71,24 +87,42 @@ export function BulkUploadScreen() {
     loadChannel();
   }, []);
 
+  // Check battery optimization status on Android
+  useEffect(() => {
+    async function checkBattery() {
+      if (Platform.OS === 'android') {
+        const isIgnored = await NativeBackgroundService.isBatteryOptimizationIgnored();
+        setIsBatteryOptimized(!isIgnored);
+      }
+    }
+    checkBattery();
+  }, [isSyncing]);
+
   // Subscribe to BackupManager real-time queue events
   useEffect(() => {
     const unsubscribe = BackupManager.subscribe((payload: BackupListenerPayload) => {
       setQueue(payload.queue);
       setStats(payload.stats);
       setIsSyncing(payload.isSyncing);
-      setCurrentItem(payload.currentItem);
+      setActiveItems(payload.activeItems || []);
     });
 
     return unsubscribe;
   }, []);
 
-  // Request Android permissions for media library
+  // Request Android permissions for media library & notifications
   const requestMediaPermissions = async (): Promise<boolean> => {
     if (Platform.OS !== 'android') return true;
 
     try {
       if (Platform.Version >= 33) {
+        // Request notification permission for background service progress
+        try {
+          await PermissionsAndroid.request(
+            'android.permission.POST_NOTIFICATIONS' as any
+          );
+        } catch {}
+
         const grantedImages = await PermissionsAndroid.request(
           PermissionsAndroid.PERMISSIONS.READ_MEDIA_IMAGES
         );
@@ -131,13 +165,11 @@ export function BulkUploadScreen() {
       setIsPicking(true);
       const result = await launchImageLibrary({
         mediaType: 'mixed',
-        selectionLimit: 0, // 0 allows multiple selection
+        selectionLimit: 0, // 0 allows multi-selection
         includeExtra: false,
       });
 
-      if (result.didCancel) {
-        return;
-      }
+      if (result.didCancel) return;
 
       if (result.errorCode) {
         Alert.alert('Picker Error', result.errorMessage || 'Failed to open media library');
@@ -146,7 +178,7 @@ export function BulkUploadScreen() {
 
       if (result.assets && result.assets.length > 0) {
         const validAssets: Asset[] = result.assets.filter((a) => !!a.uri);
-        await BackupManager.addAssets(
+        const skipped = await BackupManager.addAssets(
           validAssets.map((a) => ({
             uri: a.uri!,
             fileName: a.fileName || `media_${Date.now()}.${a.type?.includes('video') ? 'mp4' : 'jpg'}`,
@@ -156,10 +188,18 @@ export function BulkUploadScreen() {
           activeChannel.id
         );
 
-        Alert.alert(
-          'Media Added',
-          `Added ${validAssets.length} ${validAssets.length === 1 ? 'item' : 'items'} to the backup queue.`
-        );
+        const addedCount = validAssets.length - skipped;
+        if (skipped > 0) {
+          Alert.alert(
+            'Media Enqueued',
+            `Added ${addedCount} new items. Skipped ${skipped} items already backed up previously.`
+          );
+        } else {
+          Alert.alert(
+            'Media Added',
+            `Added ${validAssets.length} ${validAssets.length === 1 ? 'item' : 'items'} to the resilient backup queue.`
+          );
+        }
       }
     } catch (err: any) {
       Alert.alert('Error', err?.message || 'Could not select media');
@@ -168,7 +208,7 @@ export function BulkUploadScreen() {
     }
   };
 
-  const handleToggleSync = () => {
+  const handleToggleSync = async () => {
     if (queue.length === 0) {
       Alert.alert('Queue Empty', 'Please pick photos or videos to start cloud backup.');
       return;
@@ -177,8 +217,22 @@ export function BulkUploadScreen() {
     if (isSyncing) {
       BackupManager.pauseSync();
     } else {
+      // Ensure notification permission is requested
+      if (Platform.OS === 'android' && Platform.Version >= 33) {
+        try {
+          await PermissionsAndroid.request(
+            'android.permission.POST_NOTIFICATIONS' as any
+          );
+        } catch {}
+      }
       BackupManager.startSync();
     }
+  };
+
+  const handleRequestBatteryOptimization = async () => {
+    await NativeBackgroundService.requestIgnoreBatteryOptimization();
+    const isIgnored = await NativeBackgroundService.isBatteryOptimizationIgnored();
+    setIsBatteryOptimized(!isIgnored);
   };
 
   const handleRetryFailed = () => {
@@ -201,14 +255,17 @@ export function BulkUploadScreen() {
       const isItemUploading = item.status === 'uploading';
       const isFailed = item.status === 'failed';
       const isCompleted = item.status === 'completed';
+      const isVideo = item.mimeType?.includes('video');
 
       return (
         <View style={styles.itemCard}>
           <View style={styles.itemHeader}>
             <View style={styles.itemNameContainer}>
-              <Text style={styles.itemTypeIcon}>
-                {item.mimeType.includes('video') ? '▶' : '▤'}
-              </Text>
+              {isVideo ? (
+                <VideoIcon size={16} color="#4F46E5" />
+              ) : (
+                <ImageIcon size={16} color="#059669" />
+              )}
               <Text style={styles.itemName} numberOfLines={1}>
                 {item.fileName}
               </Text>
@@ -218,13 +275,22 @@ export function BulkUploadScreen() {
               onPress={() => handleRemoveItem(item.id)}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
-              <Text style={styles.removeItemText}>✕</Text>
+              <Trash2 size={15} color="#94A3B8" />
             </TouchableOpacity>
           </View>
 
           <View style={styles.itemMetaRow}>
-            <Text style={styles.itemSizeText}>{formatBytes(item.fileSize)}</Text>
+            <Text style={styles.itemSizeText}>
+              {isItemUploading && item.uploadedBytes !== undefined
+                ? `${formatUploadFileSize(Math.min(item.uploadedBytes, item.fileSize || item.uploadedBytes))} / ${formatUploadFileSize(item.fileSize)}`
+                : formatUploadFileSize(item.fileSize)}
+            </Text>
+
             <View style={styles.statusBadgeRow}>
+              {isCompleted && <CheckCircle2 size={13} color="#16A34A" />}
+              {isFailed && <AlertCircle size={13} color="#DC2626" />}
+              {isItemUploading && <ActivityIndicator size="small" color="#2563EB" />}
+
               <Text
                 style={[
                   styles.statusBadgeText,
@@ -233,9 +299,11 @@ export function BulkUploadScreen() {
                   isFailed && styles.statusBadgeFailed,
                 ]}
               >
-                {item.status.toUpperCase()}
+                {isItemUploading && item.progress >= 99
+                  ? 'FINALIZING'
+                  : item.status.toUpperCase()}
               </Text>
-              {isItemUploading && (
+              {isItemUploading && item.progress < 99 && (
                 <Text style={styles.itemProgressPct}>{item.progress}%</Text>
               )}
             </View>
@@ -250,7 +318,7 @@ export function BulkUploadScreen() {
           {isItemUploading && (
             <View style={styles.progressBarTrack}>
               <View
-                style={[styles.progressBarFill, { width: `${Math.max(5, item.progress)}%` }]}
+                style={[styles.progressBarFill, { width: `${Math.max(4, item.progress)}%` }]}
               />
             </View>
           )}
@@ -262,15 +330,49 @@ export function BulkUploadScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
-      {/* Header */}
+      {/* Top Header */}
       <View style={styles.header}>
         <View>
           <Text style={styles.title}>Backup & Sync</Text>
           <Text style={styles.subtitle}>
-            {activeChannel ? `Target Vault: ${activeChannel.name}` : 'Automated Telegram Cloud Vault'}
+            {activeChannel ? `Vault: ${activeChannel.name}` : 'Aetheroll Telegram Cloud Vault'}
           </Text>
         </View>
       </View>
+
+      {/* Battery Optimization Exemption Banner on Android */}
+      {Platform.OS === 'android' && isBatteryOptimized && !dismissBatteryBanner && (
+        <View style={styles.batteryBanner}>
+          <View style={styles.batteryBannerLeft}>
+            <View style={styles.batteryIconBox}>
+              <Battery size={16} color="#D97706" />
+            </View>
+            <View style={styles.batteryTextContainer}>
+              <Text style={styles.batteryTitle}>Unrestricted Background Battery</Text>
+              <Text style={styles.batterySubtitle}>
+                Allow uploads to run continuously even when screen is locked.
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.batteryActionRow}>
+            <TouchableOpacity
+              style={styles.batteryAllowBtn}
+              onPress={handleRequestBatteryOptimization}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.batteryAllowText}>Allow</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.batteryDismissBtn}
+              onPress={() => setDismissBatteryBanner(true)}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Text style={styles.batteryDismissText}>✕</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
 
       {/* Control Banner Card */}
       <View style={styles.controlBox}>
@@ -278,13 +380,23 @@ export function BulkUploadScreen() {
         {stats.total > 0 && (
           <View style={styles.overallStatsBox}>
             <View style={styles.overallStatsHeader}>
-              <Text style={styles.overallStatsTitle}>
-                {isSyncing ? 'Syncing to Telegram...' : 'Backup Paused'}
-              </Text>
+              <View style={styles.statusTitleRow}>
+                <Text style={styles.overallStatsTitle}>
+                  {isSyncing ? 'Syncing to Telegram' : 'Backup Paused'}
+                </Text>
+                {isSyncing && stats.activeWorkers > 0 && (
+                  <View style={styles.activePill}>
+                    <Zap size={11} color="#2563EB" />
+                    <Text style={styles.activePillText}>{stats.activeWorkers} workers</Text>
+                  </View>
+                )}
+              </View>
+
               <Text style={styles.overallStatsPct}>
                 {stats.completed}/{stats.total} ({overallProgressPct}%)
               </Text>
             </View>
+
             <View style={styles.overallProgressBarTrack}>
               <View
                 style={[
@@ -293,13 +405,26 @@ export function BulkUploadScreen() {
                 ]}
               />
             </View>
-            <View style={styles.bytesRow}>
-              <Text style={styles.bytesText}>
-                {formatBytes(stats.bytesUploaded)} of {formatBytes(stats.totalBytes)}
-              </Text>
-              {stats.failed > 0 && (
-                <Text style={styles.failedCountText}>{stats.failed} failed</Text>
-              )}
+
+            {/* Live Metrics Row: Speed, ETA, Bytes */}
+            <View style={styles.metricsRow}>
+              <View style={styles.metricItem}>
+                <Zap size={12} color="#059669" />
+                <Text style={styles.metricText}>
+                  {isSyncing && stats.speedBytesPerSec > 0 ? stats.speedFormatted : 'Idle'}
+                </Text>
+              </View>
+
+              <View style={styles.metricItem}>
+                <Clock size={12} color="#64748B" />
+                <Text style={styles.metricText}>ETA: {stats.etaFormatted}</Text>
+              </View>
+
+              <View style={styles.metricItem}>
+                <Text style={styles.bytesText}>
+                  {formatUploadFileSize(stats.bytesUploaded)} / {formatUploadFileSize(stats.totalBytes)}
+                </Text>
+              </View>
             </View>
           </View>
         )}
@@ -313,9 +438,12 @@ export function BulkUploadScreen() {
             activeOpacity={0.7}
           >
             {isPicking ? (
-              <ActivityIndicator size="small" color="#1F1F1F" />
+              <ActivityIndicator size="small" color="#1E293B" />
             ) : (
-              <Text style={styles.pickMediaText}>+ Pick Photos & Videos</Text>
+              <View style={styles.btnContentRow}>
+                <Plus size={16} color="#1E293B" />
+                <Text style={styles.pickMediaText}>Select Media</Text>
+              </View>
             )}
           </TouchableOpacity>
 
@@ -328,31 +456,43 @@ export function BulkUploadScreen() {
             onPress={handleToggleSync}
             activeOpacity={0.7}
           >
-            <Text style={styles.syncBtnText}>
-              {isSyncing ? 'Pause Backup' : 'Start Backup'}
-            </Text>
+            <View style={styles.btnContentRow}>
+              {isSyncing ? (
+                <Pause size={16} color="#FFFFFF" />
+              ) : (
+                <Play size={16} color="#FFFFFF" />
+              )}
+              <Text style={styles.syncBtnText}>
+                {isSyncing ? 'Pause Sync' : 'Start Sync'}
+              </Text>
+            </View>
           </TouchableOpacity>
         </View>
 
-        {/* Helper Action Buttons */}
-        <View style={styles.secondaryActionsRow}>
-          {stats.failed > 0 && (
-            <TouchableOpacity style={styles.secondaryActionBtn} onPress={handleRetryFailed}>
-              <Text style={styles.retryActionText}>↻ Retry Failed ({stats.failed})</Text>
-            </TouchableOpacity>
-          )}
+        {/* Secondary Actions: Retry / Clear */}
+        {(stats.failed > 0 || stats.completed > 0) && (
+          <View style={styles.secondaryActionsRow}>
+            {stats.failed > 0 && (
+              <TouchableOpacity style={styles.secondaryActionBtn} onPress={handleRetryFailed}>
+                <RotateCcw size={12} color="#DC2626" />
+                <Text style={styles.retryActionText}>Retry Failed ({stats.failed})</Text>
+              </TouchableOpacity>
+            )}
 
-          {stats.completed > 0 && (
-            <TouchableOpacity style={styles.secondaryActionBtn} onPress={handleClearCompleted}>
-              <Text style={styles.clearActionText}>Clear Completed ({stats.completed})</Text>
-            </TouchableOpacity>
-          )}
-        </View>
+            {stats.completed > 0 && (
+              <TouchableOpacity style={styles.secondaryActionBtn} onPress={handleClearCompleted}>
+                <Trash2 size={12} color="#2563EB" />
+                <Text style={styles.clearActionText}>Clear Completed ({stats.completed})</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
 
-        {/* Pacer / FLOOD_WAIT Guard Banner */}
+        {/* Adaptive Dynamic Sliding Window Info */}
         <View style={styles.pacerInfo}>
+          <Layers size={13} color="#2563EB" />
           <Text style={styles.pacerText}>
-            Telegram FLOOD_WAIT Pacer: Adaptive 3.0s pacing enabled
+            Dynamic Sliding Window: Adaptive parallel streaming + durable state
           </Text>
         </View>
       </View>
@@ -361,11 +501,11 @@ export function BulkUploadScreen() {
       {queue.length === 0 ? (
         <View style={styles.emptyContainer}>
           <View style={styles.emptyCloudIcon}>
-            <Text style={styles.emptyIconText}>☁</Text>
+            <CloudUpload size={32} color="#2563EB" />
           </View>
           <Text style={styles.emptyTitle}>No Media in Backup Queue</Text>
           <Text style={styles.emptySubtitle}>
-            Tap "+ Pick Photos & Videos" above to select local media from your device. Files will be queued and securely backed up to your Telegram channel vault.
+            Tap "Select Media" above to queue photos and videos. Your progress is saved durably so you can safely pause and resume anytime.
           </Text>
         </View>
       ) : (
@@ -382,9 +522,9 @@ export function BulkUploadScreen() {
               <Text style={styles.sectionHeader}>
                 Upload Queue ({queue.length} {queue.length === 1 ? 'item' : 'items'})
               </Text>
-              {currentItem && (
+              {activeItems.length > 0 && (
                 <Text style={styles.nowUploadingText}>
-                  Uploading: {currentItem.fileName}
+                  {activeItems.length} active in window
                 </Text>
               )}
             </View>
@@ -399,97 +539,202 @@ export function BulkUploadScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#F8FAFC',
   },
   header: {
     paddingHorizontal: 20,
     paddingVertical: 14,
     borderBottomWidth: 1,
-    borderBottomColor: '#F1F3F4',
+    borderBottomColor: '#E2E8F0',
+    backgroundColor: '#FFFFFF',
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
   },
   title: {
     fontSize: 20,
-    fontWeight: '700',
-    color: '#1F1F1F',
+    fontWeight: '800',
+    color: '#0F172A',
+    letterSpacing: -0.4,
   },
   subtitle: {
     fontSize: 12,
-    color: '#5F6368',
+    color: '#64748B',
     marginTop: 2,
     fontWeight: '500',
+  },
+  batteryBanner: {
+    marginHorizontal: 16,
+    marginTop: 12,
+    padding: 12,
+    backgroundColor: '#FEF3C7',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  batteryBannerLeft: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginRight: 8,
+  },
+  batteryIconBox: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: '#FDE68A',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  batteryTextContainer: {
+    flex: 1,
+  },
+  batteryTitle: {
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: '#92400E',
+  },
+  batterySubtitle: {
+    fontSize: 11,
+    color: '#B45309',
+    marginTop: 1,
+  },
+  batteryActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  batteryAllowBtn: {
+    backgroundColor: '#D97706',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  batteryAllowText: {
+    color: '#FFFFFF',
+    fontSize: 11.5,
+    fontWeight: '700',
+  },
+  batteryDismissBtn: {
+    padding: 4,
+  },
+  batteryDismissText: {
+    fontSize: 12,
+    color: '#B45309',
+    fontWeight: '700',
   },
   controlBox: {
     margin: 16,
     padding: 14,
-    backgroundColor: '#F8F9FA',
-    borderRadius: 16,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
     borderWidth: 1,
     borderColor: '#E2E8F0',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 2,
   },
   overallStatsBox: {
-    marginBottom: 12,
+    marginBottom: 14,
   },
   overallStatsHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: 6,
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  statusTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   overallStatsTitle: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#1F1F1F',
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  activePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: '#EFF6FF',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  activePillText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#2563EB',
   },
   overallStatsPct: {
-    fontSize: 12,
+    fontSize: 12.5,
     fontWeight: '700',
-    color: '#1A73E8',
+    color: '#2563EB',
   },
   overallProgressBarTrack: {
-    height: 6,
-    backgroundColor: '#E8EAED',
-    borderRadius: 3,
+    height: 7,
+    backgroundColor: '#F1F5F9',
+    borderRadius: 4,
     overflow: 'hidden',
-    marginBottom: 4,
+    marginBottom: 8,
   },
   overallProgressBarFill: {
     height: '100%',
-    backgroundColor: '#1A73E8',
+    backgroundColor: '#2563EB',
+    borderRadius: 4,
   },
-  bytesRow: {
+  metricsRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    marginTop: 2,
+  },
+  metricItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  metricText: {
+    fontSize: 11.5,
+    color: '#475569',
+    fontWeight: '600',
   },
   bytesText: {
-    fontSize: 11,
-    color: '#5F6368',
-  },
-  failedCountText: {
-    fontSize: 11,
-    color: '#DC2626',
-    fontWeight: '600',
+    fontSize: 11.5,
+    color: '#64748B',
+    fontWeight: '500',
   },
   bannerRow: {
     flexDirection: 'row',
     gap: 10,
   },
+  btnContentRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
   pickMediaBtn: {
     flex: 1.1,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#F1F5F9',
     borderRadius: 12,
     paddingVertical: 11,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderColor: '#DADCE0',
+    borderColor: '#E2E8F0',
   },
   pickMediaText: {
-    color: '#1F1F1F',
+    color: '#1E293B',
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   syncBtn: {
     flex: 0.9,
@@ -499,13 +744,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   syncBtnActive: {
-    backgroundColor: '#F59E0B',
+    backgroundColor: '#D97706',
   },
   syncBtnPaused: {
-    backgroundColor: '#1A73E8',
+    backgroundColor: '#2563EB',
   },
   syncBtnDisabled: {
-    backgroundColor: '#9AA0A6',
+    backgroundColor: '#94A3B8',
     opacity: 0.7,
   },
   syncBtnText: {
@@ -517,34 +762,40 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'flex-end',
     gap: 12,
-    marginTop: 8,
+    marginTop: 10,
   },
   secondaryActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
     paddingVertical: 4,
     paddingHorizontal: 6,
   },
   retryActionText: {
-    fontSize: 11,
+    fontSize: 11.5,
     color: '#DC2626',
     fontWeight: '700',
   },
   clearActionText: {
-    fontSize: 11,
-    color: '#1A73E8',
-    fontWeight: '600',
+    fontSize: 11.5,
+    color: '#2563EB',
+    fontWeight: '700',
   },
   pacerInfo: {
-    marginTop: 10,
-    paddingVertical: 6,
+    marginTop: 12,
+    paddingVertical: 7,
     paddingHorizontal: 10,
-    backgroundColor: '#E8F0FE',
-    borderRadius: 8,
+    backgroundColor: '#EFF6FF',
+    borderRadius: 9,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
   },
   pacerText: {
-    color: '#1967D2',
-    fontSize: 10.5,
-    textAlign: 'center',
-    fontWeight: '500',
+    color: '#1D4ED8',
+    fontSize: 11,
+    fontWeight: '600',
+    flex: 1,
   },
   listContainer: {
     paddingHorizontal: 16,
@@ -557,18 +808,18 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   sectionHeader: {
-    color: '#1F1F1F',
-    fontSize: 13,
+    color: '#0F172A',
+    fontSize: 13.5,
     fontWeight: '700',
   },
   nowUploadingText: {
-    fontSize: 11,
-    color: '#1A73E8',
-    fontWeight: '600',
+    fontSize: 11.5,
+    color: '#2563EB',
+    fontWeight: '700',
   },
   itemCard: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 12,
+    borderRadius: 14,
     padding: 12,
     marginBottom: 8,
     borderWidth: 1,
@@ -587,12 +838,8 @@ const styles = StyleSheet.create({
     gap: 6,
     marginRight: 8,
   },
-  itemTypeIcon: {
-    fontSize: 11,
-    color: '#5F6368',
-  },
   itemName: {
-    color: '#1F1F1F',
+    color: '#0F172A',
     fontSize: 13,
     fontWeight: '600',
     flex: 1,
@@ -600,42 +847,39 @@ const styles = StyleSheet.create({
   removeItemBtn: {
     padding: 4,
   },
-  removeItemText: {
-    fontSize: 12,
-    color: '#9AA0A6',
-    fontWeight: '700',
-  },
   itemMetaRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    marginTop: 2,
   },
   itemSizeText: {
-    color: '#5F6368',
-    fontSize: 11,
+    color: '#64748B',
+    fontSize: 11.5,
+    fontWeight: '500',
   },
   statusBadgeRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 4,
   },
   statusBadgeText: {
-    fontSize: 10,
+    fontSize: 10.5,
     fontWeight: '700',
-    color: '#5F6368',
+    color: '#64748B',
   },
   statusBadgeCompleted: {
-    color: '#137333',
+    color: '#16A34A',
   },
   statusBadgeUploading: {
-    color: '#1A73E8',
+    color: '#2563EB',
   },
   statusBadgeFailed: {
     color: '#DC2626',
   },
   itemProgressPct: {
-    fontSize: 10,
-    color: '#1A73E8',
+    fontSize: 11,
+    color: '#2563EB',
     fontWeight: '700',
   },
   itemErrorText: {
@@ -644,15 +888,16 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   progressBarTrack: {
-    height: 4,
-    backgroundColor: '#E8EAED',
-    borderRadius: 2,
+    height: 5,
+    backgroundColor: '#F1F5F9',
+    borderRadius: 3,
     marginTop: 8,
     overflow: 'hidden',
   },
   progressBarFill: {
     height: '100%',
-    backgroundColor: '#1A73E8',
+    backgroundColor: '#2563EB',
+    borderRadius: 3,
   },
   emptyContainer: {
     flex: 1,
@@ -662,27 +907,23 @@ const styles = StyleSheet.create({
     paddingBottom: 80,
   },
   emptyCloudIcon: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: '#E8F0FE',
+    width: 68,
+    height: 68,
+    borderRadius: 34,
+    backgroundColor: '#EFF6FF',
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 16,
   },
-  emptyIconText: {
-    fontSize: 32,
-    color: '#1A73E8',
-  },
   emptyTitle: {
-    fontSize: 16,
+    fontSize: 17,
     fontWeight: '700',
-    color: '#1F1F1F',
+    color: '#0F172A',
     marginBottom: 8,
   },
   emptySubtitle: {
     fontSize: 13,
-    color: '#5F6368',
+    color: '#64748B',
     textAlign: 'center',
     lineHeight: 19,
   },
