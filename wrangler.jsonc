@@ -1,6 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "aetheroll",
+  "account_id": "e0c57f1d371890848127861bfa14b3e9",
   "main": "src/server/app.ts",
   "compatibility_date": "2024-09-23",
   "compatibility_flags": [
@@ -54,7 +55,7 @@
   "vars": {
     "TELEGRAM_API_ID": "33733965",
     "TELEGRAM_TEST_MODE": "false",
-    "ENABLE_TELEMETRY": "false",
+    "ENABLE_TELEMETRY": "true",
     "ADMIN_TELEGRAM_USER_IDS": "1139540899"
   }
 }

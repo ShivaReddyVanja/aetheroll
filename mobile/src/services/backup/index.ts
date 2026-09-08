@@ -6,3 +6,4 @@ export * from './speedAggregator';
 export * from './uploadDispatcher';
 export * from './backupManager';
 export * from './nativeBackgroundService';
+export * from './chunkedUploader';

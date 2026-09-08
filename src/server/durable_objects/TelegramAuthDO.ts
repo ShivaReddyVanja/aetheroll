@@ -208,7 +208,7 @@ export class TelegramAuthDO {
 
     // 2. Upload media HTTP endpoint with persistent warm MTProto connection
     if (url.pathname.includes("/upload") || url.pathname.includes("/api/media/upload")) {
-      return this.uploadHttpHandler.handleUpload(request, effectiveEnv, this.clientSessionManager);
+      return this.uploadHttpHandler.handleUpload(request, effectiveEnv, this.clientSessionManager, this.ratePacer, this.state?.storage);
     }
 
     // 3. Stream media chunks endpoint with persistent warm MTProto connection
@@ -387,17 +387,9 @@ export class TelegramAuthDO {
           let thumbBuffer: Buffer | null = null;
           const photoSizes = (msg.media as any)?.photo?.sizes || [];
           const docThumbs = (msg.media as any)?.document?.thumbs || [];
-          const stripped = [...photoSizes, ...docThumbs].find(
-            (s: any) => s instanceof Api.PhotoStrippedSize || s.className === "PhotoStrippedSize" || s.bytes
-          );
 
-          if (stripped && stripped.bytes) {
-            try {
-              thumbBuffer = Buffer.from(utils.strippedPhotoToJpg(stripped.bytes));
-            } catch {}
-          }
-
-          if (!thumbBuffer && docThumbs.length > 0) {
+          // 1. Try downloading real crisp thumbnail for documents/videos
+          if (docThumbs.length > 0) {
             for (let idx = Math.min(docThumbs.length - 1, 1); idx >= 0; idx--) {
               try {
                 const downloaded = await client.downloadMedia(msg.media, { thumb: idx });
@@ -409,13 +401,28 @@ export class TelegramAuthDO {
             }
           }
 
+          // 2. Try downloading real photo (or medium thumbnail) for photos
           if (!thumbBuffer && msg.photo) {
             try {
-              const downloaded = await client.downloadMedia(msg.media);
+              const downloaded = await client.downloadMedia(msg.media, { thumb: 1 }).catch(() => null)
+                || await client.downloadMedia(msg.media).catch(() => null);
               if (downloaded && Buffer.isBuffer(downloaded) && downloaded.length > 0) {
                 thumbBuffer = downloaded;
               }
             } catch {}
+          }
+
+          // 3. Last-resort fallback ONLY: 30px stripped preview if network download fails
+          if (!thumbBuffer) {
+            const stripped = [...photoSizes, ...docThumbs].find(
+              (s: any) => s instanceof Api.PhotoStrippedSize || s.className === "PhotoStrippedSize" || s.bytes
+            );
+
+            if (stripped && stripped.bytes) {
+              try {
+                thumbBuffer = Buffer.from(utils.strippedPhotoToJpg(stripped.bytes));
+              } catch {}
+            }
           }
 
           if (thumbBuffer && Buffer.isBuffer(thumbBuffer) && thumbBuffer.length > 0) {

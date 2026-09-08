@@ -156,6 +156,6 @@ export function getMediaStreamUrl(mediaId: string): string {
 }
 
 export function getMediaThumbnailUrl(mediaId: string): string {
-  const base = `${apiBaseUrl}/api/stream?media_id=${mediaId}&thumbnail=true`;
-  return sessionToken ? `${base}&session_token=${encodeURIComponent(sessionToken)}` : base;
+  const base = `${apiBaseUrl}/api/media/${encodeURIComponent(mediaId)}/thumbnail`;
+  return sessionToken ? `${base}?session_token=${encodeURIComponent(sessionToken)}` : base;
 }

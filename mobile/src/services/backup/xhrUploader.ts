@@ -1,6 +1,7 @@
 import { getApiBaseUrl, getSessionToken } from '../api';
 import { BackupItem } from './types';
 import { RatePacer } from './ratePacer';
+import { NativeBackgroundService } from './nativeBackgroundService';
 
 export class FloodWaitError extends Error {
   seconds: number;
@@ -45,10 +46,24 @@ export class XhrUploader {
       throw new Error('Upload cancelled');
     }
 
+    let videoMeta: { duration: number; width: number; height: number; thumbnailBase64: string } | null = null;
+    const isVideo = item.mimeType.includes('video') || (item.fileName && item.fileName.toLowerCase().endsWith('.mp4'));
+    if (isVideo) {
+      try {
+        videoMeta = await NativeBackgroundService.extractVideoMetadata(item.uri);
+      } catch {}
+    }
+
     return new Promise<UploadResult>((resolve, reject) => {
       const baseUrl = getApiBaseUrl();
       const token = getSessionToken();
       const url = `${baseUrl}/api/media/upload`;
+
+      console.log(`[XhrUploader] 🚀 Starting upload for "${item.fileName}" (${(item.fileSize / 1024 / 1024).toFixed(2)} MB)`);
+      console.log(`[XhrUploader] 📍 Target URL: ${url}`);
+      console.log(`[XhrUploader] 🔑 Auth Token Present: ${Boolean(token)} (length: ${token?.length || 0})`);
+      console.log(`[XhrUploader] 📁 File URI: ${item.uri}`);
+      console.log(`[XhrUploader] 🏷️ Channel ID: ${item.channelId} | MIME: ${item.mimeType}`);
 
       const xhr = new XMLHttpRequest();
       let isSettled = false;
@@ -68,6 +83,7 @@ export class XhrUploader {
       };
 
       const onAbort = () => {
+        console.warn(`[XhrUploader] 🛑 Upload aborted for "${item.fileName}"`);
         try {
           xhr.abort();
         } catch {}
@@ -79,6 +95,7 @@ export class XhrUploader {
       }
 
       // Setup Real Streaming Upload Progress
+      let lastLoggedPercent = -1;
       if (xhr.upload && onProgress) {
         xhr.upload.onprogress = (event: ProgressEvent) => {
           if (event.lengthComputable && event.total > 0) {
@@ -86,6 +103,10 @@ export class XhrUploader {
             const rawLoaded = Math.min(event.loaded, rawTotal);
             // Cap at 99% during client transmission; reaches 100% when server confirms
             const percent = Math.min(99, Math.max(1, Math.round((rawLoaded / rawTotal) * 100)));
+            if (percent !== lastLoggedPercent && (percent % 10 === 0 || percent === 99 || lastLoggedPercent === -1)) {
+              console.log(`[XhrUploader] ⏳ Progress for "${item.fileName}": ${percent}% (${(rawLoaded / 1024 / 1024).toFixed(2)}MB / ${(rawTotal / 1024 / 1024).toFixed(2)}MB)`);
+              lastLoggedPercent = percent;
+            }
             onProgress(rawLoaded, rawTotal, percent);
           } else {
             const rawTotal = item.fileSize || 1;
@@ -103,6 +124,7 @@ export class XhrUploader {
 
         const status = xhr.status;
         const responseText = xhr.responseText || '';
+        console.log(`[XhrUploader] 📥 Response received for "${item.fileName}": HTTP ${status} | Body preview: ${responseText.slice(0, 200)}`);
 
         if (status === 429) {
           let waitSeconds = 15;
@@ -110,6 +132,7 @@ export class XhrUploader {
           if (match && match[1]) {
             waitSeconds = parseInt(match[1], 10);
           }
+          console.warn(`[XhrUploader] ⚠️ Rate limit 429 hit for "${item.fileName}". Wait ${waitSeconds}s`);
           RatePacer.applyFloodWaitPenalty(waitSeconds);
           return safeReject(new FloodWaitError(waitSeconds));
         }
@@ -120,6 +143,8 @@ export class XhrUploader {
             const mediaItem = data.media_item || data.item || data;
             const telegramMessageId = mediaItem?.telegram_message_id || data.telegramMessageId;
             const mediaId = mediaItem?.id || data.mediaId;
+
+            console.log(`[XhrUploader] ✅ Upload completed for "${item.fileName}": mediaId=${mediaId}, tgMsgId=${telegramMessageId}`);
 
             // Notify 100% progress upon successful server completion
             if (onProgress) {
@@ -133,6 +158,7 @@ export class XhrUploader {
               mediaId,
             });
           } catch (e) {
+            console.log(`[XhrUploader] ✅ Upload completed for "${item.fileName}" (raw parse)`);
             return safeResolve({ success: true, mediaItem: { fileName: item.fileName } });
           }
         }
@@ -143,13 +169,15 @@ export class XhrUploader {
           if (errJson?.error) errMsg = errJson.error;
         } catch {}
 
+        console.error(`[XhrUploader] ❌ Server returned error for "${item.fileName}": HTTP ${status} - ${errMsg}`);
         safeReject(new Error(errMsg));
       };
 
-      xhr.onerror = () => {
+      xhr.onerror = (e) => {
         if (signal) {
           signal.removeEventListener('abort', onAbort);
         }
+        console.error(`[XhrUploader] ❌ Network error during upload of "${item.fileName}":`, e);
         safeReject(new Error('Network error during upload'));
       };
 
@@ -157,6 +185,7 @@ export class XhrUploader {
         if (signal) {
           signal.removeEventListener('abort', onAbort);
         }
+        console.error(`[XhrUploader] ⏰ Request timed out for "${item.fileName}" after ${xhr.timeout}ms`);
         safeReject(new Error('Upload request timed out on server'));
       };
 
@@ -182,8 +211,22 @@ export class XhrUploader {
         formData.append('channel_id', item.channelId);
         formData.append('captured_at', new Date(item.createdAt || Date.now()).toISOString());
 
+        const width = videoMeta?.width || item.width || 1920;
+        const height = videoMeta?.height || item.height || 1080;
+        const duration = videoMeta?.duration || item.duration || 0;
+        const thumb = videoMeta?.thumbnailBase64 || item.thumbnailBase64 || '';
+
+        formData.append('width', String(width));
+        formData.append('height', String(height));
+        formData.append('duration', String(duration));
+        if (thumb) {
+          formData.append('thumbnail_base64', thumb);
+        }
+
+        console.log(`[XhrUploader] 📤 Sending FormData to ${url}...`);
         xhr.send(formData);
       } catch (err: any) {
+        console.error(`[XhrUploader] 💥 Exception during xhr.send for "${item.fileName}":`, err);
         safeReject(err);
       }
     });

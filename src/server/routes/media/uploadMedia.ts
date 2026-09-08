@@ -47,6 +47,10 @@ uploadMediaRoute.post("/upload/complete", async (c) => {
   return forwardToUploadDO(c);
 });
 
+uploadMediaRoute.post("/upload/abort", async (c) => {
+  return forwardToUploadDO(c);
+});
+
 /**
  * POST /upload
  * Directly uploads photo/video file to Telegram channel via MTProto
@@ -80,6 +84,22 @@ uploadMediaRoute.post("/upload", async (c) => {
     const longitudeStr = formData.get("longitude") as string;
     const latitude = latitudeStr ? parseFloat(latitudeStr) : null;
     const longitude = longitudeStr ? parseFloat(longitudeStr) : null;
+
+    const widthStr = formData.get("width") as string;
+    const heightStr = formData.get("height") as string;
+    const durationStr = formData.get("duration") as string;
+    const thumbnailBase64 = formData.get("thumbnail_base64") as string;
+
+    const width = widthStr ? parseInt(widthStr, 10) : 1920;
+    const height = heightStr ? parseInt(heightStr, 10) : 1080;
+    const duration = durationStr ? parseFloat(durationStr) : 0;
+
+    let thumbBuf: Buffer | undefined = undefined;
+    if (thumbnailBase64) {
+      try {
+        thumbBuf = Buffer.from(thumbnailBase64.replace(/^data:image\/\w+;base64,/, ""), "base64");
+      } catch {}
+    }
 
     if (!file || !channelId) {
       return c.json({ error: "File and channel_id are required" }, 400);
@@ -141,6 +161,7 @@ uploadMediaRoute.post("/upload", async (c) => {
 
     const sentMsg = await client.sendFile(targetPeer, {
       file: inputFile,
+      thumb: thumbBuf,
       caption: signature,
       forceDocument: true,
       attributes: [
@@ -150,16 +171,16 @@ uploadMediaRoute.post("/upload", async (c) => {
         ...(isVideo
           ? [
               new Api.DocumentAttributeVideo({
-                duration: 0,
-                w: 1920,
-                h: 1080,
+                duration: Math.round(duration),
+                w: width,
+                h: height,
                 supportsStreaming: true,
               }),
             ]
           : [
               new Api.DocumentAttributeImageSize({
-                w: 1920,
-                h: 1080,
+                w: width,
+                h: height,
               }),
             ]),
       ],
@@ -168,6 +189,18 @@ uploadMediaRoute.post("/upload", async (c) => {
     const realMessageId = sentMsg.id;
     const mediaId = crypto.randomUUID();
     let thumbnailR2Key: string | null = null;
+
+    if (thumbBuf) {
+      try {
+        const r2 = getR2Storage((c.env as any)?.R2_BUCKET);
+        if (r2) {
+          thumbnailR2Key = `thumbnails/${channelId}/${mediaId}.jpg`;
+          await r2.put(thumbnailR2Key, thumbBuf, "image/jpeg");
+        }
+      } catch (r2Err) {
+        console.warn("[UploadMedia] R2 thumbnail put error:", r2Err);
+      }
+    }
 
     await db.run(
       `INSERT INTO media_items (
@@ -181,7 +214,7 @@ uploadMediaRoute.post("/upload", async (c) => {
          longitude = COALESCE(excluded.longitude, media_items.longitude)`,
       [
         mediaId, channelId, session.id, realMessageId, isVideo ? "video" : "photo",
-        file.type || (isVideo ? "video/mp4" : "image/jpeg"), file.size, 1920, 1080, null,
+        file.type || (isVideo ? "video/mp4" : "image/jpeg"), file.size, width, height, duration > 0 ? Math.round(duration) : null,
         blurHash, thumbnailR2Key, capturedAt, latitude, longitude
       ]
     );

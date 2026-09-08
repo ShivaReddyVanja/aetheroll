@@ -113,6 +113,53 @@ export class NativeBackgroundService {
       return false;
     }
   }
+
+  static async createTempChunkFile(uriString: string, offset: number, length: number): Promise<string> {
+    if (!BackupServiceModule || typeof BackupServiceModule.createTempChunkFile !== 'function') {
+      throw new Error('Native chunking module not available');
+    }
+    return await BackupServiceModule.createTempChunkFile(uriString, offset, length);
+  }
+
+  static async deleteTempFile(filePath: string): Promise<boolean> {
+    if (!BackupServiceModule || typeof BackupServiceModule.deleteTempFile !== 'function') {
+      return false;
+    }
+    try {
+      return await BackupServiceModule.deleteTempFile(filePath);
+    } catch {
+      return false;
+    }
+  }
+
+  static async readUriChunkBase64(uriString: string, offset: number, length: number): Promise<string> {
+    if (!BackupServiceModule || typeof BackupServiceModule.readUriChunkBase64 !== 'function') {
+      throw new Error('Native chunking module not available');
+    }
+    return await BackupServiceModule.readUriChunkBase64(uriString, offset, length);
+  }
+
+  static async extractVideoMetadata(
+    uriString: string
+  ): Promise<{ duration: number; width: number; height: number; thumbnailBase64: string }> {
+    if (!BackupServiceModule || typeof BackupServiceModule.extractVideoMetadata !== 'function') {
+      return { duration: 0, width: 1920, height: 1080, thumbnailBase64: '' };
+    }
+    try {
+      return await BackupServiceModule.extractVideoMetadata(uriString);
+    } catch {
+      return { duration: 0, width: 1920, height: 1080, thumbnailBase64: '' };
+    }
+  }
+
+  static async openVideoPlayer(videoUrl: string, title?: string): Promise<boolean> {
+    if (!BackupServiceModule || typeof BackupServiceModule.openVideoPlayer !== 'function') {
+      return false;
+    }
+    try {
+      return await BackupServiceModule.openVideoPlayer(videoUrl, title || null);
+    } catch {
+      return false;
+    }
+  }
 }
-
-

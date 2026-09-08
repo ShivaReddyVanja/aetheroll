@@ -33,8 +33,9 @@ interface WorkerProgressSample {
 export class RollingSpeedAggregator {
   private workers = new Map<string, WorkerProgressSample>();
   private windowMs: number;
+  private smoothedSpeed = 0;
 
-  constructor(windowMs = 2000) {
+  constructor(windowMs = 6000) {
     this.windowMs = windowMs;
   }
 
@@ -53,21 +54,25 @@ export class RollingSpeedAggregator {
       worker.history.push({ timestamp: now, uploadedBytes: currentUploadedBytes });
     }
 
-    // Trim samples older than windowMs
-    const cutoff = now - this.windowMs;
+    // Keep samples within windowMs + 1000ms buffer so we always have a baseline
+    const cutoff = now - (this.windowMs + 1000);
     worker.history = worker.history.filter((h) => h.timestamp >= cutoff);
   }
 
   removeWorker(workerId: string): void {
     this.workers.delete(workerId);
+    if (this.workers.size === 0) {
+      this.smoothedSpeed = 0;
+    }
   }
 
   reset(): void {
     this.workers.clear();
+    this.smoothedSpeed = 0;
   }
 
   getCurrentSpeedBytesPerSec(now = Date.now()): number {
-    let totalSpeed = 0;
+    let instantSpeed = 0;
     const cutoff = now - this.windowMs;
 
     for (const [, worker] of this.workers.entries()) {
@@ -78,18 +83,32 @@ export class RollingSpeedAggregator {
         const timeDelta = newest.timestamp - oldest.timestamp;
         const bytesDelta = newest.uploadedBytes - oldest.uploadedBytes;
         if (timeDelta > 0 && bytesDelta >= 0) {
-          totalSpeed += (bytesDelta / timeDelta) * 1000;
+          instantSpeed += (bytesDelta / timeDelta) * 1000;
         }
-      } else if (validHistory.length === 1 && now - validHistory[0].timestamp < 1000) {
-        const oldest = validHistory[0];
-        const timeDelta = Math.max(now - oldest.timestamp, 100);
-        const bytesDelta = oldest.uploadedBytes;
-        if (bytesDelta > 0 && timeDelta > 0) {
-          totalSpeed += (bytesDelta / timeDelta) * 1000;
+      } else if (worker.history.length >= 2) {
+        // Fallback to latest available samples if within 8s
+        const oldest = worker.history[0];
+        const newest = worker.history[worker.history.length - 1];
+        const timeDelta = newest.timestamp - oldest.timestamp;
+        const bytesDelta = newest.uploadedBytes - oldest.uploadedBytes;
+        if (timeDelta > 0 && bytesDelta >= 0 && now - newest.timestamp < 8000) {
+          instantSpeed += (bytesDelta / timeDelta) * 1000;
         }
       }
     }
 
-    return Math.max(0, totalSpeed);
+    if (instantSpeed > 0) {
+      this.smoothedSpeed = this.smoothedSpeed > 0
+        ? this.smoothedSpeed * 0.7 + instantSpeed * 0.3
+        : instantSpeed;
+    } else if (this.workers.size > 0 && this.smoothedSpeed > 0) {
+      // Active worker with momentary ACK delay: smooth decay rather than dropping to 0
+      this.smoothedSpeed = this.smoothedSpeed * 0.85;
+      if (this.smoothedSpeed < 1024) this.smoothedSpeed = 0;
+    } else {
+      this.smoothedSpeed = 0;
+    }
+
+    return Math.max(0, Math.round(this.smoothedSpeed));
   }
 }

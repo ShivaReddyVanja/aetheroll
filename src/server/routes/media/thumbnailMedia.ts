@@ -243,24 +243,11 @@ thumbnailMediaRoute.get("/:id/thumbnail", async (c) => {
 
           if (msg && msg.media) {
             let thumbBuffer: Buffer | null = null;
-
-            // 3a. Extract instant stripped thumbnail
             const photoSizes = (msg.media as any)?.photo?.sizes || [];
             const docThumbs = (msg.media as any)?.document?.thumbs || [];
-            const stripped = [...photoSizes, ...docThumbs].find(
-              (s: any) => s instanceof Api.PhotoStrippedSize || s.className === "PhotoStrippedSize" || s.bytes
-            );
 
-            if (stripped && stripped.bytes) {
-              try {
-                thumbBuffer = Buffer.from(utils.strippedPhotoToJpg(stripped.bytes));
-              } catch (stripErr) {
-                console.warn("[Thumbnail] Stripped JPEG conversion fallback:", stripErr);
-              }
-            }
-
-            // 3b. Try multi-size thumbs (thumb 1, then thumb 0)
-            if (!thumbBuffer && docThumbs.length > 0) {
+            // 3a. Try multi-size thumbs (thumb 1, then thumb 0) for documents/videos
+            if (docThumbs.length > 0) {
               for (let idx = Math.min(docThumbs.length - 1, 1); idx >= 0; idx--) {
                 try {
                   const downloaded = await client.downloadMedia(msg.media, { thumb: idx });
@@ -272,14 +259,30 @@ thumbnailMediaRoute.get("/:id/thumbnail", async (c) => {
               }
             }
 
-            // 3c. For photos: download photo directly
+            // 3b. For photos: download real photo/thumb directly
             if (!thumbBuffer && (msg.photo || item.file_type === "photo")) {
               try {
-                const downloaded = await client.downloadMedia(msg.media);
+                const downloaded = await client.downloadMedia(msg.media, { thumb: 1 }).catch(() => null)
+                  || await client.downloadMedia(msg.media).catch(() => null);
                 if (downloaded && Buffer.isBuffer(downloaded) && downloaded.length > 0) {
                   thumbBuffer = downloaded;
                 }
               } catch {}
+            }
+
+            // 3c. Last-resort fallback ONLY: 30px stripped preview if network download fails
+            if (!thumbBuffer) {
+              const stripped = [...photoSizes, ...docThumbs].find(
+                (s: any) => s instanceof Api.PhotoStrippedSize || s.className === "PhotoStrippedSize" || s.bytes
+              );
+
+              if (stripped && stripped.bytes) {
+                try {
+                  thumbBuffer = Buffer.from(utils.strippedPhotoToJpg(stripped.bytes));
+                } catch (stripErr) {
+                  console.warn("[Thumbnail] Stripped JPEG conversion fallback:", stripErr);
+                }
+              }
             }
 
             // 3d. If real thumbBuffer found, save to R2 and return

@@ -9,7 +9,10 @@ const localLogEmitter = (globalThis as any).__LOCAL_LOG_EMITTER__ || new EventEm
 const localLogBacklog: any[] = (globalThis as any).__LOCAL_LOG_BACKLOG__ || [];
 (globalThis as any).__LOCAL_LOG_BACKLOG__ = localLogBacklog;
 
-export function isTelemetryEnabled(env?: any): boolean {
+export function isTelemetryEnabled(env?: any, req?: any): boolean {
+  const header = req?.header ? req.header("x-enable-telemetry") : req?.headers?.get ? req.headers.get("x-enable-telemetry") : null;
+  if (header === "true" || header === "1" || header === "enabled") return true;
+
   const flag =
     env?.ENABLE_TELEMETRY ??
     process.env?.ENABLE_TELEMETRY ??
@@ -122,7 +125,7 @@ logsRouter.get("/stream", async (c) => {
  * Check if telemetry is enabled on the server
  */
 logsRouter.get("/status", async (c) => {
-  const enabled = isTelemetryEnabled(c.env);
+  const enabled = isTelemetryEnabled(c.env, c.req);
   const origin = c.req.header("origin") || "*";
   return c.json(
     { enabled },
@@ -132,4 +135,31 @@ logsRouter.get("/status", async (c) => {
       "Access-Control-Allow-Credentials": "true",
     }
   );
+});
+
+/**
+ * POST /api/logs/log
+ * Ingest telemetry log from Edge Worker, DOs, or Mobile client
+ */
+logsRouter.post("/log", async (c) => {
+  const authDo = (c.env as any)?.AUTH_DO;
+  if (authDo && typeof authDo.idFromName === "function") {
+    const doId = authDo.idFromName("global_telemetry");
+    const stub = authDo.get(doId);
+
+    const body = await c.req.json().catch(() => ({}));
+    const forwardReq = new Request("https://telegram-gallery.cache/log", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-enable-telemetry": "true",
+      },
+      body: JSON.stringify(body),
+    });
+    return stub.fetch(forwardReq);
+  }
+
+  const body = await c.req.json().catch(() => ({}));
+  emitLocalLog(body.category || "MOBILE", body.level || "info", body.message || "", body.meta);
+  return c.json({ ok: true });
 });
