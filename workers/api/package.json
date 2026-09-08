@@ -1,0 +1,29 @@
+{
+  "name": "@aetheroll/api",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./src/app.ts",
+  "types": "./src/app.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test:unit": "tsx --test 'src/**/*.test.ts'",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aetheroll/types": "workspace:*",
+    "@hono/node-server": "^1.13.8",
+    "better-sqlite3": "^11.8.1",
+    "hono": "^4.7.2",
+    "qrcode": "^1.5.4",
+    "telegram": "^2.26.22"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.13.9",
+    "@types/qrcode": "^1.5.5",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2",
+    "wrangler": "^3.111.0"
+  }
+}

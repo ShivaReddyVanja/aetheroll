@@ -4,27 +4,35 @@ node_modules/
 /.pnp
 .pnp.js
 
+# Turborepo
+.turbo/
+**/.turbo/
+
 # Testing
 /coverage
+coverage/
 
 # Next.js
-/.next/
+.next/
+**/.next/
 /out/
 
 # Production
 /build
 build/
+dist/
+**/.tsbuildinfo
 
 # Mobile (React Native)
-mobile/node_modules/
-mobile/android/.gradle/
-mobile/android/build/
-mobile/android/app/build/
-mobile/android/.cxx/
-mobile/android/.kotlin/
-mobile/ios/Pods/
-mobile/ios/build/
-mobile/ios/DerivedData/
+apps/mobile/node_modules/
+apps/mobile/android/.gradle/
+apps/mobile/android/build/
+apps/mobile/android/app/build/
+apps/mobile/android/.cxx/
+apps/mobile/android/.kotlin/
+apps/mobile/ios/Pods/
+apps/mobile/ios/build/
+apps/mobile/ios/DerivedData/
 **/.xcode.env.local
 local.properties
 *.keystore
@@ -40,6 +48,7 @@ local.properties
 # Local Database & Cache
 .data/
 .wrangler/
+**/.wrangler/
 
 # Environment Variables
 .env
