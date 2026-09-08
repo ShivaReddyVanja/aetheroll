@@ -421,7 +421,8 @@ export class UploadHttpHandler {
       }
 
       if (uploadSession.fatalError) {
-        return new Response(JSON.stringify({ error: uploadSession.fatalError.message || "Upload failed" }), {
+        const errMsg = (uploadSession.fatalError as Error)?.message || "Upload failed";
+        return new Response(JSON.stringify({ error: errMsg }), {
           status: 500,
           headers: { "Content-Type": "application/json" },
         });
