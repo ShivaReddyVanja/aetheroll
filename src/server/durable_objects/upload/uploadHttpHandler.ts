@@ -1,6 +1,6 @@
 import crypto from "crypto";
 import { Api, helpers } from "telegram";
-import { CustomFile } from "telegram/client/uploads.js";
+import { CustomFile, uploadFile } from "telegram/client/uploads.js";
 import { getDb } from "../../lib/db.ts";
 import { getR2Storage } from "../../lib/r2.ts";
 import { generateAetherollSignature } from "../../lib/crypto.ts";
@@ -498,14 +498,20 @@ export class UploadHttpHandler {
         envObj?.SESSION_ENCRYPTION_KEY
       );
 
+      console.log(`[UploadOneShot] Uploading MTProto parts for file (${file.size} bytes)...`);
+      const inputFile = await uploadFile(client, {
+        file: customFile,
+        workers: 4,
+        maxBufferSize: 2 * 1024 * 1024 * 1024,
+      });
+
       console.log(`[UploadOneShot] Streaming file to Telegram targetPeer (${targetPeer})...`);
       let sentMsg: any;
       try {
         sentMsg = await client.sendFile(targetPeer, {
-          file: customFile,
+          file: inputFile,
           thumb: thumbBuf,
           caption: signature,
-          workers: 1,
           forceDocument: true,
           attributes: [
             new Api.DocumentAttributeFilename({

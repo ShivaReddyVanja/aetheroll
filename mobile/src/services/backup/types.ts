@@ -7,12 +7,17 @@ export interface BackupItem {
   fileSize: number;
   mimeType: string;
   status: BackupStatus;
-  progress: number;
+  progress: number; // 0 to 100
+  uploadedBytes?: number;
+  speedFormatted?: string;
   error?: string;
   channelId: string;
   createdAt: number;
   completedAt?: number;
   telegramMessageId?: number;
+  mediaId?: string;
+  attempts?: number;
+  lastAttemptAt?: number;
 }
 
 export interface BackupStats {
@@ -23,11 +28,16 @@ export interface BackupStats {
   inProgress: number;
   bytesUploaded: number;
   totalBytes: number;
+  speedFormatted: string;
+  speedBytesPerSec: number;
+  etaFormatted: string;
+  activeWorkers: number;
 }
 
 export interface BackupListenerPayload {
   queue: BackupItem[];
   stats: BackupStats;
   isSyncing: boolean;
+  activeItems: BackupItem[];
   currentItem?: BackupItem;
 }
