@@ -1,5 +1,6 @@
 # Dependencies
 node_modules/
+.pnpm-store/
 /.pnp
 .pnp.js
 
@@ -12,6 +13,25 @@ node_modules/
 
 # Production
 /build
+build/
+
+# Mobile (React Native)
+mobile/node_modules/
+mobile/android/.gradle/
+mobile/android/build/
+mobile/android/app/build/
+mobile/android/.cxx/
+mobile/android/.kotlin/
+mobile/ios/Pods/
+mobile/ios/build/
+mobile/ios/DerivedData/
+**/.xcode.env.local
+local.properties
+*.keystore
+!debug.keystore
+*.jsbundle
+.bundle/
+/vendor/bundle/
 
 # Misc
 .DS_Store
