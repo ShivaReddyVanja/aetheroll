@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   Platform,
   PermissionsAndroid,
+  Animated,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { launchImageLibrary, Asset } from 'react-native-image-picker';
@@ -61,6 +62,42 @@ export function BulkUploadScreen() {
   const [isPicking, setIsPicking] = useState(false);
   const [isBatteryOptimized, setIsBatteryOptimized] = useState(false);
   const [dismissBatteryBanner, setDismissBatteryBanner] = useState(false);
+
+  // Modern non-blocking animated toast
+  const [toast, setToast] = useState<{ message: string; type?: 'success' | 'info' | 'error' } | null>(null);
+  const toastOpacity = useRef(new Animated.Value(0)).current;
+  const toastTranslateY = useRef(new Animated.Value(24)).current;
+  const toastTimeoutRef = useRef<any>(null);
+
+  const showToast = useCallback((message: string, type: 'success' | 'info' | 'error' = 'success') => {
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    setToast({ message, type });
+
+    toastOpacity.setValue(0);
+    toastTranslateY.setValue(24);
+
+    Animated.parallel([
+      Animated.timing(toastOpacity, {
+        toValue: 1,
+        duration: 220,
+        useNativeDriver: true,
+      }),
+      Animated.spring(toastTranslateY, {
+        toValue: 0,
+        friction: 8,
+        tension: 60,
+        useNativeDriver: true,
+      }),
+    ]).start();
+
+    toastTimeoutRef.current = setTimeout(() => {
+      Animated.timing(toastOpacity, {
+        toValue: 0,
+        duration: 220,
+        useNativeDriver: true,
+      }).start(() => setToast(null));
+    }, 2600);
+  }, [toastOpacity, toastTranslateY]);
 
   // Load active channel
   useEffect(() => {
@@ -148,16 +185,13 @@ export function BulkUploadScreen() {
   // Launch device photo & video library picker
   const handlePickMedia = async () => {
     if (!activeChannel?.id) {
-      Alert.alert('No Channel Selected', 'Please select a Telegram channel in the Photos tab first.');
+      showToast('Please select a Telegram channel first', 'info');
       return;
     }
 
     const hasPermission = await requestMediaPermissions();
     if (!hasPermission) {
-      Alert.alert(
-        'Permission Required',
-        'Storage/Media permission is required to select photos and videos for backup.'
-      );
+      showToast('Storage permission required to select media', 'error');
       return;
     }
 
@@ -166,13 +200,13 @@ export function BulkUploadScreen() {
       const result = await launchImageLibrary({
         mediaType: 'mixed',
         selectionLimit: 0, // 0 allows multi-selection
-        includeExtra: false,
+        includeExtra: true,
       });
 
       if (result.didCancel) return;
 
       if (result.errorCode) {
-        Alert.alert('Picker Error', result.errorMessage || 'Failed to open media library');
+        showToast(result.errorMessage || 'Failed to open media library', 'error');
         return;
       }
 
@@ -184,25 +218,22 @@ export function BulkUploadScreen() {
             fileName: a.fileName || `media_${Date.now()}.${a.type?.includes('video') ? 'mp4' : 'jpg'}`,
             fileSize: a.fileSize || 0,
             type: a.type || 'image/jpeg',
+            width: a.width,
+            height: a.height,
+            duration: a.duration,
           })),
           activeChannel.id
         );
 
         const addedCount = validAssets.length - skipped;
         if (skipped > 0) {
-          Alert.alert(
-            'Media Enqueued',
-            `Added ${addedCount} new items. Skipped ${skipped} items already backed up previously.`
-          );
+          showToast(`Added ${addedCount} new ${addedCount === 1 ? 'item' : 'items'} (${skipped} skipped)`, 'info');
         } else {
-          Alert.alert(
-            'Media Added',
-            `Added ${validAssets.length} ${validAssets.length === 1 ? 'item' : 'items'} to the resilient backup queue.`
-          );
+          showToast(`Added ${validAssets.length} ${validAssets.length === 1 ? 'item' : 'items'} to backup queue`, 'success');
         }
       }
     } catch (err: any) {
-      Alert.alert('Error', err?.message || 'Could not select media');
+      showToast(err?.message || 'Could not select media', 'error');
     } finally {
       setIsPicking(false);
     }
@@ -210,7 +241,7 @@ export function BulkUploadScreen() {
 
   const handleToggleSync = async () => {
     if (queue.length === 0) {
-      Alert.alert('Queue Empty', 'Please pick photos or videos to start cloud backup.');
+      showToast('Select photos or videos to start cloud backup', 'info');
       return;
     }
 
@@ -531,6 +562,28 @@ export function BulkUploadScreen() {
           }
           showsVerticalScrollIndicator={false}
         />
+      )}
+
+      {/* Modern Non-Blocking Toast Pill */}
+      {toast && (
+        <Animated.View
+          style={[
+            styles.toastContainer,
+            {
+              bottom: insets.bottom + 16,
+              opacity: toastOpacity,
+              transform: [{ translateY: toastTranslateY }],
+            },
+          ]}
+          pointerEvents="none"
+        >
+          <View style={styles.toastPill}>
+            {toast.type === 'success' && <CheckCircle2 size={18} color="#34D399" />}
+            {toast.type === 'info' && <AlertCircle size={18} color="#60A5FA" />}
+            {toast.type === 'error' && <AlertCircle size={18} color="#F87171" />}
+            <Text style={styles.toastText}>{toast.message}</Text>
+          </View>
+        </Animated.View>
       )}
     </SafeAreaView>
   );
@@ -926,5 +979,32 @@ const styles = StyleSheet.create({
     color: '#64748B',
     textAlign: 'center',
     lineHeight: 19,
+  },
+  toastContainer: {
+    position: 'absolute',
+    left: 20,
+    right: 20,
+    alignItems: 'center',
+    zIndex: 999,
+  },
+  toastPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0F172A',
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    borderRadius: 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 10,
+    elevation: 10,
+    gap: 10,
+    maxWidth: '92%',
+  },
+  toastText: {
+    color: '#F8FAFC',
+    fontSize: 13,
+    fontWeight: '600',
   },
 });

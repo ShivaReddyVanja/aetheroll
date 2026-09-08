@@ -27,6 +27,13 @@ export interface UploadSessionState {
   isVideo: boolean;
   mimeType: string;
   expiresAt: number;
+  inboundQueue: Map<number, Buffer>;
+  dispatchedParts: Set<number>;
+  workerWaiters: Set<() => void>;
+  backpressureWaiters: Set<() => void>;
+  fatalError: Error | null;
+  abortController: AbortController;
+  workersRunning: boolean;
 }
 
 export interface MediaLocationCacheEntry {

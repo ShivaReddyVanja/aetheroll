@@ -7,7 +7,7 @@ import {
   StyleSheet,
   Dimensions,
 } from 'react-native';
-import { getMediaThumbnailUrl } from '../services/api';
+import { getMediaThumbnailUrl, getMediaStreamUrl } from '../services/api';
 
 const { width } = Dimensions.get('window');
 // Guarantee exactly 3 columns with 2px gap (2 gaps * 2px = 4px)
@@ -64,7 +64,7 @@ function MediaCardComponent({
     >
       {!hasError ? (
         <Image
-          source={{ uri: getMediaThumbnailUrl(item.id) }}
+          source={{ uri: item.fileType === 'video' ? getMediaThumbnailUrl(item.id) : getMediaStreamUrl(item.id) }}
           style={styles.image}
           resizeMode="cover"
           onError={() => setHasError(true)}

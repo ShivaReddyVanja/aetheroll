@@ -100,14 +100,22 @@ export class DynamicUploadDispatcher {
   }
 
   public schedule(): void {
-    if (!this.isRunning || this.isPaused) return;
+    if (!this.isRunning || this.isPaused) {
+      console.log(`[UploadDispatcher] ⏸️ schedule() skipped: isRunning=${this.isRunning}, isPaused=${this.isPaused}`);
+      return;
+    }
 
     const allItems = this.itemsProvider();
     const pendingItems = allItems.filter(
       (item) => (item.status === 'pending' || item.status === 'paused') && !this.activeWorkers.has(item.id)
     );
 
+    console.log(
+      `[UploadDispatcher] 📋 schedule(): total=${allItems.length} | pending=${pendingItems.length} | activeWorkers=${this.activeWorkers.size}`
+    );
+
     if (pendingItems.length === 0 && this.activeWorkers.size === 0) {
+      console.log(`[UploadDispatcher] 🏁 Queue drained! All items processed.`);
       this.isRunning = false;
       if (this.speedTimer) {
         clearInterval(this.speedTimer);
@@ -126,6 +134,9 @@ export class DynamicUploadDispatcher {
       if (isLarge) {
         // Exclusive worker lock: wait until all active workers drain before starting large file
         if (this.activeWorkers.size > 0) {
+          console.log(
+            `[UploadDispatcher] ⏳ Large item "${nextItem.fileName}" waiting for ${this.activeWorkers.size} active worker(s) to drain`
+          );
           return;
         }
         this.spawnWorker(nextItem);
@@ -133,6 +144,9 @@ export class DynamicUploadDispatcher {
       } else {
         const targetConcurrency = getMobileAdaptiveConcurrency(nextItem.fileSize);
         if (this.activeWorkers.size >= targetConcurrency) {
+          console.log(
+            `[UploadDispatcher] ⏳ Max concurrency reached (${this.activeWorkers.size}/${targetConcurrency})`
+          );
           return;
         }
         this.spawnWorker(nextItem);
@@ -147,6 +161,7 @@ export class DynamicUploadDispatcher {
     this.activeControllers.set(id, controller);
 
     const startTime = Date.now();
+    console.log(`[UploadDispatcher] 👷 Spawned worker for "${item.fileName}" (active: ${this.activeWorkers.size})`);
     this.callbacks.onTaskStart?.(item);
 
     try {
@@ -163,10 +178,12 @@ export class DynamicUploadDispatcher {
         if (controller.signal.aborted || this.isPaused) break;
 
         try {
+          console.log(`[UploadDispatcher] 🔄 Executing upload attempt ${attempt}/3 for "${item.fileName}"`);
           const result = await this.callbacks.executor(item, controller.signal, onProgressCallback);
 
           if (!controller.signal.aborted && !this.isPaused) {
             const durationMs = Date.now() - startTime;
+            console.log(`[UploadDispatcher] ✅ Worker succeeded for "${item.fileName}" in ${durationMs}ms`);
             // Await so QueueStorage disk write completes before finally frees the slot
             await this.callbacks.onTaskComplete?.(item, result, durationMs);
             lastErr = null;
@@ -174,13 +191,14 @@ export class DynamicUploadDispatcher {
           break;
         } catch (err: any) {
           lastErr = err;
+          console.warn(
+            `[UploadDispatcher] ⚠️ Attempt ${attempt}/3 for "${item.fileName}" failed: ${err?.message || err}`
+          );
           if (controller.signal.aborted || this.isPaused || err.name === 'FloodWaitError') {
             break;
           }
           if (attempt < 3) {
-            console.warn(
-              `[UploadDispatcher] Attempt ${attempt}/3 for ${item.fileName} failed (${err?.message || err}). Retrying in 1.5s...`
-            );
+            console.log(`[UploadDispatcher] ⏳ Retrying "${item.fileName}" in 1.5s...`);
             await new Promise<void>((resolve) => setTimeout(() => resolve(), 1500));
           }
         }

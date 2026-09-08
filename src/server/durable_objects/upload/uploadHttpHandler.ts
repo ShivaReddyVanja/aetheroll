@@ -5,9 +5,15 @@ import { getDb } from "../../lib/db.ts";
 import { getR2Storage } from "../../lib/r2.ts";
 import { generateAetherollSignature } from "../../lib/crypto.ts";
 import { emitGalleryEvent } from "../../lib/ledger.ts";
-import { MAX_TELEGRAM_FILE_SIZE } from "../common/ratePacer.ts";
+import { MAX_TELEGRAM_FILE_SIZE, SlidingWindowRatePacer } from "../common/ratePacer.ts";
 import type { UploadSessionState } from "../common/types.ts";
 import { ClientSessionManager } from "../auth/clientSessionManager.ts";
+
+const TG_PART_SIZE = 512 * 1024; // 512 KB Telegram MTProto part size
+const CLIENT_CHUNK_SIZE = 4 * 1024 * 1024; // 4 MB client chunk size for fast mobile ingestion
+const MAX_BUFFER_PARTS = 16; // 8 MB backpressure threshold (keeps DO RAM under 40MB, safe from 128MB limit)
+const RESUME_BUFFER_PARTS = 8; // 4 MB drain threshold to resume
+const UPLOAD_CONCURRENCY = 4; // 4 concurrent MTProto workers streaming to Telegram
 
 export class UploadHttpHandler {
   uploadSessions: Map<string, UploadSessionState>;
@@ -16,20 +22,159 @@ export class UploadHttpHandler {
     this.uploadSessions = new Map();
   }
 
+  private notifyWorkers(session: UploadSessionState) {
+    if (!session.workerWaiters) return;
+    const waiters = Array.from(session.workerWaiters);
+    session.workerWaiters.clear();
+    for (const resolve of waiters) resolve();
+  }
+
+  private notifyBackpressure(session: UploadSessionState) {
+    if (!session.backpressureWaiters) return;
+    if ((session.inboundQueue?.size || 0) <= RESUME_BUFFER_PARTS || session.fatalError) {
+      const waiters = Array.from(session.backpressureWaiters);
+      session.backpressureWaiters.clear();
+      for (const resolve of waiters) resolve();
+    }
+  }
+
+  private ensureWorkersStarted(
+    session: UploadSessionState,
+    client: any,
+    ratePacer?: SlidingWindowRatePacer
+  ) {
+    if (session.workersRunning) return;
+    session.workersRunning = true;
+
+    for (let w = 1; w <= UPLOAD_CONCURRENCY; w++) {
+      this.runUploadWorker(session, client, w, ratePacer).catch((err) => {
+        console.error(`[UploadWorker ${w} Error]:`, err);
+      });
+    }
+  }
+
+  private async runUploadWorker(
+    session: UploadSessionState,
+    client: any,
+    workerId: number,
+    ratePacer?: SlidingWindowRatePacer
+  ) {
+    const signal = session.abortController.signal;
+
+    while (!signal.aborted) {
+      if (session.uploadedParts.size === session.totalParts || session.fatalError) {
+        break;
+      }
+
+      // Find next queued part that hasn't been dispatched yet
+      let targetPartIndex: number | null = null;
+      for (const [partIdx] of session.inboundQueue.entries()) {
+        if (!session.uploadedParts.has(partIdx) && !session.dispatchedParts.has(partIdx)) {
+          targetPartIndex = partIdx;
+          break;
+        }
+      }
+
+      if (targetPartIndex === null) {
+        // No parts ready in queue; wait until notified or 200ms fallback
+        await new Promise<void>((resolve) => {
+          session.workerWaiters.add(resolve);
+          setTimeout(() => {
+            session.workerWaiters.delete(resolve);
+            resolve();
+          }, 200);
+        });
+        continue;
+      }
+
+      const partBuffer = session.inboundQueue.get(targetPartIndex);
+      if (!partBuffer) continue;
+
+      // Mark as dispatched and remove from inboundQueue
+      session.dispatchedParts.add(targetPartIndex);
+      session.inboundQueue.delete(targetPartIndex);
+
+      // Notify backpressure waiters since a part was freed from inboundQueue
+      this.notifyBackpressure(session);
+
+      const isLarge = session.isBig;
+      const partReq = isLarge
+        ? new Api.upload.SaveBigFilePart({
+            fileId: session.fileId,
+            filePart: targetPartIndex,
+            fileTotalParts: session.totalParts,
+            bytes: partBuffer,
+          })
+        : new Api.upload.SaveFilePart({
+            fileId: session.fileId,
+            filePart: targetPartIndex,
+            bytes: partBuffer,
+          });
+
+      let success = false;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        if (signal.aborted) break;
+
+        try {
+          if (ratePacer) {
+            await ratePacer.acquire();
+          }
+          if (signal.aborted) break;
+
+          await Promise.race([
+            client.invoke(partReq),
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error(`Telegram part #${targetPartIndex} timeout after 30s`)), 30000)
+            ),
+          ]);
+
+          success = true;
+          break;
+        } catch (partErr: any) {
+          console.warn(
+            `[UploadWorker ${workerId} | Part #${targetPartIndex}] Attempt ${attempt}/3 failed:`,
+            partErr?.message
+          );
+          if (attempt === 3) {
+            session.fatalError = partErr;
+            session.abortController.abort();
+            this.notifyWorkers(session);
+            this.notifyBackpressure(session);
+            return;
+          }
+          await new Promise((r) => setTimeout(r, 400));
+        }
+      }
+
+      if (success && !signal.aborted) {
+        session.uploadedParts.add(targetPartIndex);
+        session.dispatchedParts.delete(targetPartIndex);
+        this.notifyBackpressure(session);
+      } else if (!success) {
+        session.dispatchedParts.delete(targetPartIndex);
+      }
+    }
+  }
+
   async handleUpload(
     request: Request,
     envObj: any,
-    clientSessionManager: ClientSessionManager
+    clientSessionManager: ClientSessionManager,
+    ratePacer?: SlidingWindowRatePacer,
+    storage?: any
   ): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname.endsWith("/init")) {
-      return this.handleUploadInit(request, envObj, clientSessionManager);
+      return this.handleUploadInit(request, envObj, clientSessionManager, storage);
     }
     if (url.pathname.endsWith("/chunk")) {
-      return this.handleUploadChunk(request, envObj, clientSessionManager);
+      return this.handleUploadChunk(request, envObj, clientSessionManager, ratePacer, storage);
     }
     if (url.pathname.endsWith("/complete")) {
-      return this.handleUploadComplete(request, envObj, clientSessionManager);
+      return this.handleUploadComplete(request, envObj, clientSessionManager, storage);
+    }
+    if (url.pathname.endsWith("/abort")) {
+      return this.handleUploadAbort(request, envObj, clientSessionManager, storage);
     }
     return this.handleUploadOneShot(request, envObj, clientSessionManager);
   }
@@ -37,7 +182,8 @@ export class UploadHttpHandler {
   async handleUploadInit(
     request: Request,
     envObj: any,
-    clientSessionManager: ClientSessionManager
+    clientSessionManager: ClientSessionManager,
+    storage?: any
   ): Promise<Response> {
     try {
       const { client, userId, error } = await clientSessionManager.getOrConnectUserClient(request, envObj);
@@ -51,14 +197,18 @@ export class UploadHttpHandler {
       const body = await request.json();
       const { channel_id, file_name, file_size, total_chunks, mime_type } = body;
 
-      if (!channel_id || !file_name || !file_size || !total_chunks) {
+      const sizeNum = Number(file_size);
+      const totalParts = Math.ceil(sizeNum / TG_PART_SIZE);
+      const clientTotalChunks = total_chunks ? Number(total_chunks) : Math.ceil(sizeNum / CLIENT_CHUNK_SIZE);
+
+      if (!channel_id || !file_name || !sizeNum || !totalParts) {
         return new Response(
-          JSON.stringify({ error: "channel_id, file_name, file_size, and total_chunks required" }),
+          JSON.stringify({ error: "channel_id, file_name, and file_size required" }),
           { status: 400, headers: { "Content-Type": "application/json" } }
         );
       }
 
-      if (Number(file_size) > MAX_TELEGRAM_FILE_SIZE) {
+      if (sizeNum > MAX_TELEGRAM_FILE_SIZE) {
         return new Response(
           JSON.stringify({ error: "File exceeds Telegram's 2,000 MB (2 GB) upload limit" }),
           { status: 400, headers: { "Content-Type": "application/json" } }
@@ -81,29 +231,59 @@ export class UploadHttpHandler {
 
       const uploadId = crypto.randomUUID();
       const fileId = helpers.readBigIntFromBuffer(helpers.generateRandomBytes(8), true, true);
-      const isBig = file_size > 10 * 1024 * 1024;
+      const isBig = sizeNum > 10 * 1024 * 1024;
       const isVideo = mime_type ? mime_type.startsWith("video/") : false;
+      const abortController = new AbortController();
 
       this.uploadSessions.set(uploadId, {
         userId,
         fileId,
-        totalParts: total_chunks,
+        totalParts,
         uploadedParts: new Set(),
         fileName: file_name,
-        fileSize: file_size,
+        fileSize: sizeNum,
         channelId: channel_id,
         isBig,
         isVideo,
         mimeType: mime_type || (isVideo ? "video/mp4" : "image/jpeg"),
-        expiresAt: Date.now() + 60 * 60 * 1000,
+        expiresAt: Date.now() + 2 * 60 * 60 * 1000, // 2-hour session lifetime
+        inboundQueue: new Map(),
+        dispatchedParts: new Set(),
+        workerWaiters: new Set(),
+        backpressureWaiters: new Set(),
+        fatalError: null,
+        abortController,
+        workersRunning: false,
       });
+
+      if (storage) {
+        try {
+          await storage.put(`session_${uploadId}`, {
+            uploadId,
+            userId,
+            channelId: channel_id,
+            fileName: file_name,
+            fileSize: sizeNum,
+            fileIdStr: fileId.toString(),
+            totalParts,
+            isBig,
+            isVideo,
+            mimeType: mime_type || (isVideo ? "video/mp4" : "image/jpeg"),
+            createdAt: Date.now(),
+          });
+        } catch (sErr) {
+          console.warn("[UploadInit Storage Put Error]:", sErr);
+        }
+      }
 
       return new Response(
         JSON.stringify({
           success: true,
           upload_id: uploadId,
-          chunk_size: 1024 * 1024,
-          total_chunks,
+          chunk_size: CLIENT_CHUNK_SIZE, // 4 MB client ingestion chunk
+          total_chunks: clientTotalChunks,
+          part_size: TG_PART_SIZE, // 512 KB Telegram MTProto part size
+          total_parts: totalParts,
         }),
         { status: 200, headers: { "Content-Type": "application/json" } }
       );
@@ -119,7 +299,9 @@ export class UploadHttpHandler {
   async handleUploadChunk(
     request: Request,
     envObj: any,
-    clientSessionManager: ClientSessionManager
+    clientSessionManager: ClientSessionManager,
+    ratePacer?: SlidingWindowRatePacer,
+    storage?: any
   ): Promise<Response> {
     const startT0 = Date.now();
     try {
@@ -135,6 +317,7 @@ export class UploadHttpHandler {
       const uploadId = formData.get("upload_id") as string;
       const chunkIndex = parseInt(formData.get("chunk_index") as string, 10);
       const chunkBlob = formData.get("chunk") as Blob;
+      const offsetField = formData.get("offset") as string;
 
       if (!uploadId || isNaN(chunkIndex) || !chunkBlob) {
         return new Response(
@@ -143,10 +326,48 @@ export class UploadHttpHandler {
         );
       }
 
-      const uploadSession = this.uploadSessions.get(uploadId);
+      let uploadSession = this.uploadSessions.get(uploadId);
+      if (!uploadSession && storage) {
+        try {
+          const persisted = (await storage.get(`session_${uploadId}`)) as any;
+          if (persisted && persisted.userId === userId) {
+            uploadSession = {
+              userId: persisted.userId,
+              fileId: BigInt(persisted.fileIdStr),
+              totalParts: persisted.totalParts,
+              uploadedParts: new Set(),
+              fileName: persisted.fileName,
+              fileSize: persisted.fileSize,
+              channelId: persisted.channelId,
+              isBig: persisted.isBig,
+              isVideo: persisted.isVideo,
+              mimeType: persisted.mimeType,
+              expiresAt: Date.now() + 2 * 60 * 60 * 1000,
+              inboundQueue: new Map(),
+              dispatchedParts: new Set(),
+              workerWaiters: new Set(),
+              backpressureWaiters: new Set(),
+              fatalError: null,
+              abortController: new AbortController(),
+              workersRunning: false,
+            };
+            this.uploadSessions.set(uploadId, uploadSession);
+          }
+        } catch (sErr) {
+          console.warn("[UploadChunk Storage Restore Error]:", sErr);
+        }
+      }
+
       if (!uploadSession || uploadSession.userId !== userId) {
         return new Response(JSON.stringify({ error: "Upload session expired or invalid" }), {
           status: 404,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+
+      if (uploadSession.fatalError) {
+        return new Response(JSON.stringify({ error: uploadSession.fatalError.message || "Upload failed" }), {
+          status: 500,
           headers: { "Content-Type": "application/json" },
         });
       }
@@ -163,34 +384,54 @@ export class UploadHttpHandler {
         );
       }
 
-      const isBig = uploadSession.isBig;
-      const partReq = isBig
-        ? new Api.upload.SaveBigFilePart({
-            fileId: uploadSession.fileId,
-            filePart: chunkIndex,
-            fileTotalParts: uploadSession.totalParts,
-            bytes: chunkBuffer,
-          })
-        : new Api.upload.SaveFilePart({
-            fileId: uploadSession.fileId,
-            filePart: chunkIndex,
-            bytes: chunkBuffer,
-          });
+      // Determine byte offset of chunk: either provided by client or derived from chunk_index * CLIENT_CHUNK_SIZE
+      const chunkOffset = offsetField != null && !isNaN(parseInt(offsetField, 10))
+        ? parseInt(offsetField, 10)
+        : chunkIndex * CLIENT_CHUNK_SIZE;
 
-      const sender = await client.getSender(client.session.dcId);
-      await Promise.race([
-        sender.send(partReq),
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("Telegram MTProto upload part timed out after 30s")), 30000)
-        ),
-      ]);
+      // Slice chunk buffer into 512 KB Telegram-compliant parts and add to inboundQueue
+      const startPartIndex = Math.floor(chunkOffset / TG_PART_SIZE);
+      for (let offsetInChunk = 0; offsetInChunk < chunkBuffer.length; offsetInChunk += TG_PART_SIZE) {
+        const partIdx = startPartIndex + Math.floor(offsetInChunk / TG_PART_SIZE);
+        const partBytes = chunkBuffer.subarray(
+          offsetInChunk,
+          Math.min(offsetInChunk + TG_PART_SIZE, chunkBuffer.length)
+        );
+        if (!uploadSession.uploadedParts.has(partIdx)) {
+          uploadSession.inboundQueue.set(partIdx, Buffer.from(partBytes));
+        }
+      }
 
-      uploadSession.uploadedParts.add(chunkIndex);
+      // Ensure the 4 concurrent background MTProto upload workers are running
+      this.ensureWorkersStarted(uploadSession, client, ratePacer);
+
+      // Wake up workers to process the newly queued parts immediately
+      this.notifyWorkers(uploadSession);
+
+      // Backpressure Gate:
+      // If inboundQueue exceeds MAX_BUFFER_PARTS (48 parts = 24 MB), await until workers drain it to <= 12 MB
+      if (uploadSession.inboundQueue.size > MAX_BUFFER_PARTS && !uploadSession.abortController.signal.aborted) {
+        await new Promise<void>((resolve) => {
+          uploadSession.backpressureWaiters.add(resolve);
+          setTimeout(() => {
+            uploadSession.backpressureWaiters.delete(resolve);
+            resolve();
+          }, 30000);
+        });
+      }
+
+      if (uploadSession.fatalError) {
+        return new Response(JSON.stringify({ error: uploadSession.fatalError.message || "Upload failed" }), {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
 
       return new Response(
         JSON.stringify({
           success: true,
           chunk_index: chunkIndex,
+          queued_parts: uploadSession.inboundQueue.size,
           uploaded_count: uploadSession.uploadedParts.size,
           total_parts: uploadSession.totalParts,
         }),
@@ -211,7 +452,8 @@ export class UploadHttpHandler {
   async handleUploadComplete(
     request: Request,
     envObj: any,
-    clientSessionManager: ClientSessionManager
+    clientSessionManager: ClientSessionManager,
+    storage?: any
   ): Promise<Response> {
     try {
       const { client, userId, error } = await clientSessionManager.getOrConnectUserClient(request, envObj);
@@ -243,10 +485,34 @@ export class UploadHttpHandler {
         });
       }
 
+      // Await MTProto worker pool if there are in-flight parts or workers running
+      if (uploadSession.inboundQueue && (uploadSession.inboundQueue.size > 0 || (uploadSession.dispatchedParts?.size || 0) > 0)) {
+        const completeT0 = Date.now();
+        while (
+          uploadSession.uploadedParts.size < uploadSession.totalParts &&
+          !uploadSession.fatalError &&
+          !uploadSession.abortController?.signal?.aborted &&
+          (uploadSession.inboundQueue?.size > 0 || (uploadSession.dispatchedParts?.size || 0) > 0)
+        ) {
+          if (Date.now() - completeT0 > 120000) { // 2-minute safety timeout
+            break;
+          }
+          this.notifyWorkers(uploadSession);
+          await new Promise((r) => setTimeout(r, 200));
+        }
+      }
+
+      if (uploadSession.fatalError) {
+        return new Response(
+          JSON.stringify({ error: `Upload worker failed: ${uploadSession.fatalError.message}` }),
+          { status: 500, headers: { "Content-Type": "application/json" } }
+        );
+      }
+
       if (uploadSession.uploadedParts.size < uploadSession.totalParts) {
         return new Response(
           JSON.stringify({
-            error: `Incomplete upload: only ${uploadSession.uploadedParts.size}/${uploadSession.totalParts} chunks uploaded`,
+            error: `Incomplete upload: only ${uploadSession.uploadedParts.size}/${uploadSession.totalParts} parts uploaded`,
           }),
           { status: 400, headers: { "Content-Type": "application/json" } }
         );
@@ -335,7 +601,19 @@ export class UploadHttpHandler {
         ],
       });
 
-      const realMessageId = sentMsg.id;
+      let realMessageId = sentMsg.id;
+      if (sentMsg.updates) {
+        for (const u of sentMsg.updates) {
+          if (u.id) {
+            realMessageId = u.id;
+            break;
+          }
+          if (u.message && u.message.id) {
+            realMessageId = u.message.id;
+            break;
+          }
+        }
+      }
       const mediaId = crypto.randomUUID();
       let thumbnailR2Key: string | null = null;
 
@@ -393,8 +671,34 @@ export class UploadHttpHandler {
       // Remove session
       this.uploadSessions.delete(upload_id);
 
+      const mediaItem = {
+        id: mediaId,
+        channel_id: channel.id,
+        telegram_message_id: realMessageId,
+        file_type: isVideo ? "video" : "photo",
+        mime_type: uploadSession.mimeType,
+        file_size_bytes: uploadSession.fileSize,
+        width: Number(width) || 1920,
+        height: Number(height) || 1080,
+        duration_seconds: duration != null ? Number(duration) : isVideo ? 0 : null,
+        blur_hash: blur_hash || "LEHV6nWB2yk8pyo0adR*.7kCMdnj",
+        thumbnail_r2_key: thumbnailR2Key,
+        captured_at: captured_at || new Date().toISOString(),
+      };
+
+      this.uploadSessions.delete(upload_id);
+      if (storage) {
+        await storage.delete(`session_${upload_id}`).catch(() => {});
+      }
+
       return new Response(
-        JSON.stringify({ success: true, mediaId, telegramMessageId: realMessageId }),
+        JSON.stringify({
+          success: true,
+          mediaId,
+          telegramMessageId: realMessageId,
+          mediaItem,
+          item: mediaItem,
+        }),
         { status: 200, headers: { "Content-Type": "application/json" } }
       );
     } catch (err: any) {
@@ -403,6 +707,53 @@ export class UploadHttpHandler {
         JSON.stringify({ error: err.message || "Upload complete failed" }),
         { status: 500, headers: { "Content-Type": "application/json" } }
       );
+    }
+  }
+
+  /**
+   * POST /api/media/upload/abort
+   * Immediately removes a partial upload session from in-memory state.
+   * Called client-side when a chunked upload is cancelled or permanently failed,
+   * preventing stale DO memory entries from living out their 2-hour expiresAt window.
+   */
+  async handleUploadAbort(
+    request: Request,
+    envObj: any,
+    clientSessionManager: ClientSessionManager,
+    storage?: any
+  ): Promise<Response> {
+    try {
+      const { userId, error } = await clientSessionManager.getOrConnectUserClient(request, envObj);
+      if (!userId) {
+        return new Response(JSON.stringify({ error: error || "Unauthorized" }), {
+          status: 401,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      const body = await request.json().catch(() => ({}));
+      const { upload_id } = body;
+      if (upload_id) {
+        const session = this.uploadSessions.get(upload_id);
+        // Only delete if owned by this user — prevent cross-user session eviction
+        if (session && session.userId === userId) {
+          session.abortController.abort();
+          session.inboundQueue.clear();
+          session.workerWaiters.clear();
+          session.backpressureWaiters.clear();
+          this.uploadSessions.delete(upload_id);
+        }
+        await storage?.delete(`session_${upload_id}`);
+      }
+      return new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    } catch {
+      // Always 200 — this is a best-effort cleanup endpoint
+      return new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
     }
   }
 

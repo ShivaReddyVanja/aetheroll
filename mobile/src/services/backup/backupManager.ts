@@ -2,10 +2,23 @@ import { AppState, AppStateStatus } from 'react-native';
 import { BackupItem, BackupListenerPayload, BackupStats } from './types';
 import { QueueStorage } from './queueStorage';
 import { XhrUploader, FloodWaitError } from './xhrUploader';
+import { ChunkedUploader } from './chunkedUploader';
 import { DynamicUploadDispatcher } from './uploadDispatcher';
 import { formatUploadSpeed, formatUploadDuration } from './speedAggregator';
 import { RatePacer } from './ratePacer';
 import { NativeBackgroundService } from './nativeBackgroundService';
+
+function formatBytes(bytes: number): string {
+  if (!bytes || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let val = bytes;
+  let unitIndex = 0;
+  while (val >= 1024 && unitIndex < units.length - 1) {
+    val /= 1024;
+    unitIndex++;
+  }
+  return `${val.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+}
 
 type Listener = (payload: BackupListenerPayload) => void;
 
@@ -24,6 +37,13 @@ class BackupManagerClass {
       () => this.queue,
       {
         executor: async (item, signal, onProgress) => {
+          // Files > 15 MB (large videos, 4K clips) use Chunked pipeline (1 MB parts)
+          // Files <= 15 MB (photos, audio, short clips) use fast One-Shot XHR
+          if (item.fileSize > 15 * 1024 * 1024) {
+            return await ChunkedUploader.uploadItem(item, signal, (uploaded, total) => {
+              onProgress(uploaded, total);
+            });
+          }
           return await XhrUploader.uploadItem(item, signal, (uploaded, total) => {
             onProgress(uploaded, total);
           });
@@ -92,6 +112,9 @@ class BackupManagerClass {
       existing.progress = existing.progress > 0 ? existing.progress : 2;
       existing.lastAttemptAt = Date.now();
       existing.attempts = (existing.attempts || 0) + 1;
+      console.log(
+        `[BackupManager] ▶️ Task Started: "${item.fileName}" | size=${(item.fileSize / 1024 / 1024).toFixed(2)} MB | pipeline=${item.fileSize > 15 * 1024 * 1024 ? 'Chunked (512KB)' : 'One-Shot XHR'} | attempt=${existing.attempts}`
+      );
       this.notify();
     }
   }
@@ -116,6 +139,10 @@ class BackupManagerClass {
       existing.telegramMessageId = result?.telegramMessageId || result?.mediaItem?.telegram_message_id;
       existing.mediaId = result?.mediaId || result?.mediaItem?.id;
 
+      console.log(
+        `[BackupManager] 🎉 Task Complete: "${item.fileName}" in ${(durationMs / 1000).toFixed(1)}s | tgMsgId=${existing.telegramMessageId} | mediaId=${existing.mediaId}`
+      );
+
       await QueueStorage.updateItem(existing.id, {
         status: 'completed',
         progress: 100,
@@ -131,7 +158,7 @@ class BackupManagerClass {
   }
 
   private async handleTaskError(item: BackupItem, error: any) {
-    console.warn(`[BackupManager] Task failed for ${item.fileName}:`, error);
+    console.error(`[BackupManager] ❌ Task Error for "${item.fileName}":`, error?.message || error);
     const existing = this.queue.find((i) => i.id === item.id);
     if (existing) {
       existing.status = 'failed';
@@ -144,12 +171,12 @@ class BackupManagerClass {
       });
 
       if (error instanceof FloodWaitError) {
-        console.warn(`[BackupManager] Pausing uploads due to FLOOD_WAIT (${error.seconds}s)`);
+        console.warn(`[BackupManager] 🛑 Pausing uploads due to FLOOD_WAIT (${error.seconds}s)`);
         this.pauseSync();
 
         if (this.floodWaitTimer) clearTimeout(this.floodWaitTimer);
         this.floodWaitTimer = setTimeout(() => {
-          console.log('[BackupManager] Resuming backup after FLOOD_WAIT cooldown');
+          console.log('[BackupManager] 🔄 Resuming backup after FLOOD_WAIT cooldown');
           this.startSync();
         }, (error.seconds + 2) * 1000);
       }
@@ -179,12 +206,24 @@ class BackupManagerClass {
     }
 
     const remainingBytes = Math.max(0, totalBytes - bytesUploaded);
-    let etaFormatted = '--';
-    if (this.currentSpeedBytes > 0 && remainingBytes > 0) {
-      const etaMs = (remainingBytes / this.currentSpeedBytes) * 1000;
-      etaFormatted = formatUploadDuration(etaMs);
-    } else if (pending === 0 && inProgress === 0) {
-      etaFormatted = 'Done';
+    let etaFormatted = 'Ready';
+    if (this.isSyncing) {
+      if (pending === 0 && inProgress === 0) {
+        etaFormatted = 'Done';
+      } else if (this.currentSpeedBytes > 0 && remainingBytes > 0) {
+        const etaMs = (remainingBytes / this.currentSpeedBytes) * 1000;
+        etaFormatted = formatUploadDuration(etaMs);
+      } else {
+        etaFormatted = 'Calculating...';
+      }
+    } else {
+      if (pending === 0 && inProgress === 0 && total > 0) {
+        etaFormatted = 'Done';
+      } else if (total > 0) {
+        etaFormatted = 'Paused';
+      } else {
+        etaFormatted = 'Ready';
+      }
     }
 
     return {
@@ -213,19 +252,59 @@ class BackupManagerClass {
     };
   }
 
+
   private notify() {
     const payload = this.getPayload();
     this.listeners.forEach((l) => l(payload));
 
     // Update persistent notification if syncing
     if (this.isSyncing && payload.stats.total > 0) {
-      const { completed, total, speedFormatted, etaFormatted, activeWorkers } = payload.stats;
-      const title = `Aetheroll Vault (${completed}/${total})`;
-      const message = activeWorkers > 0
-        ? `⚡ ${speedFormatted} • ETA: ${etaFormatted} • ${activeWorkers} active`
-        : 'Preparing next uploads...';
+      const { completed, total, speedFormatted, etaFormatted, activeWorkers, bytesUploaded, totalBytes } = payload.stats;
+      const activeItems = payload.activeItems;
+      const firstActive = activeItems[0];
 
-      NativeBackgroundService.updateProgress(title, message, completed, total);
+      let title: string;
+      let message: string;
+      let progressVal: number;
+      const maxVal = 100;
+
+      if (total === 1 && firstActive) {
+        // --- Single File Upload Mode ---
+        const itemProgress = Math.min(100, Math.max(0, Math.round(firstActive.progress || 0)));
+        const rawName = firstActive.fileName || 'file';
+        const displayName = rawName.length > 24 ? `${rawName.slice(0, 21)}...` : rawName;
+        const currentBytes = firstActive.uploadedBytes || Math.floor(((firstActive.fileSize || 0) * itemProgress) / 100);
+        const uploadedStr = formatBytes(currentBytes);
+        const totalStr = formatBytes(firstActive.fileSize || 0);
+
+        title = `Uploading ${displayName} (${itemProgress}%)`;
+        message = activeWorkers > 0
+          ? `${uploadedStr} / ${totalStr} • ⚡ ${speedFormatted} • ETA: ${etaFormatted}`
+          : `${uploadedStr} / ${totalStr} • Preparing...`;
+        progressVal = itemProgress;
+      } else if (total === 1 && completed === 1) {
+        title = 'Upload Complete';
+        message = '1 item uploaded successfully';
+        progressVal = 100;
+      } else {
+        // --- Multiple Files Batch Upload Mode ---
+        const overallPercent = totalBytes > 0
+          ? Math.min(100, Math.max(0, Math.round((bytesUploaded / totalBytes) * 100)))
+          : Math.round((completed / total) * 100);
+
+        title = `Backing up items (${completed} of ${total}) • ${overallPercent}%`;
+
+        if (activeWorkers > 0) {
+          const uploadedStr = formatBytes(bytesUploaded);
+          const totalStr = formatBytes(totalBytes);
+          message = `${uploadedStr} / ${totalStr} • ⚡ ${speedFormatted} • ETA: ${etaFormatted}`;
+        } else {
+          message = 'Preparing next uploads...';
+        }
+        progressVal = overallPercent;
+      }
+
+      NativeBackgroundService.updateProgress(title, message, progressVal, maxVal);
     }
   }
 
@@ -235,11 +314,23 @@ class BackupManagerClass {
       fileName?: string;
       fileSize?: number;
       type?: string;
+      width?: number;
+      height?: number;
+      duration?: number;
     }>,
     channelId: string
   ): Promise<number> {
     if (!channelId) {
       throw new Error('Target channel ID is required for backup');
+    }
+
+    // If the previous batch completed and no tasks are active/pending, auto-clear old completed items
+    const hasActiveTasks = this.queue.some(
+      (i) => i.status === 'pending' || i.status === 'uploading'
+    );
+    if (!hasActiveTasks && this.queue.length > 0) {
+      await QueueStorage.clearCompleted();
+      this.queue = [];
     }
 
     const newItems: BackupItem[] = [];
@@ -264,6 +355,9 @@ class BackupManagerClass {
         channelId,
         createdAt: Date.now(),
         attempts: 0,
+        width: asset.width,
+        height: asset.height,
+        duration: asset.duration,
       });
     }
 
@@ -279,10 +373,18 @@ class BackupManagerClass {
     return skippedCount;
   }
 
+  public async clearCompleted(): Promise<void> {
+    this.queue = await QueueStorage.clearCompleted();
+    this.notify();
+  }
+
   public startSync(): void {
+    const pendingCount = this.queue.filter((i) => i.status === 'pending' || i.status === 'paused').length;
+    console.log(`[BackupManager] 🎬 startSync requested | totalQueue=${this.queue.length} | pending=${pendingCount} | isSyncing=${this.isSyncing}`);
+
     if (RatePacer.isThrottled()) {
       const remainingSec = RatePacer.getRemainingFloodWaitSeconds();
-      console.warn(`[BackupManager] Cannot start sync yet, waiting on FloodWait (${remainingSec}s remaining)`);
+      console.warn(`[BackupManager] ⚠️ Cannot start sync yet, waiting on FloodWait (${remainingSec}s remaining)`);
       return;
     }
 
@@ -293,6 +395,7 @@ class BackupManagerClass {
   }
 
   public pauseSync(): void {
+    console.log(`[BackupManager] ⏸️ pauseSync requested`);
     this.isSyncing = false;
     this.dispatcher.pause();
     NativeBackgroundService.stop();
@@ -319,10 +422,6 @@ class BackupManagerClass {
     this.startSync();
   }
 
-  public async clearCompleted(): Promise<void> {
-    this.queue = await QueueStorage.clearCompleted();
-    this.notify();
-  }
 
   public async removeItem(id: string): Promise<void> {
     this.dispatcher.abortTask(id);

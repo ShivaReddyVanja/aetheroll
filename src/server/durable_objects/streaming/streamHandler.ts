@@ -89,8 +89,20 @@ export class StreamHandler {
         if (!fileLocation) return new Response("Media not found in Telegram", { status: 404 });
       }
 
-      if (!rangeHeader) {
-        // Full media download fallback
+      // 2. Parse Range header or safely default to initial 2MB slice for video playback
+      // Support comma-delimited ranges (e.g. "bytes=0-, bytes=36888852-") by taking the last/most specific range
+      const rawRange = rangeHeader ? rangeHeader.split(",").pop()!.trim() : undefined;
+
+      let start = 0;
+      let requestedEnd: number | undefined;
+
+      if (rawRange) {
+        const parts = rawRange.replace(/bytes=/, "").split("-");
+        start = parseInt(parts[0], 10);
+        requestedEnd = parts[1] ? parseInt(parts[1], 10) : undefined;
+        if (isNaN(start)) start = 0;
+      } else if (totalSize <= 2 * 1024 * 1024) {
+        // Small media (<= 2MB, e.g. thumbnail or small photo): full download fallback is safe
         const msgId = Number(item.telegram_message_id);
         let targetPeer: any = item.telegram_channel_id;
         if (item.telegram_channel_id !== "me" && !item.telegram_channel_id.startsWith("me_")) {
@@ -119,14 +131,9 @@ export class StreamHandler {
           },
         });
       }
+      // If no range header and totalSize > 2MB, start remains 0, requestedEnd remains undefined (safely delivers first 2MB slice without 140MB buffer OOM)
 
-      // 2. Parse Range header: `bytes=start-end`
-      const parts = rangeHeader.replace(/bytes=/, "").split("-");
-      let start = parseInt(parts[0], 10);
-      let requestedEnd = parts[1] ? parseInt(parts[1], 10) : undefined;
-      if (isNaN(start)) start = 0;
-
-      const BROWSER_CHUNK_SIZE = 2 * 1024 * 1024; // Optimized 2MB chunk size for video playback
+      const BROWSER_CHUNK_SIZE = 2 * 1024 * 1024; // 2MB chunk size for fast TTFB and low memory usage
       const SEGMENT_SIZE = 16 * 1024 * 1024;
 
       let end: number;
@@ -134,7 +141,7 @@ export class StreamHandler {
       if (requestedEnd !== undefined && requestedEnd - start + 1 < 64 * 1024) {
         end = Math.min(requestedEnd, totalSize - 1);
       } else {
-        // For video playback stream, always deliver a full 2.0 MB slice (or up to EOF)
+        // For video playback stream, deliver 2.0 MB slice (or up to EOF)
         end = Math.min(start + BROWSER_CHUNK_SIZE - 1, totalSize - 1);
       }
 

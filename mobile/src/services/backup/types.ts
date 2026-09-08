@@ -18,6 +18,10 @@ export interface BackupItem {
   mediaId?: string;
   attempts?: number;
   lastAttemptAt?: number;
+  width?: number;
+  height?: number;
+  duration?: number;
+  thumbnailBase64?: string;
 }
 
 export interface BackupStats {
