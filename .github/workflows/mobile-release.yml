@@ -123,12 +123,17 @@ jobs:
           fi
 
           FINAL_APK="aetheroll-mobile-${{ steps.version.outputs.tag }}.apk"
+          LATEST_APK="aetheroll-mobile-latest.apk"
           cp "$APK_SOURCE" "$FINAL_APK"
+          cp "$APK_SOURCE" "$LATEST_APK"
           sha256sum "$FINAL_APK" > "${FINAL_APK}.sha256"
+          sha256sum "$LATEST_APK" > "${LATEST_APK}.sha256"
 
           echo "apk_path=$FINAL_APK" >> $GITHUB_OUTPUT
           echo "sha_path=${FINAL_APK}.sha256" >> $GITHUB_OUTPUT
-          echo "Built APK: $FINAL_APK"
+          echo "latest_apk_path=$LATEST_APK" >> $GITHUB_OUTPUT
+          echo "latest_sha_path=${LATEST_APK}.sha256" >> $GITHUB_OUTPUT
+          echo "Built APK: $FINAL_APK and $LATEST_APK"
 
       - name: Upload APK as Workflow Artifact
         uses: actions/upload-artifact@v4
@@ -137,6 +142,8 @@ jobs:
           path: |
             ${{ steps.artifacts.outputs.apk_path }}
             ${{ steps.artifacts.outputs.sha_path }}
+            ${{ steps.artifacts.outputs.latest_apk_path }}
+            ${{ steps.artifacts.outputs.latest_sha_path }}
           retention-days: 14
 
       - name: Create Git Tag and GitHub Release
@@ -159,5 +166,7 @@ jobs:
           files: |
             ${{ steps.artifacts.outputs.apk_path }}
             ${{ steps.artifacts.outputs.sha_path }}
+            ${{ steps.artifacts.outputs.latest_apk_path }}
+            ${{ steps.artifacts.outputs.latest_sha_path }}
           draft: false
           prerelease: false

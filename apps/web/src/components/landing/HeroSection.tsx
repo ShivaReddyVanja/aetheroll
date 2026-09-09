@@ -17,7 +17,22 @@ import {
   Layers,
   CheckCircle2,
   Cpu,
+  Download,
 } from "lucide-react";
+import { APK_DOWNLOAD_URL, GITHUB_REPO_URL } from "@/lib/brand";
+
+function AndroidIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <path d="M17.523 15.3414c-.5511 0-.9993-.4486-.9993-.9997s.4482-.9993.9993-.9993c.551 0 .9993.4482.9993.9993.0001.5511-.4483.9997-.9993.9997m-11.046 0c-.5511 0-.9993-.4486-.9993-.9997s.4482-.9993.9993-.9993c.5511 0 .9993.4482.9993.9993 0 .5511-.4482.9997-.9993.9997m11.4045-6.02l1.996-3.4572c.1558-.27.0634-.6148-.2064-.7706-.2699-.1559-.6148-.0635-.7707.2064l-2.0232 3.5042C15.426 8.2323 13.7667 7.893 12 7.893s-3.426.3393-4.8827.9117L5.094 5.3006c-.1559-.2699-.5008-.3623-.7707-.2064-.2698.1558-.3622.5006-.2064.7706l1.996 3.4572C2.7937 11.2057.5 15.1118.5 19.6052h23c0-4.4934-2.2937-8.3995-5.6185-10.2838" />
+    </svg>
+  );
+}
 
 interface HeroSectionProps {
   hasActiveSession?: boolean;
@@ -50,23 +65,38 @@ export function HeroSection({ hasActiveSession }: HeroSectionProps) {
         </p>
 
         {/* Action Buttons */}
-        <div className="flex flex-col sm:flex-row items-center justify-center gap-3.5 max-w-md mx-auto mb-16">
+        <div className="flex flex-col sm:flex-row items-center justify-center gap-3.5 max-w-xl mx-auto mb-6">
           <Link
             href="/app"
-            className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-3 rounded-lg font-medium text-sm text-zinc-950 bg-white hover:bg-zinc-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.2)] transition-colors"
+            className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-6 py-3 rounded-lg font-medium text-sm text-zinc-950 bg-white hover:bg-zinc-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.2)] transition-all group"
           >
-            <span>{hasActiveSession ? "Open Your Gallery" : "Connect with Telegram"}</span>
-            <ArrowRight className="w-4 h-4 text-zinc-600" />
+            <span>{hasActiveSession ? "Open Your Gallery" : "Launch Web App"}</span>
+            <ArrowRight className="w-4 h-4 text-zinc-600 group-hover:translate-x-0.5 transition-transform" />
           </Link>
 
           <a
-            href="https://github.com/ShivaReddyVanja/aetheroll"
+            href={APK_DOWNLOAD_URL}
+            download
+            className="w-full sm:w-auto inline-flex items-center justify-center gap-2.5 px-5 py-3 rounded-lg font-medium text-sm text-emerald-300 hover:text-emerald-100 bg-emerald-950/50 hover:bg-emerald-900/60 border border-emerald-700/60 hover:border-emerald-600 shadow-sm transition-all"
+          >
+            <AndroidIcon className="w-4 h-4 text-emerald-400" />
+            <span>Download Android APK</span>
+            <Download className="w-3.5 h-3.5 text-emerald-400/80" />
+          </a>
+
+          <a
+            href={GITHUB_REPO_URL}
             target="_blank"
             rel="noopener noreferrer"
-            className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-3 rounded-lg font-medium text-sm text-zinc-300 hover:text-zinc-100 bg-zinc-900 hover:bg-zinc-800/80 border border-zinc-800 transition-colors"
+            className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg font-medium text-sm text-zinc-400 hover:text-zinc-200 bg-zinc-900/80 hover:bg-zinc-800/80 border border-zinc-800 transition-colors"
           >
-            <span>Explore Architecture</span>
+            <span>GitHub</span>
           </a>
+        </div>
+
+        {/* Small Subtext / Note under buttons */}
+        <div className="text-[11px] font-mono text-zinc-500 mb-16">
+          Direct APK from latest GitHub release • Free & Open Source
         </div>
 
         {/* Monochromatic Technical Spec Strip */}
