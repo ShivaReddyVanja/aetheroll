@@ -360,7 +360,7 @@ export function BulkUploadScreen() {
   );
 
   return (
-    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
+    <View style={styles.container}>
       {/* Top Header */}
       <View style={styles.header}>
         <View>
@@ -585,7 +585,7 @@ export function BulkUploadScreen() {
           </View>
         </Animated.View>
       )}
-    </SafeAreaView>
+    </View>
   );
 }
 

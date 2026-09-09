@@ -188,7 +188,7 @@ const styles = StyleSheet.create({
     height: '100%',
   },
   selectedOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     borderRadius: 8,
     borderWidth: 3,
     borderColor: '#1A73E8',
