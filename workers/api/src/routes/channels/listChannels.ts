@@ -27,13 +27,26 @@ listChannelsRoute.get("/", async (c) => {
       );
     }
 
+    // Guarantee user's Saved Messages is linked to gallery_channels for this user
+    await db.run(
+      `INSERT INTO gallery_channels (user_id, channel_id)
+       VALUES (?, ?)
+       ON CONFLICT(user_id, channel_id) DO NOTHING`,
+      [user.id, meChannelId]
+    );
+
     if (returnAll) {
-      // 1. Fetch live channels from Telegram for the picker modal
+      // 1. Fetch live channels from Telegram strictly for THIS user
+      const userTgChannelIds = new Set<string>();
+      userTgChannelIds.add(userMeTgId);
+
       try {
         const tgChannels = await getUserChannels(client);
 
         for (const ch of tgChannels) {
-          const targetTgId = ch.id === "me" ? userMeTgId : ch.id;
+          const targetTgId = ch.id === "me" ? userMeTgId : String(ch.id);
+          userTgChannelIds.add(targetTgId);
+
           let channelRow = await db.get("SELECT * FROM channels WHERE telegram_channel_id = ?", [targetTgId]);
           const channelId = channelRow?.id || crypto.randomUUID();
 
@@ -47,22 +60,41 @@ listChannelsRoute.get("/", async (c) => {
           }
         }
       } catch (tgErr) {
-        console.warn("Failed live TG channel sync, using cached D1 channels:", tgErr);
+        console.warn("Failed live TG channel sync, using cached gallery channels:", tgErr);
       }
 
-      // Return all available Telegram channels for the picker modal
-      const allChannels = await db.all(
+      // Return ONLY the channels that belong to THIS user from Telegram / gallery
+      if (userTgChannelIds.size > 0) {
+        const idList = Array.from(userTgChannelIds);
+        const placeholders = idList.map(() => "?").join(", ");
+        const allChannels = await db.all(
+          `SELECT c.id, c.telegram_channel_id, c.name, c.cover_media_id, c.last_synced_at,
+                  COUNT(m.id) as media_count,
+                  EXISTS(SELECT 1 FROM gallery_channels gc WHERE gc.channel_id = c.id AND gc.user_id = ?) as is_added
+           FROM channels c
+           LEFT JOIN media_items m ON m.channel_id = c.id AND m.deleted_at IS NULL
+           WHERE c.telegram_channel_id IN (${placeholders})
+           GROUP BY c.id
+           ORDER BY is_added DESC, (c.telegram_channel_id = ?) DESC, c.name ASC`,
+          [user.id, ...idList, userMeTgId]
+        );
+        return c.json({ channels: allChannels });
+      }
+
+      // Fallback: return ONLY channels already added to this user's gallery
+      const fallbackChannels = await db.all(
         `SELECT c.id, c.telegram_channel_id, c.name, c.cover_media_id, c.last_synced_at,
                 COUNT(m.id) as media_count,
-                EXISTS(SELECT 1 FROM gallery_channels gc WHERE gc.channel_id = c.id AND gc.user_id = ?) as is_added
+                1 as is_added
          FROM channels c
+         JOIN gallery_channels gc ON gc.channel_id = c.id
          LEFT JOIN media_items m ON m.channel_id = c.id AND m.deleted_at IS NULL
-         WHERE c.telegram_channel_id NOT LIKE 'me_%' OR c.telegram_channel_id = ?
+         WHERE gc.user_id = ?
          GROUP BY c.id
-         ORDER BY is_added DESC, (c.telegram_channel_id = ?) DESC, c.name ASC`,
-        [user.id, userMeTgId, userMeTgId]
+         ORDER BY (c.telegram_channel_id = ? OR c.telegram_channel_id = 'me') DESC, media_count DESC, c.name ASC`,
+        [user.id, userMeTgId]
       );
-      return c.json({ channels: allChannels });
+      return c.json({ channels: fallbackChannels });
     }
 
     // Default: Return ONLY channels explicitly added to the user's gallery
