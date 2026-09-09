@@ -5,6 +5,8 @@ import Link from "next/link";
 import { BrandIcon } from "@/components/BrandIcon";
 import { ArrowUpRight } from "lucide-react";
 
+import { APK_DOWNLOAD_URL } from "@/lib/brand";
+
 function GithubIcon({ className = "w-4 h-4" }: { className?: string }) {
   return (
     <svg
@@ -54,6 +56,18 @@ export function LandingFooter() {
                 <Link href="/app" className="hover:text-zinc-200 transition-colors">
                   Web Gallery App
                 </Link>
+              </li>
+              <li>
+                <a
+                  href={APK_DOWNLOAD_URL}
+                  download
+                  className="hover:text-emerald-400 transition-colors inline-flex items-center gap-1.5 text-zinc-300"
+                >
+                  <span>Android APK (Direct)</span>
+                  <span className="text-[10px] px-1 py-0.2 rounded bg-emerald-950/80 text-emerald-400 border border-emerald-800/60 font-mono">
+                    APK
+                  </span>
+                </a>
               </li>
               <li>
                 <Link href="/#features" className="hover:text-zinc-200 transition-colors">
