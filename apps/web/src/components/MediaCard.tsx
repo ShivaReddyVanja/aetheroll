@@ -197,7 +197,7 @@ export function MediaCard({
       {/* 2. Static Thumbnail Image - Only mounted/requested once within viewport margin */}
       {isVisible && !imageError && (
         <img
-          src={customThumb || getMediaThumbnailUrl(item.id)}
+          src={customThumb || (isVideo ? getMediaThumbnailUrl(item.id) : getMediaStreamUrl(item.id))}
           alt="Media"
           loading="lazy"
           decoding="async"
