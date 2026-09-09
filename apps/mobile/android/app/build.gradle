@@ -44,11 +44,27 @@ react {
     // extraPackagerArgs = []
 
     /* Hermes Commands */
-    //   The hermes compiler command to run. By default it is 'hermesc'
-    // hermesCommand = "$rootDir/my-custom-hermesc/bin/hermesc"
-    //
-    //   The list of flags to pass to the Hermes compiler. By default is "-O", "-output-source-map"
-    // hermesFlags = ["-O", "-output-source-map"]
+    def osBin = org.apache.tools.ant.taskdefs.condition.Os.isFamily(org.apache.tools.ant.taskdefs.condition.Os.FAMILY_WINDOWS) ? "win64-bin/hermesc.exe" :
+                org.apache.tools.ant.taskdefs.condition.Os.isFamily(org.apache.tools.ant.taskdefs.condition.Os.FAMILY_MAC) ? "osx-bin/hermesc" : "linux64-bin/hermesc"
+
+    def hermesCandidates = [
+        file("../../../../node_modules/hermes-compiler/hermesc/${osBin}"),
+        file("../../node_modules/hermes-compiler/hermesc/${osBin}"),
+        file("../../../../node_modules/react-native/sdks/hermesc/${osBin}"),
+        file("../../node_modules/react-native/sdks/hermesc/${osBin}")
+    ]
+
+    def pnpmStore = file("../../../../node_modules/.pnpm")
+    if (pnpmStore.exists()) {
+        pnpmStore.eachDirMatch(~/hermes-compiler@.*/) { dir ->
+            hermesCandidates.add(new File(dir, "node_modules/hermes-compiler/hermesc/${osBin}"))
+        }
+    }
+
+    def resolvedHermes = hermesCandidates.find { it != null && it.exists() }
+    if (resolvedHermes != null) {
+        hermesCommand = resolvedHermes.absolutePath
+    }
 
     /* Autolinking */
     autolinkLibrariesWithApp()
