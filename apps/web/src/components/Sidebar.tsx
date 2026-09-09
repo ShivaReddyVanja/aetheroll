@@ -147,22 +147,26 @@ export function Sidebar({
 
         {/* Backend Environment Indicator Badge */}
         <div className="px-5 pb-2 -mt-2">
-          <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-medium bg-[var(--bg-secondary)] border border-[var(--border-color)] text-[var(--text-secondary)]">
-            <span
-              className={`w-1.5 h-1.5 rounded-full ${
-                (process.env.NEXT_PUBLIC_BACKEND_MODE || "dev").toLowerCase() === "prod" ||
-                (process.env.NEXT_PUBLIC_BACKEND_MODE || "dev").toLowerCase() === "remote"
-                  ? "bg-emerald-500 animate-pulse"
-                  : "bg-amber-500"
-              }`}
-            />
-            <span>
-              {(process.env.NEXT_PUBLIC_BACKEND_MODE || "dev").toLowerCase() === "prod" ||
-              (process.env.NEXT_PUBLIC_BACKEND_MODE || "dev").toLowerCase() === "remote"
-                ? "Remote (Cloudflare Worker)"
-                : "Local (Node + SQLite)"}
-            </span>
-          </div>
+          {(() => {
+            const rawMode = (process.env.NEXT_PUBLIC_BACKEND_MODE || "").toLowerCase();
+            const isProd =
+              rawMode === "prod" ||
+              rawMode === "remote" ||
+              (rawMode !== "dev" && rawMode !== "local" && (Boolean(process.env.NEXT_PUBLIC_REMOTE_API_URL) || process.env.NODE_ENV === "production"));
+
+            return (
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-medium bg-[var(--bg-secondary)] border border-[var(--border-color)] text-[var(--text-secondary)]">
+                <span
+                  className={`w-1.5 h-1.5 rounded-full ${
+                    isProd ? "bg-emerald-500 animate-pulse" : "bg-amber-500"
+                  }`}
+                />
+                <span>
+                  {isProd ? "Remote (Cloudflare Worker)" : "Local (Node + SQLite)"}
+                </span>
+              </div>
+            );
+          })()}
         </div>
 
         {/* Navigation Scrollable Content */}
