@@ -20,6 +20,9 @@ importers:
       '@aetheroll/types':
         specifier: workspace:*
         version: link:../../packages/types
+      '@babel/runtime':
+        specifier: ^7.25.0
+        version: 7.29.7
       '@nozbe/watermelondb':
         specifier: ^0.27.1
         version: 0.27.1
@@ -63,9 +66,6 @@ importers:
       '@babel/preset-env':
         specifier: ^7.25.3
         version: 7.29.7(@babel/core@7.29.7)
-      '@babel/runtime':
-        specifier: ^7.25.0
-        version: 7.29.7
       '@react-native-community/cli':
         specifier: 20.2.0
         version: 20.2.0(bufferutil@4.1.0)(typescript@6.0.3)(utf-8-validate@5.0.10)
