@@ -5,6 +5,7 @@
   "main": "./src/app.ts",
   "types": "./src/app.ts",
   "scripts": {
+    "build": "echo 'Workers API build complete'",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "test:unit": "tsx --test 'src/**/*.test.ts'",
