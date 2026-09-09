@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://github.com/ShivaReddyVanja/aetheroll/releases/latest/download/aetheroll-mobile-latest.apk"><img src="https://img.shields.io/badge/Android-APK%20Download-success?style=flat-square&logo=android" alt="Download APK" /></a>
-  <a href="https://github.com/ShivaReddyVanja/aetheroll/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-AGPL%20v3-blue.svg?style=flat-square" alt="License: AGPL v3" /></a>
+  <a href="https://github.com/ShivaReddyVanja/aetheroll/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg?style=flat-square" alt="License: PolyForm Noncommercial 1.0.0" /></a>
   <img src="https://img.shields.io/badge/Next.js-15-black?style=flat-square&logo=next.js" alt="Next.js 15" />
   <img src="https://img.shields.io/badge/React%20Native-0.87-blue?style=flat-square&logo=react" alt="React Native" />
   <img src="https://img.shields.io/badge/Cloudflare-Workers-orange?style=flat-square&logo=cloudflare" alt="Cloudflare Workers" />
@@ -200,5 +200,8 @@ pnpm turbo run build
 ---
 
 ## License
-
-This project is licensed under the [GNU Affero General Public License v3.0 (AGPL-3.0)](LICENSE).
+ 
+This project is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE).
+ 
+- Permitted: Personal use, private non-commercial backup, personal evaluation, security audits, and non-commercial contributions.
+- Prohibited: Any commercial use, commercial distribution, or selling apps/binaries without explicit written permission from the copyright holder.
