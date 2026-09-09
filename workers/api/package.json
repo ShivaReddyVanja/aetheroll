@@ -16,10 +16,12 @@
     "better-sqlite3": "^11.8.1",
     "hono": "^4.7.2",
     "qrcode": "^1.5.4",
+    "big-integer": "^1.6.52",
     "telegram": "^2.26.22"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",
+    "@types/big-integer": "^0.0.35",
     "@types/node": "^22.13.9",
     "@types/qrcode": "^1.5.5",
     "tsx": "^4.19.3",

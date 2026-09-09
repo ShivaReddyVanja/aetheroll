@@ -202,6 +202,9 @@ importers:
       better-sqlite3:
         specifier: ^11.8.1
         version: 11.10.0
+      big-integer:
+        specifier: ^1.6.52
+        version: 1.6.52
       hono:
         specifier: ^4.7.2
         version: 4.13.7
@@ -215,6 +218,9 @@ importers:
       '@types/better-sqlite3':
         specifier: ^7.6.12
         version: 7.6.13
+      '@types/big-integer':
+        specifier: ^0.0.35
+        version: 0.0.35
       '@types/node':
         specifier: ^22.13.9
         version: 22.20.1
@@ -1964,6 +1970,10 @@ packages:
 
   '@types/better-sqlite3@7.6.13':
     resolution: {integrity: sha512-NMv9ASNARoKksWtsq/SHakpYAYnhBrQgGD8zkLYk/jaK8jUGn08CfEdTRgYhMypUQAfzSP8W6gNLe0q19/t4VA==}
+
+  '@types/big-integer@0.0.35':
+    resolution: {integrity: sha512-tE/BMXeKkGCaqLeGkmJJN6TOVrIJFPvbk5rzhbnScqRW3k6QmelN2ukMvd5KpujY7R1X1vIh6V31r/ht84TBYg==}
+    deprecated: This is a stub types definition. big-integer provides its own type definitions, so you do not need this installed.
 
   '@types/graceful-fs@4.1.9':
     resolution: {integrity: sha512-olP3sd1qOEe5dXTSaFvQG+02VdRXcdytWLAZsAq1PecU8uqQAhkrnbli7DagjtXKW/Bl7YJbUsa8MPcuc8LHEQ==}
@@ -7053,6 +7063,10 @@ snapshots:
   '@types/better-sqlite3@7.6.13':
     dependencies:
       '@types/node': 22.20.1
+
+  '@types/big-integer@0.0.35':
+    dependencies:
+      big-integer: 1.6.52
 
   '@types/graceful-fs@4.1.9':
     dependencies:
