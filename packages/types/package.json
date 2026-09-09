@@ -5,6 +5,7 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "scripts": {
+    "build": "echo 'Types package build complete'",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
