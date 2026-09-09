@@ -98,6 +98,18 @@ jobs:
             echo "Using default repository debug keystore for release build."
           fi
 
+      - name: Configure Production API URL
+        shell: bash
+        env:
+          LIVE_API_URL: ${{ secrets.MOBILE_API_URL || vars.MOBILE_API_URL || 'https://aetheroll-api.builtbyshiva.com' }}
+        run: |
+          node -e "
+            const fs = require('fs');
+            const url = process.env.LIVE_API_URL || 'https://aetheroll-api.builtbyshiva.com';
+            fs.writeFileSync('apps/mobile/src/config/env.json', JSON.stringify({ API_URL: url }, null, 2));
+            console.log('[CI] Configured Mobile API_URL to:', url);
+          "
+
       - name: Build Android Release APK
         shell: bash
         run: |

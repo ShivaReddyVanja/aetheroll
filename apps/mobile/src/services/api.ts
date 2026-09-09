@@ -8,9 +8,11 @@ import {
   saveStoredApiBaseUrl,
   getStoredApiBaseUrl,
 } from './secureStorage';
+import { DEFAULT_API_URL } from '../config';
 
 let sessionToken: string | null = null;
-let apiBaseUrl: string = process.env.EXPO_PUBLIC_API_URL || 'https://api.aetheroll.app'; // Default Remote API URL
+// Default remote backend API URL (injected during release build or overridden in Settings)
+let apiBaseUrl: string = DEFAULT_API_URL;
 
 export async function setSessionToken(token: string | null) {
   console.log('[API] setSessionToken called, token:', token ? `${token.slice(0, 10)}...` : 'null');

@@ -129,7 +129,7 @@ The mobile app is a React Native Android & iOS client built with Gradle and Reac
 
 | Variable / Secret Name | Scope | Secret? | Production Location | Local Dev Location | Description |
 | :--- | :---: | :---: | :--- | :--- | :--- |
-| `EXPO_PUBLIC_API_URL` | App Runtime | No | Build env / In-app Settings | `.env` / In-app Settings | Default API backend URL. |
+| `MOBILE_API_URL` | CI Build | Optional | GitHub Variables / Secrets | `apps/mobile/src/config/env.json` | Default remote API URL injected into the release APK. |
 | `ANDROID_KEYSTORE_BASE64` | CI Build | **CRITICAL** | GitHub Repo Secrets | Local `release.keystore` | Base64-encoded production Android release keystore. |
 | `ANDROID_KEYSTORE_PASSWORD` | CI Build | **CRITICAL** | GitHub Repo Secrets | Local `gradle.properties` | Password for the release keystore. |
 | `ANDROID_KEY_ALIAS` | CI Build | **CRITICAL** | GitHub Repo Secrets | Local `gradle.properties` | Key alias in the release keystore. |
@@ -138,18 +138,20 @@ The mobile app is a React Native Android & iOS client built with Gradle and Reac
 ### Where & How They Are Injected
 1. **In CI / CD (GitHub Actions Release Workflow)**:
    * Go to **GitHub Repository → Settings → Secrets and variables → Actions**.
-   * Add:
+   * Add Secrets:
+     * `MOBILE_API_URL` (e.g. `https://aetheroll-api.builtbyshiva.com`)
      * `ANDROID_KEYSTORE_BASE64`
      * `ANDROID_KEYSTORE_PASSWORD`
      * `ANDROID_KEY_ALIAS`
      * `ANDROID_KEY_PASSWORD`
-   * *How injection works*: [`.github/workflows/mobile-release.yml`](file:///Users/shivareddy/.github/workflows/mobile-release.yml) decodes the keystore onto the runner at build time and passes credentials to `./gradlew assembleRelease`. It attaches both `aetheroll-mobile-<tag>.apk` and `aetheroll-mobile-latest.apk` to GitHub Releases.
+   * *How injection works*: [`.github/workflows/mobile-release.yml`](file:///Users/shivareddy/.github/workflows/mobile-release.yml) injects `MOBILE_API_URL` into `apps/mobile/src/config/env.json`, decodes the keystore onto the runner, and compiles `./gradlew assembleRelease`. It attaches both `aetheroll-mobile-<tag>.apk` and `aetheroll-mobile-latest.apk` to GitHub Releases.
 2. **In-App Dynamic Setting**:
-   * Users can change the backend API URL directly inside the mobile app settings UI without recompiling the APK.
+   * Users can tap the ⚙️ Settings icon on the login screen or gallery anytime to change the backend API URL without recompiling the APK.
 
 ### Code Files Using These Variables:
-* [`apps/mobile/src/services/api.ts`](file:///Users/shivareddy/Developer/telegram/apps/mobile/src/services/api.ts): API requests and default backend fallback URL.
-* [`.github/workflows/mobile-release.yml`](file:///Users/shivareddy/Developer/telegram/.github/workflows/mobile-release.yml): Automated Android APK compilation and signing.
+* [`apps/mobile/src/config/index.ts`](file:///Users/shivareddy/Developer/telegram/apps/mobile/src/config/index.ts): Mobile app configuration loader (`DEFAULT_API_URL`).
+* [`apps/mobile/src/services/api.ts`](file:///Users/shivareddy/Developer/telegram/apps/mobile/src/services/api.ts): API requests and KeyStore-persisted backend URL.
+* [`.github/workflows/mobile-release.yml`](file:///Users/shivareddy/Developer/telegram/.github/workflows/mobile-release.yml): Automated Android APK compilation, URL injection, and signing.
 
 ---
 
