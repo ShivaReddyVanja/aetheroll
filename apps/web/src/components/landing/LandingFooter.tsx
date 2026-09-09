@@ -135,6 +135,14 @@ export function LandingFooter() {
                 </a>
               </li>
               <li>
+                <Link
+                  href="/privacy"
+                  className="hover:text-zinc-200 transition-colors"
+                >
+                  Privacy Policy
+                </Link>
+              </li>
+              <li>
                 <span className="text-zinc-500">MIT Open Source License</span>
               </li>
             </ul>
@@ -143,7 +151,13 @@ export function LandingFooter() {
 
         {/* Bottom Status Bar */}
         <div className="border-t border-zinc-900 pt-8 flex flex-col sm:flex-row items-center justify-between gap-4 text-zinc-500 text-xs">
-          <p>© {new Date().getFullYear()} Aetheroll. Built for high-speed photography & cinema.</p>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+            <p>© {new Date().getFullYear()} Aetheroll. Built for high-speed photography & cinema.</p>
+            <span className="hidden sm:inline">•</span>
+            <Link href="/privacy" className="hover:text-zinc-300 transition-colors">
+              Privacy Policy
+            </Link>
+          </div>
           <div className="flex items-center gap-1">
             <span>Designed & Built by</span>
             <a

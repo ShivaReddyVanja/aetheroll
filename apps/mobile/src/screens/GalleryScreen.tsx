@@ -102,20 +102,16 @@ export function GalleryScreen() {
     return unsubscribe;
   }, []);
 
-  const [authLogs, setAuthLogs] = useState<string[]>([]);
-  const [authStatusText, setAuthStatusText] = useState('Initializing security vault...');
+  const [authStatusText, setAuthStatusText] = useState('Initializing gallery...');
 
   const addLog = (msg: string) => {
-    const timeStr = new Date().toLocaleTimeString();
-    const entry = `[${timeStr}] ${msg}`;
     console.log(`[AUTH_BOOT] ${msg}`);
-    setAuthLogs((prev) => [...prev, entry]);
   };
 
   // Startup: Load credentials from Android KeyStore & verify session
   useEffect(() => {
     async function bootAuth() {
-      addLog('Starting hardware-backed auth check...');
+      addLog('Starting auth check...');
       setAuthStatusText('Checking stored credentials...');
       try {
         setIsAuthChecking(true);
@@ -369,30 +365,11 @@ export function GalleryScreen() {
       <View style={styles.splashContainer}>
         <BrandLogo size={56} />
         <Text style={styles.splashTitle}>AETHEROLL</Text>
-        <Text style={styles.splashSubtitle}>Hardware-Backed Telegram Vault</Text>
+        <Text style={styles.splashSubtitle}>Unlimited Media Gallery</Text>
 
         <View style={styles.splashStatusRow}>
           <ActivityIndicator color="#1A73E8" size="small" />
           <Text style={styles.splashStatusText}>{authStatusText}</Text>
-        </View>
-
-        {/* Live Real-Time Auth Diagnostic Console */}
-        <View style={styles.logCard}>
-          <View style={styles.logHeaderRow}>
-            <View style={styles.logDot} />
-            <Text style={styles.logHeaderTitle}>AUTH CHECK DIAGNOSTICS</Text>
-          </View>
-          <ScrollView
-            style={styles.logScrollView}
-            showsVerticalScrollIndicator={false}
-            nestedScrollEnabled
-          >
-            {authLogs.map((lg, idx) => (
-              <Text key={idx} style={styles.logLine}>
-                {lg}
-              </Text>
-            ))}
-          </ScrollView>
         </View>
       </View>
     );
@@ -1147,51 +1124,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 10,
     borderRadius: 20,
-    marginBottom: 24,
+    marginTop: 8,
   },
   splashStatusText: {
     fontSize: 13,
     fontWeight: '600',
     color: '#1A73E8',
-  },
-  logCard: {
-    width: '100%',
-    backgroundColor: '#F8F9FA',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#E8EAED',
-    padding: 14,
-    maxHeight: 180,
-  },
-  logHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginBottom: 8,
-    paddingBottom: 6,
-    borderBottomWidth: 1,
-    borderBottomColor: '#E8EAED',
-  },
-  logDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: '#1A73E8',
-  },
-  logHeaderTitle: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: '#5F6368',
-    letterSpacing: 0.8,
-  },
-  logScrollView: {
-    maxHeight: 130,
-  },
-  logLine: {
-    fontSize: 11,
-    color: '#3C4043',
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-    lineHeight: 16,
-    marginBottom: 3,
   },
 });
