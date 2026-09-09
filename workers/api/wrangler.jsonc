@@ -2,7 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "aetheroll",
   "account_id": "e0c57f1d371890848127861bfa14b3e9",
-  "main": "src/server/app.ts",
+  "main": "src/app.ts",
   "compatibility_date": "2024-09-23",
   "compatibility_flags": [
     "nodejs_compat"
