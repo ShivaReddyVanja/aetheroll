@@ -27,7 +27,7 @@ export async function GET() {
 - **Frontend**: Next.js 15, React 19, Tailwind CSS, Lucide Icons, BlurHash
 - **Backend Edge**: Cloudflare Workers, Cloudflare Durable Objects, Cloudflare D1 (SQLite), Cloudflare R2
 - **Protocol**: GramJS (MTProto 2.0 implementation), WebSockets, WebCrypto (AES-256-GCM, HKDF-SHA256)
-- **License**: MIT Open Source
+- **License**: GNU AGPL-3.0 Open Source
 
 ## Developer & Repository Information
 - Repository: ${GITHUB_REPO_URL}
