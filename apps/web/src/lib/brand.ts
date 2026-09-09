@@ -6,6 +6,11 @@ export const BRAND_NAME = "Aetheroll";
 export const BRAND_TAGLINE = "Infinite Cloud Photo & Video Gallery";
 export const BRAND_DESCRIPTION = "Unlimited, private, zero-knowledge cloud camera roll and media gallery";
 
+export const SITE_URL = (
+  process.env.NEXT_PUBLIC_SITE_URL ||
+  "https://aetheroll.app"
+).replace(/\/$/, "");
+
 export const GITHUB_REPO_URL = "https://github.com/ShivaReddyVanja/aetheroll";
 export const GITHUB_RELEASES_URL = "https://github.com/ShivaReddyVanja/aetheroll/releases/latest";
 export const APK_DOWNLOAD_URL = "https://github.com/ShivaReddyVanja/aetheroll/releases/latest/download/aetheroll-mobile-latest.apk";

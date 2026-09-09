@@ -46,7 +46,7 @@ Expand the test suites for all 4 modularized route subsystems (`auth`, `channels
 
 ### C. Auth Routes (`src/server/routes/auth/auth.test.ts`)
 1. **`sessionRoutes.ts` - Session Lifecycle**:
-   - `POST /session`: Validating composite tokens (`sessionId.clientSecret`), querying `user_sessions`, and verifying `.builtbyshiva.com` domain cookie attributes.
+   - `POST /session`: Validating composite tokens (`sessionId.clientSecret`), querying `user_sessions`, and verifying dynamic apex domain cookie attributes.
    - `GET /me`: Returning full profile for authenticated session.
    - `POST /logout`: Removing `user_sessions` from D1 and expiring the `tg_session` cookie.
    - `GET /client-session`: Returning decrypted session credentials for direct browser-to-Telegram WebSocket uploads.

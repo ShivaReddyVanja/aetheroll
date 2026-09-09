@@ -1,2 +1,3 @@
 # Cloudflare Pages Direct API Proxy Rule (Same-Origin & Zero-CORS)
-/api/*  https://aetheroll.shivareddyvanja.workers.dev/api/:splat  200
+# Uncomment and configure with your remote worker URL if using Cloudflare Pages proxy:
+# /api/*  https://aetheroll-api.<your-domain>.workers.dev/api/:splat  200

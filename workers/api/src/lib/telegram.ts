@@ -18,11 +18,11 @@ export function getDefaultTelegramConfig(envObj?: any): TelegramConfig {
   const dcPort = envObj?.TELEGRAM_DC_PORT ?? process.env?.TELEGRAM_DC_PORT;
 
   if (!rawApiId || String(rawApiId).trim() === "" || isNaN(parseInt(String(rawApiId), 10))) {
-    throw new Error("Missing or invalid required environment variable: TELEGRAM_API_ID. Please configure it in wrangler.toml or set it via secret.");
+    throw new Error("Missing or invalid required variable: TELEGRAM_API_ID. Please set it in .dev.vars (local) or via `wrangler secret put TELEGRAM_API_ID` / Cloudflare Secrets.");
   }
 
   if (!apiHash || String(apiHash).trim() === "") {
-    throw new Error("Missing required environment variable: TELEGRAM_API_HASH. Please configure it in wrangler.toml or set it via secret.");
+    throw new Error("Missing required variable: TELEGRAM_API_HASH. Please set it in .dev.vars (local) or via `wrangler secret put TELEGRAM_API_HASH` / Cloudflare Secrets.");
   }
 
   return {

@@ -96,3 +96,37 @@ CREATE INDEX idx_created_at ON media_items(created_at DESC);
 
 * **Whitelist Guard:** Access strictly limited to authorized Telegram User IDs.
 * **Private Channel Isolation:** Direct web access to the private channel is shielded behind authenticated session workers; standard direct URL hotlinking is prevented.
+
+---
+
+## ⚡ Quickstart & Deployment
+
+For a full step-by-step breakdown across Web, Cloudflare Worker, and Android, see the **[Environment & Deployment Guide](docs/ENVIRONMENT_AND_DEPLOYMENT_GUIDE.md)**.
+
+### 1. Backend Secrets (`workers/api`)
+```bash
+cd workers/api
+cp .dev.vars.example .dev.vars
+# Edit .dev.vars with your Telegram API credentials and a 256-bit encryption key
+```
+
+In production, set your secrets on Cloudflare:
+```bash
+npx wrangler secret put TELEGRAM_API_ID
+npx wrangler secret put TELEGRAM_API_HASH
+npx wrangler secret put SESSION_ENCRYPTION_KEY
+npx wrangler secret put MASTER_ENCRYPTION_KEY
+```
+
+### 2. Frontend (`apps/web`)
+```bash
+cd apps/web
+cp .env.example .env.local
+# Set NEXT_PUBLIC_REMOTE_API_URL to your deployed worker API URL
+```
+
+### 3. Run Locally
+```bash
+pnpm install
+pnpm dev
+```

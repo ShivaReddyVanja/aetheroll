@@ -130,7 +130,7 @@ export function HeroSection({ hasActiveSession }: HeroSectionProps) {
                 <div className="w-3 h-3 rounded-full bg-[#27C93F] border border-[#1AAB29] shadow-sm" />
               </div>
               <span className="ml-1 font-mono text-xs text-zinc-400">
-                aetheroll.builtbyshiva.com/app
+                app.aetheroll.dev
               </span>
             </div>
 

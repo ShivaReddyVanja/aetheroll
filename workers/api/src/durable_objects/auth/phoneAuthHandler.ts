@@ -3,7 +3,7 @@ import { getDb } from "../../lib/db";
 import { encryptSession, decryptSession } from "../../lib/crypto";
 import { generateCompositeSessionToken } from "../../lib/auth";
 import { sendPhoneCode, verifyPhoneCode } from "../../lib/telegram";
-import { appendCleanSingleAuthCookieHeaders } from "../../routes/auth/utils";
+import { appendCleanSingleAuthCookieHeaders, getApexDomain } from "../../routes/auth/utils";
 
 export class PhoneAuthHandler {
   activeSessions: Map<
@@ -116,8 +116,7 @@ export class PhoneAuthHandler {
   async handleVerifyCodeHttp(envObj?: any, request?: Request): Promise<Response> {
     const origin = request?.headers?.get("origin") || "*";
     const host = request?.headers?.get("host") || "";
-    const isBuiltByShiva = host.includes("builtbyshiva.com") || origin.includes("builtbyshiva.com");
-    const domainPart = isBuiltByShiva ? "; Domain=.builtbyshiva.com" : "";
+    const cookieDomain = getApexDomain(origin) || getApexDomain(host);
     this.cleanupExpiredSessions();
 
     try {
@@ -260,7 +259,7 @@ export class PhoneAuthHandler {
         "Access-Control-Allow-Origin": origin,
         "Access-Control-Allow-Credentials": "true",
       });
-      appendCleanSingleAuthCookieHeaders(headers, sessionToken, isBuiltByShiva);
+      appendCleanSingleAuthCookieHeaders(headers, sessionToken, cookieDomain);
 
       return new Response(
         JSON.stringify({

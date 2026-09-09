@@ -5,7 +5,7 @@ import { getDb } from "../../lib/db";
 import { encryptSession, decryptSession } from "../../lib/crypto";
 import { generateCompositeSessionToken } from "../../lib/auth";
 import { sendPhoneCode, verifyPhoneCode } from "../../lib/telegram";
-import { getAuthCookieOptions, forwardToAuthDO, appendCleanSingleAuthCookieHeaders } from "./utils";
+import { getAuthCookieOptions, getApexDomain, forwardToAuthDO, appendCleanSingleAuthCookieHeaders } from "./utils";
 
 export const phoneAuthRoute = new Hono();
 
@@ -174,8 +174,8 @@ phoneAuthRoute.post("/phone/verify", async (c) => {
     // Set HttpOnly single clean session cookie
     const host = c.req.header("host") || "";
     const origin = c.req.header("origin") || "";
-    const isBuiltByShiva = host.includes("builtbyshiva.com") || origin.includes("builtbyshiva.com");
-    appendCleanSingleAuthCookieHeaders(c.res.headers, sessionToken, isBuiltByShiva);
+    const cookieDomain = getApexDomain(origin) || getApexDomain(host);
+    appendCleanSingleAuthCookieHeaders(c.res.headers, sessionToken, cookieDomain);
 
     return c.json({
       success: true,

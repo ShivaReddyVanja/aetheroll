@@ -64,8 +64,8 @@ describe("⚡ DO QrAuthHandler Suite", () => {
 
     const mockDb = createMockD1(null); // new user
 
-    const req = new Request("https://app.builtbyshiva.com/check", {
-      headers: { origin: "https://app.builtbyshiva.com" },
+    const req = new Request("https://app.example.com/check", {
+      headers: { origin: "https://app.example.com" },
     });
 
     const res = await handler.handleCheckHttp(
@@ -86,7 +86,7 @@ describe("⚡ DO QrAuthHandler Suite", () => {
     assert.equal(body.user.displayName, "Alice");
 
     const cookieHeader = res.headers.get("Set-Cookie") || "";
-    assert.ok(cookieHeader.includes("Domain=.builtbyshiva.com"), "Cookie must include builtbyshiva domain");
+    assert.ok(cookieHeader.includes("Domain=.example.com"), "Cookie must include dynamic apex domain");
     assert.ok(cookieHeader.includes("HttpOnly"), "Cookie must be HttpOnly");
 
     // Must remove session after success

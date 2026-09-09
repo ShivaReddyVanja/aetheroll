@@ -58,6 +58,7 @@ local.properties
 .env.production.local
 .dev.vars
 .dev.vars.*
+!**/.dev.vars.example
 
 # Vercel
 .vercel

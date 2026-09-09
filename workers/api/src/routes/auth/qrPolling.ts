@@ -10,6 +10,7 @@ import {
   activeLoginSessions,
   cleanupExpiredLoginSessions,
   getAuthCookieOptions,
+  getApexDomain,
   forwardToAuthDO,
   appendCleanSingleAuthCookieHeaders,
 } from "./utils";
@@ -121,8 +122,8 @@ qrPollingRoute.post("/qr/check", async (c) => {
       // Set HttpOnly single clean session cookie
       const host = c.req.header("host") || "";
       const origin = c.req.header("origin") || "";
-      const isBuiltByShiva = host.includes("builtbyshiva.com") || origin.includes("builtbyshiva.com");
-      appendCleanSingleAuthCookieHeaders(c.res.headers, sessionToken, isBuiltByShiva);
+      const cookieDomain = getApexDomain(origin) || getApexDomain(host);
+      appendCleanSingleAuthCookieHeaders(c.res.headers, sessionToken, cookieDomain);
 
       // Cleanup memory session
       activeLoginSessions.delete(qrId);

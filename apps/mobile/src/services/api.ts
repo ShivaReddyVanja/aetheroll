@@ -10,7 +10,7 @@ import {
 } from './secureStorage';
 
 let sessionToken: string | null = null;
-let apiBaseUrl: string = 'https://aetheroll-api.builtbyshiva.com'; // Default Remote API URL
+let apiBaseUrl: string = process.env.EXPO_PUBLIC_API_URL || 'https://api.aetheroll.app'; // Default Remote API URL
 
 export async function setSessionToken(token: string | null) {
   console.log('[API] setSessionToken called, token:', token ? `${token.slice(0, 10)}...` : 'null');

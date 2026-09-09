@@ -9,7 +9,7 @@ import {
   startQrLogin,
   checkQrLoginStatus,
 } from "../../lib/telegram";
-import { appendCleanSingleAuthCookieHeaders } from "../../routes/auth/utils";
+import { appendCleanSingleAuthCookieHeaders, getApexDomain } from "../../routes/auth/utils";
 import type { ActiveSessionEntry } from "../common/types";
 import { flushSessionBilling } from "../../lib/billing/index";
 
@@ -234,8 +234,7 @@ export class QrAuthHandler {
   async handleCheckHttp(qrId?: string, envObj?: any, request?: Request): Promise<Response> {
     const origin = request?.headers?.get("origin") || "*";
     const host = request?.headers?.get("host") || "";
-    const isBuiltByShiva = host.includes("builtbyshiva.com") || origin.includes("builtbyshiva.com");
-    const domainPart = isBuiltByShiva ? "; Domain=.builtbyshiva.com" : "";
+    const cookieDomain = getApexDomain(origin) || getApexDomain(host);
 
     if (!qrId) {
       return new Response(JSON.stringify({ error: "qrId required" }), {
@@ -307,7 +306,7 @@ export class QrAuthHandler {
           "Access-Control-Allow-Origin": origin,
           "Access-Control-Allow-Credentials": "true",
         });
-        appendCleanSingleAuthCookieHeaders(headers, sessionToken, isBuiltByShiva);
+        appendCleanSingleAuthCookieHeaders(headers, sessionToken, cookieDomain);
 
         const response = new Response(
           JSON.stringify({
@@ -343,7 +342,7 @@ export class QrAuthHandler {
   async handleClaimHttp(envObj?: any, request?: Request): Promise<Response> {
     const origin = request?.headers?.get("origin") || "*";
     const host = request?.headers?.get("host") || "";
-    const isBuiltByShiva = host.includes("builtbyshiva.com") || origin.includes("builtbyshiva.com");
+    const cookieDomain = getApexDomain(origin) || getApexDomain(host);
 
     const body = (await request?.json().catch(() => ({}))) as any;
     const { qrClaimId } = body || {};
@@ -389,7 +388,7 @@ export class QrAuthHandler {
       "Access-Control-Allow-Origin": origin,
       "Access-Control-Allow-Credentials": "true",
     });
-    appendCleanSingleAuthCookieHeaders(headers, claim.sessionToken, isBuiltByShiva);
+    appendCleanSingleAuthCookieHeaders(headers, claim.sessionToken, cookieDomain);
 
     return new Response(JSON.stringify({ success: true, user: claim.user }), { headers });
   }

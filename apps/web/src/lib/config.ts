@@ -5,7 +5,7 @@
 export const AETHEROLL_WORKER_URL = (
   process.env.NEXT_PUBLIC_REMOTE_API_URL ||
   process.env.REMOTE_API_URL ||
-  "https://aetheroll-api.builtbyshiva.com"
+  ""
 ).replace(/\/$/, "");
 
 /**

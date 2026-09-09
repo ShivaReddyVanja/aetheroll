@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { LandingNavbar } from "@/components/landing/LandingNavbar";
 import { LandingFooter } from "@/components/landing/LandingFooter";
+import { SITE_URL } from "@/lib/brand";
 import {
   ShieldCheck,
   Lock,
@@ -22,13 +23,13 @@ export const metadata: Metadata = {
   description:
     "Privacy Policy for Aetheroll. Learn how your data and media are protected, encrypted, and stored in your private Telegram vault with zero third-party tracking.",
   alternates: {
-    canonical: "https://aetheroll.builtbyshiva.com/privacy",
+    canonical: `${SITE_URL}/privacy`,
   },
   openGraph: {
     title: "Privacy Policy — Aetheroll",
     description:
       "Aetheroll Privacy Policy. Learn about our zero-knowledge architecture, hardware-backed token security, and strict data privacy standards.",
-    url: "https://aetheroll.builtbyshiva.com/privacy",
+    url: `${SITE_URL}/privacy`,
   },
 };
 
@@ -50,10 +51,10 @@ export default function PrivacyPolicyPage() {
           <p className="text-zinc-400 text-sm leading-relaxed max-w-2xl">
             This Privacy Policy explains how <strong>Aetheroll</strong> (&quot;we&quot;, &quot;us&quot;, or &quot;our&quot;), developed by Shiva Reddy, collects, uses, and safeguards your information when you use our mobile application and web platform at{" "}
             <a
-              href="https://aetheroll.builtbyshiva.com"
+              href={SITE_URL}
               className="text-zinc-200 underline hover:text-white"
             >
-              https://aetheroll.builtbyshiva.com
+              {SITE_URL}
             </a>
             .
           </p>
@@ -252,8 +253,8 @@ export default function PrivacyPolicyPage() {
               </li>
               <li>
                 <strong>Account & Data Deletion Request:</strong> You may request complete erasure of any index data associated with your Telegram account by contacting our Grievance Officer at{" "}
-                <a href="mailto:privacy@builtbyshiva.com" className="text-blue-400 underline">
-                  privacy@builtbyshiva.com
+                <a href="mailto:privacy@aetheroll.app" className="text-blue-400 underline">
+                  privacy@aetheroll.app
                 </a>
                 . Requests are processed within 15 business days.
               </li>
@@ -305,13 +306,13 @@ export default function PrivacyPolicyPage() {
                 <span className="text-zinc-500 font-mono uppercase">Contact Email</span>
                 <p>
                   <a
-                    href="mailto:privacy@builtbyshiva.com"
+                    href="mailto:privacy@aetheroll.app"
                     className="text-blue-400 hover:text-blue-300 font-mono font-medium"
                   >
-                    privacy@builtbyshiva.com
+                    privacy@aetheroll.app
                   </a>
                 </p>
-                <p className="text-zinc-500">Website: https://aetheroll.builtbyshiva.com</p>
+                <p className="text-zinc-500">Website: {SITE_URL}</p>
               </div>
             </div>
             <p className="text-[11px] text-zinc-500 pt-2 border-t border-zinc-800/80">

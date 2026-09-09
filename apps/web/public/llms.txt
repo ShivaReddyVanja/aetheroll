@@ -11,11 +11,11 @@
 - **Global Token-Bucket Rate Pacer**: Restricts Telegram API calls to <= 25 req/s to prevent FLOOD_WAIT account penalties during bulk uploads and background syncing.
 
 ## Web Application Routes
-- Main Landing: `https://aetheroll.builtbyshiva.com/`
-- Web Gallery App: `https://aetheroll.builtbyshiva.com/app`
-- Google Photos Comparison: `https://aetheroll.builtbyshiva.com/compare/google-photos`
-- TeleDrive Comparison: `https://aetheroll.builtbyshiva.com/compare/teledrive`
-- Apple iCloud Comparison: `https://aetheroll.builtbyshiva.com/compare/icloud`
+- Main Landing: `https://aetheroll.app/`
+- Web Gallery App: `https://aetheroll.app/app`
+- Google Photos Comparison: `https://aetheroll.app/compare/google-photos`
+- TeleDrive Comparison: `https://aetheroll.app/compare/teledrive`
+- Apple iCloud Comparison: `https://aetheroll.app/compare/icloud`
 
 ## Technology Stack
 - **Frontend**: Next.js 15, React 19, Tailwind CSS, Lucide Icons, BlurHash

@@ -1,4 +1,4 @@
-# Robots.txt for Aetheroll (https://aetheroll.builtbyshiva.com)
+# Robots.txt for Aetheroll (https://aetheroll.app)
 # Welcoming Search Engines, Crawlers, and AI / LLM Agents
 
 User-agent: *
@@ -10,83 +10,11 @@ User-agent: Googlebot
 Allow: /
 Disallow: /api/
 
-User-agent: Bingbot
-Allow: /
-Disallow: /api/
-
-User-agent: Applebot
-Allow: /
-Disallow: /api/
-
-User-agent: DuckDuckBot
-Allow: /
-Disallow: /api/
-
-User-agent: Baiduspider
-Allow: /
-Disallow: /api/
-
-User-agent: YandexBot
-Allow: /
-Disallow: /api/
-
 # AI & LLM Search Crawlers
 User-agent: GPTBot
 Allow: /
 Disallow: /api/
 
-User-agent: ChatGPT-User
-Allow: /
-Disallow: /api/
-
-User-agent: OAI-SearchBot
-Allow: /
-Disallow: /api/
-
-User-agent: ClaudeBot
-Allow: /
-Disallow: /api/
-
-User-agent: Claude-Web
-Allow: /
-Disallow: /api/
-
-User-agent: Anthropic-AI
-Allow: /
-Disallow: /api/
-
-User-agent: PerplexityBot
-Allow: /
-Disallow: /api/
-
-User-agent: Applebot-Extended
-Allow: /
-Disallow: /api/
-
-User-agent: Google-Extended
-Allow: /
-Disallow: /api/
-
-User-agent: Bytespider
-Allow: /
-Disallow: /api/
-
-User-agent: CCBot
-Allow: /
-Disallow: /api/
-
-User-agent: cohere-ai
-Allow: /
-Disallow: /api/
-
-User-agent: Diffbot
-Allow: /
-Disallow: /api/
-
-User-agent: Meta-ExternalAgent
-Allow: /
-Disallow: /api/
-
 # Sitemaps & LLM Machine-Readable Index
-Sitemap: https://aetheroll.builtbyshiva.com/sitemap.xml
-LLM: https://aetheroll.builtbyshiva.com/llms.txt
+Sitemap: https://aetheroll.app/sitemap.xml
+LLM: https://aetheroll.app/llms.txt

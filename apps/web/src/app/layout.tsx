@@ -1,9 +1,7 @@
 import type { Metadata, Viewport } from "next";
-import { BRAND_NAME, BRAND_TAGLINE, BRAND_DESCRIPTION } from "@/lib/brand";
+import { BRAND_NAME, BRAND_TAGLINE, BRAND_DESCRIPTION, SITE_URL } from "@/lib/brand";
 import { FAQ_ITEMS } from "@/lib/faq";
 import "./globals.css";
-
-const SITE_URL = "https://aetheroll.builtbyshiva.com";
 
 export const viewport: Viewport = {
   themeColor: "#09090b",
@@ -90,9 +88,11 @@ export const metadata: Metadata = {
       { url: "/apple-icon", sizes: "180x180", type: "image/png" },
     ],
   },
-  verification: {
-    google: "ggUbiG9i3iksSrwR7nG2B8MlRfG1i9YbtVVLNhnvWAg",
-  },
+  verification: process.env.NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION
+    ? {
+        google: process.env.NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION,
+      }
+    : undefined,
 };
 
 export default function RootLayout({

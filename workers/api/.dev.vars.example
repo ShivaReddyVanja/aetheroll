@@ -1,0 +1,16 @@
+# ----------------------------------------------------
+# Aetheroll Local Development Secrets (.dev.vars)
+# DO NOT COMMIT THIS FILE TO GIT REPOSITORY
+# ----------------------------------------------------
+
+# 1. Telegram App Credentials (from https://my.telegram.org)
+TELEGRAM_API_ID="YOUR_TELEGRAM_API_ID"
+TELEGRAM_API_HASH="YOUR_TELEGRAM_API_HASH"
+
+# 2. Cryptographic Encryption Keys (256-Bit Hex Strings)
+# Generate with: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+SESSION_ENCRYPTION_KEY="0000000000000000000000000000000000000000000000000000000000000000"
+MASTER_ENCRYPTION_KEY="0000000000000000000000000000000000000000000000000000000000000000"
+
+# 3. Optional: Admin Telegram User IDs (comma-separated, e.g. "123456789,987654321")
+ADMIN_TELEGRAM_USER_IDS=""

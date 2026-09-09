@@ -163,7 +163,7 @@ app.use(express.json({ limit: '10mb' }));
 
 const TRANSCODER_PRIVATE_KEY = process.env.TRANSCODER_PRIVATE_KEY!;
 const INTERNAL_SECRET = process.env.INTERNAL_SECRET!;
-const API_BASE_URL = process.env.API_BASE_URL || 'https://aetheroll-api.builtbyshiva.com';
+const API_BASE_URL = process.env.API_BASE_URL || 'https://aetheroll-api.yourdomain.com';
 
 // 1. Health check & keep-alive endpoint
 app.get('/health', (req, res) => {
@@ -211,7 +211,7 @@ async function processTranscodeJob(job: any) {
 
   const client = new TelegramClient(
     new StringSession(job.sessionString),
-    Number(process.env.TELEGRAM_API_ID || 12345678),
+    Number(process.env.TELEGRAM_API_ID),
     process.env.TELEGRAM_API_HASH || '',
     { connectionRetries: 5 }
   );

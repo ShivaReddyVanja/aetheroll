@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { LandingNavbar } from "@/components/landing/LandingNavbar";
 import { LandingFooter } from "@/components/landing/LandingFooter";
+import { SITE_URL } from "@/lib/brand";
 import {
   ArrowRight,
   ShieldCheck,
@@ -25,13 +26,13 @@ export const metadata: Metadata = {
     "unlimited iphone cloud storage",
   ],
   alternates: {
-    canonical: "https://aetheroll.builtbyshiva.com/compare/icloud",
+    canonical: `${SITE_URL}/compare/icloud`,
   },
   openGraph: {
     title: "Aetheroll vs Apple iCloud Photos — Free Unlimited iPhone Photo Backup",
     description:
       "Tired of iCloud 'Storage Almost Full' alerts? Use Telegram as your unmetered Apple Photos backup with full EXIF, HEIC, and 4K HDR video support.",
-    url: "https://aetheroll.builtbyshiva.com/compare/icloud",
+    url: `${SITE_URL}/compare/icloud`,
   },
 };
 
@@ -46,19 +47,19 @@ export default function CompareICloudPage() {
             "@type": "ListItem",
             "position": 1,
             "name": "Home",
-            "item": "https://aetheroll.builtbyshiva.com",
+            "item": SITE_URL,
           },
           {
             "@type": "ListItem",
             "position": 2,
             "name": "Comparisons",
-            "item": "https://aetheroll.builtbyshiva.com/#comparison",
+            "item": `${SITE_URL}/#comparison`,
           },
           {
             "@type": "ListItem",
             "position": 3,
             "name": "Apple iCloud Alternative",
-            "item": "https://aetheroll.builtbyshiva.com/compare/icloud",
+            "item": `${SITE_URL}/compare/icloud`,
           },
         ],
       },

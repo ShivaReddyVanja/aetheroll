@@ -4,7 +4,7 @@ import {
   extractSessionToken,
   resolveUserAuth,
 } from "../../lib/auth";
-import { getAuthCookieOptions, appendCleanSingleAuthCookieHeaders, appendCleanClearAuthCookieHeaders } from "./utils";
+import { getAuthCookieOptions, getApexDomain, appendCleanSingleAuthCookieHeaders, appendCleanClearAuthCookieHeaders } from "./utils";
 
 export const sessionRoutes = new Hono();
 
@@ -39,8 +39,8 @@ sessionRoutes.post("/session", async (c) => {
 
     const host = c.req.header("host") || "";
     const origin = c.req.header("origin") || "";
-    const isBuiltByShiva = host.includes("builtbyshiva.com") || origin.includes("builtbyshiva.com");
-    appendCleanSingleAuthCookieHeaders(c.res.headers, sessionToken, isBuiltByShiva);
+    const cookieDomain = getApexDomain(origin) || getApexDomain(host);
+    appendCleanSingleAuthCookieHeaders(c.res.headers, sessionToken, cookieDomain);
 
     return c.json({ success: true });
   } catch (error: any) {
@@ -83,8 +83,8 @@ sessionRoutes.post("/logout", async (c) => {
   }
   const host = c.req.header("host") || "";
   const origin = c.req.header("origin") || "";
-  const isBuiltByShiva = host.includes("builtbyshiva.com") || origin.includes("builtbyshiva.com");
-  appendCleanClearAuthCookieHeaders(c.res.headers, isBuiltByShiva);
+  const cookieDomain = getApexDomain(origin) || getApexDomain(host);
+  appendCleanClearAuthCookieHeaders(c.res.headers, cookieDomain);
   return c.json({ success: true });
 });
 

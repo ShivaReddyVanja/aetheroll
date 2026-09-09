@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { LandingNavbar } from "@/components/landing/LandingNavbar";
 import { LandingFooter } from "@/components/landing/LandingFooter";
+import { SITE_URL } from "@/lib/brand";
 import {
   ArrowRight,
   Film,
@@ -27,13 +28,13 @@ export const metadata: Metadata = {
     "telegram video streaming",
   ],
   alternates: {
-    canonical: "https://aetheroll.builtbyshiva.com/compare/teledrive",
+    canonical: `${SITE_URL}/compare/teledrive`,
   },
   openGraph: {
     title: "Aetheroll vs TeleDrive — The Specialized Telegram Media Gallery",
     description:
       "TeleDrive is built for files. Aetheroll is purpose-built for media with BlurHash previews, sub-5ms 4K video streaming, and automated EXIF timeline grouping.",
-    url: "https://aetheroll.builtbyshiva.com/compare/teledrive",
+    url: `${SITE_URL}/compare/teledrive`,
   },
 };
 
@@ -48,19 +49,19 @@ export default function CompareTeleDrivePage() {
             "@type": "ListItem",
             "position": 1,
             "name": "Home",
-            "item": "https://aetheroll.builtbyshiva.com",
+            "item": SITE_URL,
           },
           {
             "@type": "ListItem",
             "position": 2,
             "name": "Comparisons",
-            "item": "https://aetheroll.builtbyshiva.com/#comparison",
+            "item": `${SITE_URL}/#comparison`,
           },
           {
             "@type": "ListItem",
             "position": 3,
             "name": "TeleDrive & Teldrive Alternative",
-            "item": "https://aetheroll.builtbyshiva.com/compare/teledrive",
+            "item": `${SITE_URL}/compare/teledrive`,
           },
         ],
       },

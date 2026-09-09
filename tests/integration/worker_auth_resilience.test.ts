@@ -11,13 +11,13 @@ describe("⚡ Cloudflare Worker & Auth Resilience Suite", () => {
     it("should correctly extract and parse credentials from worker context object (c.env)", () => {
       const mockWorkerEnv = {
         TELEGRAM_API_ID: "12345678",
-        TELEGRAM_API_HASH: "0123456789abcdef0123456789abcdef",
+        TELEGRAM_API_HASH: "abcdef1234567890abcdef1234567890",
         TELEGRAM_TEST_MODE: "false",
       };
 
       const config = getDefaultTelegramConfig(mockWorkerEnv);
       assert.equal(config.apiId, 12345678, "apiId must be parsed to integer");
-      assert.equal(config.apiHash, "0123456789abcdef0123456789abcdef");
+      assert.equal(config.apiHash, "abcdef1234567890abcdef1234567890");
       assert.equal(config.testMode, false);
     });
 

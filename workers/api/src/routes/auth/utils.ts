@@ -15,18 +15,37 @@ export function cleanupExpiredLoginSessions() {
   }
 }
 
+export function getApexDomain(hostOrOrigin: string): string | undefined {
+  if (!hostOrOrigin) return undefined;
+  const clean = hostOrOrigin.replace(/^https?:\/\//, "").split("/")[0].split(":")[0].toLowerCase();
+  if (
+    clean === "localhost" ||
+    clean === "127.0.0.1" ||
+    clean.endsWith(".workers.dev") ||
+    clean.endsWith(".pages.dev") ||
+    clean.endsWith(".vercel.app")
+  ) {
+    return undefined;
+  }
+  const parts = clean.split(".");
+  if (parts.length >= 2) {
+    return `.${parts.slice(-2).join(".")}`;
+  }
+  return undefined;
+}
+
 export function getAuthCookieOptions(c: Context) {
   const host = c.req.header("host") || "";
   const origin = c.req.header("origin") || "";
-  const isProd = process.env.NODE_ENV === "production" || host.includes("builtbyshiva.com") || host.includes("workers.dev");
-  const isBuiltByShiva = host.includes("builtbyshiva.com") || origin.includes("builtbyshiva.com");
+  const domain = getApexDomain(origin) || getApexDomain(host);
+  const isProd = process.env.NODE_ENV === "production" || !!domain || host.includes("workers.dev");
 
   return {
     path: "/",
     httpOnly: true,
     secure: isProd,
     sameSite: "None" as const,
-    domain: isBuiltByShiva ? ".builtbyshiva.com" : undefined,
+    domain: domain,
     maxAge: 30 * 24 * 60 * 60,
   };
 }
@@ -39,22 +58,22 @@ export function getAuthCookieOptions(c: Context) {
 export function appendCleanSingleAuthCookieHeaders(
   headers: Headers,
   sessionToken: string,
-  isBuiltByShiva: boolean,
+  cookieDomain?: string,
   isProd: boolean = true
 ) {
   const secureStr = isProd ? "; Secure" : "";
-  const domainPart = isBuiltByShiva ? "; Domain=.builtbyshiva.com" : "";
+  const domainPart = cookieDomain ? `; Domain=${cookieDomain}` : "";
 
   // 1. Purge host-only tg_session
   headers.append("Set-Cookie", `tg_session=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly${secureStr}; SameSite=None`);
   // 2. Purge domain-scoped tg_session (if domain is active)
-  if (isBuiltByShiva) {
+  if (cookieDomain) {
     headers.append("Set-Cookie", `tg_session=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly${secureStr}; SameSite=None${domainPart}`);
   }
   // 3. Purge host-only legacy aetheroll_session
   headers.append("Set-Cookie", `aetheroll_session=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly${secureStr}; SameSite=None`);
   // 4. Purge domain-scoped legacy aetheroll_session
-  if (isBuiltByShiva) {
+  if (cookieDomain) {
     headers.append("Set-Cookie", `aetheroll_session=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly${secureStr}; SameSite=None${domainPart}`);
   }
   // 5. Set THE SINGLE CLEAN ACTIVE COOKIE
@@ -66,16 +85,20 @@ export function appendCleanSingleAuthCookieHeaders(
  */
 export function appendCleanClearAuthCookieHeaders(
   headers: Headers,
-  isBuiltByShiva: boolean,
+  cookieDomain?: string,
   isProd: boolean = true
 ) {
   const secureStr = isProd ? "; Secure" : "";
-  const domainPart = isBuiltByShiva ? "; Domain=.builtbyshiva.com" : "";
+  const domainPart = cookieDomain ? `; Domain=${cookieDomain}` : "";
 
   headers.append("Set-Cookie", `tg_session=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly${secureStr}; SameSite=None`);
-  headers.append("Set-Cookie", `tg_session=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly${secureStr}; SameSite=None${domainPart}`);
+  if (cookieDomain) {
+    headers.append("Set-Cookie", `tg_session=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly${secureStr}; SameSite=None${domainPart}`);
+  }
   headers.append("Set-Cookie", `aetheroll_session=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly${secureStr}; SameSite=None`);
-  headers.append("Set-Cookie", `aetheroll_session=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly${secureStr}; SameSite=None${domainPart}`);
+  if (cookieDomain) {
+    headers.append("Set-Cookie", `aetheroll_session=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly${secureStr}; SameSite=None${domainPart}`);
+  }
 }
 
 export function forwardToAuthDO(c: any) {

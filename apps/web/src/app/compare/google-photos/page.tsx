@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { LandingNavbar } from "@/components/landing/LandingNavbar";
 import { LandingFooter } from "@/components/landing/LandingFooter";
+import { SITE_URL } from "@/lib/brand";
 import {
   ArrowRight,
   ShieldCheck,
@@ -27,13 +28,13 @@ export const metadata: Metadata = {
     "best google photos alternative 2026",
   ],
   alternates: {
-    canonical: "https://aetheroll.builtbyshiva.com/compare/google-photos",
+    canonical: `${SITE_URL}/compare/google-photos`,
   },
   openGraph: {
     title: "Aetheroll vs Google Photos — Free Unlimited Cloud Photo Gallery",
     description:
       "Stop paying for Google One storage. Turn Telegram into a private, unlimited Google Photos vault with zero compression and sub-5ms 4K video streaming.",
-    url: "https://aetheroll.builtbyshiva.com/compare/google-photos",
+    url: `${SITE_URL}/compare/google-photos`,
   },
 };
 
@@ -48,19 +49,19 @@ export default function CompareGooglePhotosPage() {
             "@type": "ListItem",
             "position": 1,
             "name": "Home",
-            "item": "https://aetheroll.builtbyshiva.com",
+            "item": SITE_URL,
           },
           {
             "@type": "ListItem",
             "position": 2,
             "name": "Comparisons",
-            "item": "https://aetheroll.builtbyshiva.com/#comparison",
+            "item": `${SITE_URL}/#comparison`,
           },
           {
             "@type": "ListItem",
             "position": 3,
             "name": "Google Photos Alternative",
-            "item": "https://aetheroll.builtbyshiva.com/compare/google-photos",
+            "item": `${SITE_URL}/compare/google-photos`,
           },
         ],
       },

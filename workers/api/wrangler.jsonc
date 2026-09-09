@@ -1,17 +1,10 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "aetheroll",
-  "account_id": "e0c57f1d371890848127861bfa14b3e9",
   "main": "src/app.ts",
   "compatibility_date": "2024-09-23",
   "compatibility_flags": [
     "nodejs_compat"
-  ],
-  "routes": [
-    {
-      "pattern": "aetheroll-api.builtbyshiva.com",
-      "custom_domain": true
-    }
   ],
 
   // 1. Durable Objects (Stateful WebSocket & Warm MTProto Sessions)
@@ -50,12 +43,18 @@
     }
   ],
 
-  // 4. Non-Secret Operational Variables
-  // (Sensitive secrets like TELEGRAM_API_HASH and SESSION_ENCRYPTION_KEY live in .dev.vars / Cloudflare Secrets)
+  // 4. Operational Variables & Required Secrets
+  // ---------------------------------------------------------------------------------------------
+  // SECRETS (Do NOT put in this file! Set via `wrangler secret put <NAME>` or Cloudflare Dashboard):
+  // - TELEGRAM_API_ID        : Your Telegram App ID (from https://my.telegram.org)
+  // - TELEGRAM_API_HASH      : Your Telegram App Hash (from https://my.telegram.org)
+  // - SESSION_ENCRYPTION_KEY : 64-char hex key (generate: node -e "console.log(crypto.randomBytes(32).toString('hex'))")
+  // - MASTER_ENCRYPTION_KEY  : 64-char hex key for Ledger WAL encryption
+  // - ADMIN_TELEGRAM_USER_IDS: (Optional) Comma-separated Telegram User IDs for admin routes
+  // For local development, copy `.dev.vars.example` -> `workers/api/.dev.vars`.
+  // ---------------------------------------------------------------------------------------------
   "vars": {
-    "TELEGRAM_API_ID": "12345678",
     "TELEGRAM_TEST_MODE": "false",
-    "ENABLE_TELEMETRY": "true",
-    "ADMIN_TELEGRAM_USER_IDS": "1139540899"
+    "ENABLE_TELEMETRY": "true"
   }
 }
