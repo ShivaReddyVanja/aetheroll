@@ -1,92 +1,88 @@
 PolyForm Noncommercial License 1.0.0
 
-Copyright (c) 2026 Shiva Reddy Vanja <https://github.com/ShivaReddyVanja/aetheroll>
+<https://polyformproject.org/licenses/noncommercial/1.0.0>
+
+Copyright (c) 2026 Shiva Reddy Vanja <https://github.com/ShivaReddyVanja>
 
 ========================================================================
-ACCEPTANCE
+Acceptance
 ========================================================================
 
-In order to get any license under these terms, you must agree to them as
-both strict conditions and terms.  A grant of any license under these
-terms is conditioned on your agreement to all the terms.  If you do not
-agree to all the terms, you have no license for the software under these
+In order to get any license under these terms, you must agree
+to them as both strict conditions and terms. A grant of any
+license under these terms is conditioned on your agreement to
+all the terms. If you do not agree to all the terms, you have no
+license for the software under these terms.
+
+========================================================================
+Copyright License
+========================================================================
+
+The licensor grants you a copyright license for the software to
+do everything you might do with the software that would otherwise
+infringe the licensor's copyright in it, for noncommercial
+purposes only.
+
+========================================================================
+Notices
+========================================================================
+
+You must ensure that everyone who gets a copy of any part of
+this software from you, with or without changes, also gets the
+text of these terms who gets a copy of any part of this software
+from you, with or without changes, also gets the text of these
 terms.
 
 ========================================================================
-COPYRIGHT LICENSE
+Noncommercial Purposes
 ========================================================================
 
-The licensor grants you a copyright license for the software to do
-everything you might do with the software that would otherwise infringe
-the licensor's copyright in it, for Noncommercial Purposes only.
+Noncommercial purposes are purposes that do not involve primary
+intent for or directed towards commercial advantage or monetary
+compensation.
 
 ========================================================================
-NOTICES
+Patent License
 ========================================================================
 
-You must ensure that everyone who gets a copy of any part of this software
-from you, with or without changes, also gets the text of these terms.
+The licensor grants you a patent license for the software that
+covers patent claims the licensor can license, or becomes able
+to license, that you would infringe by using the software for
+noncommercial purposes.
 
 ========================================================================
-NONCOMMERCIAL PURPOSES
+Fair Use
 ========================================================================
 
-Noncommercial purposes are purposes that do not involve either:
-
-  1. Selling the software, distributing the software as part of a sale,
-     or charging for services related to the software (including
-     distributing apps or binaries on app stores such as Google Play,
-     Apple App Store, Indus Appstore, or other marketplaces).
-
-  2. Using the software to provide a commercial service, commercial API,
-     or commercial application to others.
-
-Personal use, private non-commercial backup, personal evaluation,
-security audits, research, and non-commercial open-source contributions
-are permitted noncommercial purposes under this license.
-
-Any commercial use, commercial distribution, or commercial licensing
-requires an express written commercial agreement from the copyright holder.
+You may have "fair use" rights for the software under the law.
+These terms do not limit those rights.
 
 ========================================================================
-PATENT LICENSE
+No Other Rights
 ========================================================================
 
-The licensor grants you a patent license for the software that covers
-patent claims the licensor can license, or becomes able to license,
-that you would infringe by using the software for Noncommercial Purposes.
+These terms do not grant you any right to use the licensor's
+trade names, trademarks, service marks, or product names.
 
 ========================================================================
-FAIR USE
+Defense in Litigation
 ========================================================================
 
-You may have "fair use" rights for the software under the law. These
-terms do not limit those rights.
+As a far-reaching exception to the grant of any patent license
+under these terms, that patent license will not cover any
+software for which you start the litigation against the licensor
+or any other licensee alleging that the software infringes any
+patent.
 
 ========================================================================
-NO OTHER RIGHTS
+Disclaimer
 ========================================================================
 
-These terms do not grant you any right to use the licensor's trade names,
-trademarks, service marks, or product names, including "Aetheroll".
-
-========================================================================
-DEFENSE IN LITIGATION
-========================================================================
-
-As a far-reaching exception to the grant of any patent license under
-these terms, that patent license will not cover any software for which
-you start the litigation against the licensor or any other licensee
-alleging that the software infringes any patent.
-
-========================================================================
-DISCLAIMER
-========================================================================
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
-TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
-SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE.
