@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -10,6 +10,7 @@ import {
   TouchableWithoutFeedback,
   ActivityIndicator,
   StatusBar,
+  FlatList,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Video, { VideoRef } from 'react-native-video';
@@ -45,7 +46,8 @@ export function MediaViewerScreen({ item, items, onClose, onToggleFavorite }: Me
   if (!item) return null;
 
   const insets = useSafeAreaInsets();
-  const [currentIndex, setCurrentIndex] = useState(items.findIndex((i) => i.id === item.id));
+  const initialIdx = items.findIndex((i) => i.id === item.id);
+  const [currentIndex, setCurrentIndex] = useState(initialIdx >= 0 ? initialIdx : 0);
   const activeItem = items[currentIndex] || item;
 
   const [isPlaying, setIsPlaying] = useState(true);
@@ -60,6 +62,7 @@ export function MediaViewerScreen({ item, items, onClose, onToggleFavorite }: Me
   const [showTelemetryModal, setShowTelemetryModal] = useState(false);
   const [streamDiagnosticPill, setStreamDiagnosticPill] = useState<string | null>(null);
 
+  const flatListRef = useRef<FlatList<MediaItemData>>(null);
   const videoRef = useRef<VideoRef>(null);
   const scrubberWidthRef = useRef<number>(SCREEN_WIDTH - 48);
   const lastTapRef = useRef<number>(0);
@@ -179,13 +182,153 @@ export function MediaViewerScreen({ item, items, onClose, onToggleFavorite }: Me
     setShowControls(true);
   };
 
-  const handlePrev = () => {
-    if (currentIndex > 0) setCurrentIndex(currentIndex - 1);
+  const handleMomentumScrollEnd = (e: any) => {
+    const offsetX = e.nativeEvent.contentOffset.x;
+    const nextIdx = Math.round(offsetX / SCREEN_WIDTH);
+    if (nextIdx !== currentIndex && nextIdx >= 0 && nextIdx < items.length) {
+      setCurrentIndex(nextIdx);
+    }
   };
 
-  const handleNext = () => {
-    if (currentIndex < items.length - 1) setCurrentIndex(currentIndex + 1);
-  };
+  const renderSlide = useCallback(
+    ({ item: slideItem, index }: { item: MediaItemData; index: number }) => {
+      const isCurrent = index === currentIndex;
+      const slideIsVideo = slideItem.fileType === 'video';
+
+      return (
+        <TouchableWithoutFeedback onPress={handleTap}>
+          <View style={styles.slide}>
+            {!slideIsVideo ? (
+              <Image
+                source={{ uri: getMediaStreamUrl(slideItem.id) }}
+                style={styles.fullImage}
+                resizeMode="contain"
+              />
+            ) : isCurrent ? (
+              <View style={styles.videoWrapper}>
+                <Video
+                  ref={videoRef}
+                  source={{
+                    uri: getMediaStreamUrl(slideItem.id),
+                    headers: getSessionToken()
+                      ? {
+                          Authorization: `Bearer ${getSessionToken()}`,
+                          'x-tg-session': getSessionToken()!,
+                        }
+                      : undefined,
+                    bufferConfig: {
+                      minBufferMs: 25000,
+                      maxBufferMs: 60000,
+                      bufferForPlaybackMs: 1500,
+                      bufferForPlaybackAfterRebufferMs: 3000,
+                      backBufferDurationMs: 30000,
+                      maxHeapAllocationPercent: 0.8,
+                      minBackBufferMemoryReservePercent: 0.1,
+                      minBufferMemoryReservePercent: 0.2,
+                    },
+                  }}
+                  style={styles.fullVideo}
+                  resizeMode="contain"
+                  paused={!isPlaying}
+                  muted={isMuted}
+                  rate={playbackRate}
+                  poster={getMediaThumbnailUrl(slideItem.id)}
+                  bufferConfig={{
+                    minBufferMs: 25000,
+                    maxBufferMs: 60000,
+                    bufferForPlaybackMs: 1500,
+                    bufferForPlaybackAfterRebufferMs: 3000,
+                    backBufferDurationMs: 30000,
+                    maxHeapAllocationPercent: 0.8,
+                    minBackBufferMemoryReservePercent: 0.1,
+                    minBufferMemoryReservePercent: 0.2,
+                  }}
+                  preferredForwardBufferDuration={30}
+                  automaticallyWaitsToMinimizeStalling={true}
+                  onLoad={(data) => {
+                    if (data.duration && data.duration > 0) {
+                      setDuration(data.duration);
+                    }
+                    telemetryService.addLog({
+                      category: 'EXOPLAYER',
+                      level: 'success',
+                      message: `🎬 [ExoPlayer Load] Duration: ${data.duration?.toFixed(1)}s, Res: ${data.naturalSize?.width || '?'}x${data.naturalSize?.height || '?'}`,
+                      meta: data,
+                    });
+                  }}
+                  onProgress={(data) => {
+                    setCurrentTime(data.currentTime);
+                    const dur = data.seekableDuration || duration || slideItem.durationSeconds || 0;
+                    if (dur > 0 && slideItem.fileSizeBytes) {
+                      videoPrefetchService.updatePlaybackProgress(
+                        slideItem.id,
+                        data.currentTime,
+                        dur,
+                        slideItem.fileSizeBytes
+                      );
+                    }
+                  }}
+                  onBuffer={({ isBuffering: buffering }) => {
+                    setIsBuffering(buffering);
+                    telemetryService.addLog({
+                      category: 'EXOPLAYER',
+                      level: buffering ? 'warn' : 'info',
+                      message: buffering ? '⏳ [ExoPlayer] Buffering edge stream chunk...' : '▶ [ExoPlayer] Buffer ready, playing',
+                    });
+                  }}
+                  onEnd={() => {
+                    setIsPlaying(false);
+                    videoRef.current?.seek(0);
+                    setCurrentTime(0);
+                    setShowControls(true);
+                  }}
+                  onError={(err) => {
+                    console.warn('[MediaViewerScreen] Video playback error:', err);
+                    telemetryService.addLog({
+                      category: 'ERROR',
+                      level: 'error',
+                      message: `❌ [ExoPlayer Error] ${JSON.stringify(err)}`,
+                      meta: err,
+                    });
+                  }}
+                  playInBackground={false}
+                />
+
+                {isBuffering && (
+                  <View style={styles.centerSpinnerOverlay} pointerEvents="none">
+                    <ActivityIndicator size="large" color="#3B82F6" />
+                  </View>
+                )}
+
+                {/* Center Play Button when Paused */}
+                {!isPlaying && showControls && (
+                  <TouchableOpacity
+                    style={styles.centerPlayButton}
+                    activeOpacity={0.85}
+                    onPress={() => setIsPlaying(true)}
+                  >
+                    <Play size={34} color="#FFFFFF" fill="#FFFFFF" style={{ marginLeft: 3 }} />
+                  </TouchableOpacity>
+                )}
+              </View>
+            ) : (
+              <View style={styles.videoWrapper}>
+                <Image
+                  source={{ uri: getMediaThumbnailUrl(slideItem.id) }}
+                  style={styles.fullImage}
+                  resizeMode="contain"
+                />
+                <View style={styles.centerPlayButton} pointerEvents="none">
+                  <Play size={34} color="#FFFFFF" fill="#FFFFFF" style={{ marginLeft: 3 }} />
+                </View>
+              </View>
+            )}
+          </View>
+        </TouchableWithoutFeedback>
+      );
+    },
+    [currentIndex, isPlaying, isMuted, playbackRate, isBuffering, showControls, duration]
+  );
 
   const progressPercent = duration > 0 ? Math.min(100, Math.max(0, (currentTime / duration) * 100)) : 0;
 
@@ -274,142 +417,48 @@ export function MediaViewerScreen({ item, items, onClose, onToggleFavorite }: Me
           </TouchableOpacity>
         )}
 
-        {/* Media Stage */}
-        <TouchableWithoutFeedback onPress={handleTap}>
-          <View style={styles.stage}>
-            {!isVideo ? (
-              <Image
-                source={{ uri: getMediaStreamUrl(activeItem.id) }}
-                style={styles.fullImage}
-                resizeMode="contain"
-              />
+        {/* Horizontal Swiping Photo/Video Paging FlatList */}
+        <FlatList
+          ref={flatListRef}
+          data={items}
+          keyExtractor={(it) => it.id}
+          horizontal
+          pagingEnabled
+          showsHorizontalScrollIndicator={false}
+          initialScrollIndex={initialIdx >= 0 ? initialIdx : 0}
+          getItemLayout={(_, index) => ({
+            length: SCREEN_WIDTH,
+            offset: SCREEN_WIDTH * index,
+            index,
+          })}
+          onScrollToIndexFailed={(info) => {
+            setTimeout(() => {
+              flatListRef.current?.scrollToIndex({ index: info.index, animated: false });
+            }, 50);
+          }}
+          onMomentumScrollEnd={handleMomentumScrollEnd}
+          renderItem={renderSlide}
+          windowSize={3}
+          maxToRenderPerBatch={2}
+          removeClippedSubviews={true}
+        />
+
+        {/* Skip Feedback Overlay (YouTube Style) */}
+        {skipFeedback && (
+          <View
+            style={[
+              styles.skipOverlay,
+              skipFeedback === '+10s' ? styles.skipRight : styles.skipLeft,
+            ]}
+          >
+            {skipFeedback === '+10s' ? (
+              <RotateCw size={24} color="#60A5FA" strokeWidth={2.2} />
             ) : (
-              <View style={styles.videoWrapper}>
-                <Video
-                  ref={videoRef}
-                  source={{
-                    uri: getMediaStreamUrl(activeItem.id),
-                    headers: getSessionToken()
-                      ? {
-                          Authorization: `Bearer ${getSessionToken()}`,
-                          'x-tg-session': getSessionToken()!,
-                        }
-                      : undefined,
-                    bufferConfig: {
-                      minBufferMs: 25000,
-                      maxBufferMs: 60000,
-                      bufferForPlaybackMs: 1500,
-                      bufferForPlaybackAfterRebufferMs: 3000,
-                      backBufferDurationMs: 30000,
-                      maxHeapAllocationPercent: 0.8,
-                      minBackBufferMemoryReservePercent: 0.1,
-                      minBufferMemoryReservePercent: 0.2,
-                    },
-                  }}
-                  style={styles.fullVideo}
-                  resizeMode="contain"
-                  paused={!isPlaying}
-                  muted={isMuted}
-                  rate={playbackRate}
-                  poster={getMediaThumbnailUrl(activeItem.id)}
-                  bufferConfig={{
-                    minBufferMs: 25000,
-                    maxBufferMs: 60000,
-                    bufferForPlaybackMs: 1500,
-                    bufferForPlaybackAfterRebufferMs: 3000,
-                    backBufferDurationMs: 30000,
-                    maxHeapAllocationPercent: 0.8,
-                    minBackBufferMemoryReservePercent: 0.1,
-                    minBufferMemoryReservePercent: 0.2,
-                  }}
-                  preferredForwardBufferDuration={30}
-                  automaticallyWaitsToMinimizeStalling={true}
-                  onLoad={(data) => {
-                    if (data.duration && data.duration > 0) {
-                      setDuration(data.duration);
-                    }
-                    telemetryService.addLog({
-                      category: 'EXOPLAYER',
-                      level: 'success',
-                      message: `🎬 [ExoPlayer Load] Duration: ${data.duration?.toFixed(1)}s, Res: ${data.naturalSize?.width || '?'}x${data.naturalSize?.height || '?'}`,
-                      meta: data,
-                    });
-                  }}
-                  onProgress={(data) => {
-                    setCurrentTime(data.currentTime);
-                    const dur = data.seekableDuration || duration || activeItem.durationSeconds || 0;
-                    if (dur > 0 && activeItem.fileSizeBytes) {
-                      videoPrefetchService.updatePlaybackProgress(
-                        activeItem.id,
-                        data.currentTime,
-                        dur,
-                        activeItem.fileSizeBytes
-                      );
-                    }
-                  }}
-                  onBuffer={({ isBuffering: buffering }) => {
-                    setIsBuffering(buffering);
-                    telemetryService.addLog({
-                      category: 'EXOPLAYER',
-                      level: buffering ? 'warn' : 'info',
-                      message: buffering ? '⏳ [ExoPlayer] Buffering edge stream chunk...' : '▶ [ExoPlayer] Buffer ready, playing',
-                    });
-                  }}
-                  onEnd={() => {
-                    setIsPlaying(false);
-                    videoRef.current?.seek(0);
-                    setCurrentTime(0);
-                    setShowControls(true);
-                  }}
-                  onError={(err) => {
-                    console.warn('[MediaViewerScreen] Video playback error:', err);
-                    telemetryService.addLog({
-                      category: 'ERROR',
-                      level: 'error',
-                      message: `❌ [ExoPlayer Error] ${JSON.stringify(err)}`,
-                      meta: err,
-                    });
-                  }}
-                  playInBackground={false}
-                />
-
-                {isBuffering && (
-                  <View style={styles.centerSpinnerOverlay} pointerEvents="none">
-                    <ActivityIndicator size="large" color="#3B82F6" />
-                  </View>
-                )}
-
-                {/* YouTube Style Center Play Button when Paused */}
-                {!isPlaying && showControls && (
-                  <TouchableOpacity
-                    style={styles.centerPlayButton}
-                    activeOpacity={0.85}
-                    onPress={() => setIsPlaying(true)}
-                  >
-                    <Play size={34} color="#FFFFFF" fill="#FFFFFF" style={{ marginLeft: 3 }} />
-                  </TouchableOpacity>
-                )}
-              </View>
+              <RotateCcw size={24} color="#60A5FA" strokeWidth={2.2} />
             )}
-
-            {/* Skip Feedback Overlay (YouTube Style) */}
-            {skipFeedback && (
-              <View
-                style={[
-                  styles.skipOverlay,
-                  skipFeedback === '+10s' ? styles.skipRight : styles.skipLeft,
-                ]}
-              >
-                {skipFeedback === '+10s' ? (
-                  <RotateCw size={24} color="#60A5FA" strokeWidth={2.2} />
-                ) : (
-                  <RotateCcw size={24} color="#60A5FA" strokeWidth={2.2} />
-                )}
-                <Text style={styles.skipText}>{skipFeedback}</Text>
-              </View>
-            )}
+            <Text style={styles.skipText}>{skipFeedback}</Text>
           </View>
-        </TouchableWithoutFeedback>
+        )}
 
         {/* Bottom Video Controls Bar with Scrubber Knob & Controls */}
         {isVideo && (
@@ -570,6 +619,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
+  },
+  slide: {
+    width: SCREEN_WIDTH,
+    height: SCREEN_HEIGHT,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#000000',
   },
   stage: {
     flex: 1,

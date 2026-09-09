@@ -11,6 +11,7 @@ import {
   Alert,
   Platform,
   Pressable,
+  Vibration,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { apiFetch } from '../services/api';
@@ -238,7 +239,10 @@ export function SelectionSlider({
           {/* Left: Close & Count Indicator */}
           <TouchableOpacity
             style={styles.closeCountBtn}
-            onPress={onClearSelection}
+            onPress={() => {
+              Vibration.vibrate(20);
+              onClearSelection();
+            }}
             activeOpacity={0.7}
           >
             <Text style={styles.closeSymbol}>✕</Text>
@@ -254,7 +258,10 @@ export function SelectionSlider({
             {/* 1. Favourite (Icon & Text) */}
             <TouchableOpacity
               style={styles.actionPillBtn}
-              onPress={() => onFavoriteSelected(mediaItemIds)}
+              onPress={() => {
+                Vibration.vibrate(25);
+                onFavoriteSelected(mediaItemIds);
+              }}
               activeOpacity={0.7}
             >
               <FavoriteIcon />
@@ -265,6 +272,7 @@ export function SelectionSlider({
             <TouchableOpacity
               style={styles.actionPillBtn}
               onPress={() => {
+                Vibration.vibrate(20);
                 setNewItemName('');
                 setActiveSheet('tag');
               }}
@@ -277,7 +285,10 @@ export function SelectionSlider({
             {/* 3. Delete (Icon & Text) */}
             <TouchableOpacity
               style={[styles.actionPillBtn, styles.deletePillBtn]}
-              onPress={confirmDelete}
+              onPress={() => {
+                Vibration.vibrate(30);
+                confirmDelete();
+              }}
               activeOpacity={0.7}
             >
               <DeleteIcon color="#DC2626" />
@@ -399,6 +410,7 @@ export function SelectionSlider({
               <TouchableOpacity
                 style={styles.moreActionRow}
                 onPress={() => {
+                  Vibration.vibrate(25);
                   setIsMoreOpen(false);
                   if (isAllSelected) {
                     onDeselectAll();

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -11,6 +11,7 @@ import {
   Platform,
   Dimensions,
   ActivityIndicator,
+  Vibration,
 } from 'react-native';
 import { Header } from '../components/Header';
 import { BottomNav, TabType } from '../components/BottomNav';
@@ -77,6 +78,11 @@ export function GalleryScreen() {
 
   // Multi-selection state
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const selectedIdsRef = useRef<Set<string>>(selectedIds);
+  useEffect(() => {
+    selectedIdsRef.current = selectedIds;
+  }, [selectedIds]);
+
   const isSelectionMode = selectedIds.size > 0;
   const [pendingUploadCount, setPendingUploadCount] = useState(0);
 
@@ -266,16 +272,34 @@ export function GalleryScreen() {
     }
   };
 
-  const handleToggleFavorite = async (id: string) => {
+  const handleToggleFavorite = useCallback(async (id: string) => {
     setItems((prev) =>
       prev.map((i) => (i.id === id ? { ...i, isFavorite: !i.isFavorite } : i))
     );
     try {
       await apiFetch(`/api/media/${id}/favorite`, { method: 'POST' });
     } catch {}
-  };
+  }, []);
 
-  const handleToggleSelect = (item: MediaItemData) => {
+  const handleCardPress = useCallback((item: MediaItemData) => {
+    if (selectedIdsRef.current.size > 0) {
+      Vibration.vibrate(25);
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(item.id)) {
+          next.delete(item.id);
+        } else {
+          next.add(item.id);
+        }
+        return next;
+      });
+    } else {
+      setSelectedMedia(item);
+    }
+  }, []);
+
+  const handleCardLongPress = useCallback((item: MediaItemData) => {
+    Vibration.vibrate(40);
     setSelectedIds((prev) => {
       const next = new Set(prev);
       if (next.has(item.id)) {
@@ -285,7 +309,7 @@ export function GalleryScreen() {
       }
       return next;
     });
-  };
+  }, []);
 
   const handleSelectAll = () => {
     const allIds = new Set(displayedItems.map((i) => i.id));
@@ -515,14 +539,8 @@ export function GalleryScreen() {
                           item={item}
                           isSelected={selectedIds.has(item.id)}
                           isSelectionMode={isSelectionMode}
-                          onPress={(m) => {
-                            if (isSelectionMode) {
-                              handleToggleSelect(m);
-                            } else {
-                              setSelectedMedia(m);
-                            }
-                          }}
-                          onLongPress={(m) => handleToggleSelect(m)}
+                          onPress={handleCardPress}
+                          onLongPress={handleCardLongPress}
                           onToggleFavorite={handleToggleFavorite}
                         />
                       ))}

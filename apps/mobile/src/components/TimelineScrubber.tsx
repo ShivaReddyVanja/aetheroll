@@ -34,6 +34,7 @@ export function TimelineScrubber({
   const opacityAnim = useRef(new Animated.Value(0)).current;
   const hideTimerRef = useRef<any>(null);
   const trackHeightRef = useRef<number>(300);
+  const trackLayoutRef = useRef<{ top: number; height: number }>({ top: 70, height: 300 });
 
   // Parse sections to extract unique years & month/year labels
   const timelineData = useMemo(() => {
@@ -70,7 +71,29 @@ export function TimelineScrubber({
     return list;
   }, [sections]);
 
-  // Unique years with their first corresponding section index
+  // Cumulative item starts for accurate timeline mapping
+  const { totalItems, sectionStarts } = useMemo(() => {
+    let running = 0;
+    const starts: number[] = [];
+    timelineData.forEach((sec) => {
+      starts.push(running);
+      running += Math.max(1, sec.itemCount);
+    });
+    return { totalItems: Math.max(1, running), sectionStarts: starts };
+  }, [timelineData]);
+
+  const getSectionIndexAtRatio = (ratio: number) => {
+    const clampedRatio = Math.max(0, Math.min(1, ratio));
+    const targetItem = Math.min(Math.floor(clampedRatio * totalItems), totalItems - 1);
+    for (let i = timelineData.length - 1; i >= 0; i--) {
+      if (targetItem >= (sectionStarts[i] || 0)) {
+        return i;
+      }
+    }
+    return 0;
+  };
+
+  // Unique years with their weighted position fraction along the track
   const uniqueYears = useMemo(() => {
     const map = new Map<string, number>();
     timelineData.forEach((sec, idx) => {
@@ -78,13 +101,17 @@ export function TimelineScrubber({
         map.set(sec.year, idx);
       }
     });
-    return Array.from(map.entries()).map(([year, sectionIdx]) => ({
-      year,
-      sectionIdx,
-    }));
-  }, [timelineData]);
+    return Array.from(map.entries()).map(([year, sectionIdx]) => {
+      const fraction = totalItems > 0 ? (sectionStarts[sectionIdx] || 0) / totalItems : 0;
+      return {
+        year,
+        sectionIdx,
+        fraction,
+      };
+    });
+  }, [timelineData, totalItems, sectionStarts]);
 
-  // Show scrubber on scroll or scrub
+  // Fade in / out controls
   const showScrubber = () => {
     if (hideTimerRef.current) {
       clearTimeout(hideTimerRef.current);
@@ -107,7 +134,7 @@ export function TimelineScrubber({
         duration: 350,
         useNativeDriver: true,
       }).start();
-    }, 1500);
+    }, 1200);
   };
 
   useEffect(() => {
@@ -118,16 +145,27 @@ export function TimelineScrubber({
     }
   }, [isListScrolling]);
 
-  // Map Y touch position inside track to section index
-  const handleTouchAtY = (pageY: number, trackTop: number, trackHeight: number) => {
+  // Keep activeDateLabel updated during normal scrolling as well
+  useEffect(() => {
+    if (!isScrubbing && timelineData.length > 0) {
+      const idx = getSectionIndexAtRatio(scrollProgress);
+      const activeSec = timelineData[idx];
+      if (activeSec) {
+        setActiveDateLabel(activeSec.monthYear || activeSec.title || '');
+      }
+    }
+  }, [scrollProgress, isScrubbing, timelineData, totalItems]);
+
+  // Map Y touch coordinate to exact section index based on weight
+  const handleTouchAtY = (pageY: number) => {
+    const trackTop = trackLayoutRef.current.top;
+    const trackHeight = trackLayoutRef.current.height;
+
     if (timelineData.length === 0 || trackHeight <= 0) return;
 
     const relativeY = Math.max(0, Math.min(pageY - trackTop, trackHeight));
     const ratio = relativeY / trackHeight;
-    const targetIdx = Math.min(
-      Math.floor(ratio * timelineData.length),
-      timelineData.length - 1
-    );
+    const targetIdx = getSectionIndexAtRatio(ratio);
 
     const activeSec = timelineData[targetIdx];
     const label = activeSec?.monthYear || activeSec?.title || '';
@@ -137,8 +175,7 @@ export function TimelineScrubber({
     onScrubToSection(targetIdx, label);
   };
 
-  const trackLayoutRef = useRef<{ top: number; height: number }>({ top: 60, height: 300 });
-
+  // PanResponder attached ONLY to the knob handle (not the whole screen or rail)
   const panResponder = useMemo(
     () =>
       PanResponder.create({
@@ -147,18 +184,10 @@ export function TimelineScrubber({
         onPanResponderGrant: (evt) => {
           setIsScrubbing(true);
           showScrubber();
-          handleTouchAtY(
-            evt.nativeEvent.pageY,
-            trackLayoutRef.current.top,
-            trackLayoutRef.current.height
-          );
+          handleTouchAtY(evt.nativeEvent.pageY);
         },
         onPanResponderMove: (evt) => {
-          handleTouchAtY(
-            evt.nativeEvent.pageY,
-            trackLayoutRef.current.top,
-            trackLayoutRef.current.height
-          );
+          handleTouchAtY(evt.nativeEvent.pageY);
         },
         onPanResponderRelease: () => {
           setIsScrubbing(false);
@@ -169,51 +198,44 @@ export function TimelineScrubber({
           scheduleHide();
         },
       }),
-    [timelineData, onScrubToSection]
+    [timelineData, totalItems, sectionStarts, onScrubToSection]
   );
 
   if (timelineData.length <= 1) {
     return null;
   }
 
-  // Calculate thumb position when not actively scrubbing with touch
+  // Calculate thumb position when not actively scrubbing
+  const trackHeight = trackHeightRef.current || 300;
   const effectiveThumbY = isScrubbing
     ? scrubberY
-    : Math.max(0, Math.min(scrollProgress * (trackLayoutRef.current.height || 300), trackLayoutRef.current.height || 300));
+    : Math.max(0, Math.min(scrollProgress * trackHeight, trackHeight));
 
   return (
     <Animated.View
       pointerEvents="box-none"
       style={[styles.container, { opacity: opacityAnim }]}
     >
-      {/* Floating Center Date Banner when scrubbing */}
-      {isScrubbing && activeDateLabel ? (
-        <View pointerEvents="none" style={styles.floatingCenterBubble}>
-          <Text style={styles.floatingCenterText}>{activeDateLabel}</Text>
-        </View>
-      ) : null}
-
-      {/* Right Rail Scrubber Area */}
+      {/* Right Rail Container (Passes touches through to photos) */}
       <View
+        pointerEvents="box-none"
         style={styles.railArea}
         onLayout={(e) => {
-          const { height } = e.nativeEvent.layout;
-          trackLayoutRef.current = { top: 60, height };
+          const { y, height } = e.nativeEvent.layout;
+          trackLayoutRef.current = { top: y || 70, height: height || 300 };
           trackHeightRef.current = height;
         }}
-        {...panResponder.panHandlers}
       >
-        {/* Year Pills along the rail */}
+        {/* Subtle Year Markers (Non-interactive) */}
         <View style={styles.yearMarkersContainer} pointerEvents="none">
-          {uniqueYears.map(({ year, sectionIdx }) => {
-            const fraction = timelineData.length > 0 ? sectionIdx / timelineData.length : 0;
-            const topPos = fraction * (trackHeightRef.current || 300);
+          {uniqueYears.map(({ year, fraction }) => {
+            const topPos = fraction * trackHeight;
             return (
               <View
                 key={year}
                 style={[
                   styles.yearPill,
-                  { top: Math.max(0, Math.min(topPos, (trackHeightRef.current || 300) - 20)) },
+                  { top: Math.max(0, Math.min(topPos, trackHeight - 20)) },
                 ]}
               >
                 <Text style={styles.yearPillText}>{year}</Text>
@@ -222,24 +244,33 @@ export function TimelineScrubber({
           })}
         </View>
 
-        {/* Draggable Thumb Indicator */}
+        {/* Draggable Knob & Callout Bubble */}
         <View
+          pointerEvents="box-none"
           style={[
             styles.thumbHandleWrapper,
-            { top: Math.max(0, effectiveThumbY - 14) },
+            { top: Math.max(0, Math.min(effectiveThumbY - 24, trackHeight - 52)) },
           ]}
-          pointerEvents="none"
         >
-          {/* Active Month-Year Popout Callout (next to thumb) */}
+          {/* Google Photos Date Callout Bubble */}
           {isScrubbing && activeDateLabel ? (
-            <View style={styles.popoutDateBubble}>
+            <View style={styles.popoutDateBubble} pointerEvents="none">
               <Text style={styles.popoutDateText}>{activeDateLabel}</Text>
             </View>
           ) : null}
 
-          {/* Draggable Pill Handle with ↕ Chevrons */}
-          <View style={[styles.thumbPill, isScrubbing && styles.thumbPillActive]}>
-            <Text style={styles.thumbChevron}>↕</Text>
+          {/* Draggable Tab Handle (Sticks flush to right edge) */}
+          <View
+            style={styles.knobTouchTarget}
+            {...panResponder.panHandlers}
+          >
+            <View style={[styles.thumbPill, isScrubbing && styles.thumbPillActive]}>
+              <View style={styles.arrowContainer}>
+                <Text style={styles.arrowIcon}>▲</Text>
+                <View style={styles.arrowSpacer} />
+                <Text style={styles.arrowIcon}>▼</Text>
+              </View>
+            </View>
           </View>
         </View>
       </View>
@@ -256,34 +287,12 @@ const styles = StyleSheet.create({
     right: 0,
     zIndex: 90,
   },
-  floatingCenterBubble: {
-    position: 'absolute',
-    top: 60,
-    alignSelf: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.96)',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.12,
-    shadowRadius: 10,
-    elevation: 6,
-    zIndex: 95,
-  },
-  floatingCenterText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#1F2937',
-  },
   railArea: {
     position: 'absolute',
     right: 0,
-    top: 50,
-    bottom: 85,
-    width: 75,
+    top: 60,
+    bottom: 80,
+    width: 50,
     justifyContent: 'center',
     alignItems: 'flex-end',
   },
@@ -291,77 +300,98 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 0,
     bottom: 0,
-    right: 8,
-    width: 48,
+    right: 36,
+    width: 44,
   },
   yearPill: {
     position: 'absolute',
     right: 0,
-    backgroundColor: 'rgba(255, 255, 255, 0.92)',
+    backgroundColor: 'rgba(255, 255, 255, 0.94)',
     paddingHorizontal: 6,
     paddingVertical: 2,
-    borderRadius: 10,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#D1D5DB',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
     shadowColor: '#000000',
     shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.08,
+    shadowOpacity: 0.1,
     shadowRadius: 2,
     elevation: 2,
   },
   yearPillText: {
     fontSize: 10,
     fontWeight: '700',
-    color: '#374151',
+    color: '#4B5563',
   },
   thumbHandleWrapper: {
     position: 'absolute',
-    right: 4,
+    right: 0,
     flexDirection: 'row',
     alignItems: 'center',
     zIndex: 98,
   },
   popoutDateBubble: {
-    backgroundColor: '#1A73E8',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
-    marginRight: 6,
-    shadowColor: '#1A73E8',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 4,
-    elevation: 4,
-  },
-  popoutDateText: {
-    color: '#FFFFFF',
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  thumbPill: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
     backgroundColor: '#FFFFFF',
-    borderWidth: 1.5,
-    borderColor: '#D1D5DB',
-    alignItems: 'center',
-    justifyContent: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    marginRight: 8,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
     shadowColor: '#000000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.15,
-    shadowRadius: 4,
-    elevation: 4,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  popoutDateText: {
+    color: '#1F2937',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  knobTouchTarget: {
+    paddingVertical: 6,
+    paddingLeft: 10,
+    paddingRight: 0,
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+  },
+  thumbPill: {
+    width: 32,
+    height: 48,
+    borderTopLeftRadius: 24,
+    borderBottomLeftRadius: 24,
+    borderTopRightRadius: 0,
+    borderBottomRightRadius: 0,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderRightWidth: 0,
+    borderColor: '#E5E7EB',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000000',
+    shadowOffset: { width: -2, height: 2 },
+    shadowOpacity: 0.18,
+    shadowRadius: 5,
+    elevation: 6,
   },
   thumbPillActive: {
-    backgroundColor: '#E8F0FE',
-    borderColor: '#1A73E8',
-    transform: [{ scale: 1.1 }],
+    backgroundColor: '#F3F4F6',
+    borderColor: '#D1D5DB',
+    transform: [{ scale: 1.08 }],
   },
-  thumbChevron: {
-    color: '#374151',
-    fontSize: 13,
-    fontWeight: '900',
-    lineHeight: 15,
+  arrowContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingRight: 2,
+  },
+  arrowIcon: {
+    color: '#5F6368',
+    fontSize: 9,
+    lineHeight: 9,
+    fontWeight: '700',
+  },
+  arrowSpacer: {
+    height: 3,
   },
 });

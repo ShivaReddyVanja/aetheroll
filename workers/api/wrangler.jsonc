@@ -55,6 +55,6 @@
   // ---------------------------------------------------------------------------------------------
   "vars": {
     "TELEGRAM_TEST_MODE": "false",
-    "ENABLE_TELEMETRY": "true"
+    "ENABLE_TELEMETRY": "false"
   }
 }

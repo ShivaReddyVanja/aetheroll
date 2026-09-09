@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import {
   View,
   Text,
@@ -6,6 +6,7 @@ import {
   TouchableOpacity,
   StyleSheet,
   Dimensions,
+  Animated,
 } from 'react-native';
 import { getMediaThumbnailUrl, getMediaStreamUrl } from '../services/api';
 
@@ -45,6 +46,32 @@ function MediaCardComponent({
 }: MediaCardProps) {
   const [hasError, setHasError] = useState(false);
 
+  const imageUri = useMemo(
+    () => (item.fileType === 'video' ? getMediaThumbnailUrl(item.id) : getMediaStreamUrl(item.id)),
+    [item.id, item.fileType]
+  );
+
+  // Smooth Google Photos spring animations for selection
+  const scaleAnim = useRef(new Animated.Value(isSelected ? 0.90 : 1.0)).current;
+  const checkScaleAnim = useRef(new Animated.Value(isSelected ? 1.0 : (isSelectionMode ? 0.85 : 0))).current;
+
+  useEffect(() => {
+    Animated.parallel([
+      Animated.spring(scaleAnim, {
+        toValue: isSelected ? 0.90 : 1.0,
+        friction: 8,
+        tension: 140,
+        useNativeDriver: true,
+      }),
+      Animated.spring(checkScaleAnim, {
+        toValue: isSelected ? 1.0 : (isSelectionMode ? 0.85 : 0),
+        friction: 7,
+        tension: 130,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, [isSelected, isSelectionMode]);
+
   const formatDuration = (sec?: number) => {
     if (!sec) return '';
     const m = Math.floor(sec / 60);
@@ -54,87 +81,128 @@ function MediaCardComponent({
 
   return (
     <TouchableOpacity
-      activeOpacity={0.85}
-      style={[
-        styles.card,
-        isSelected && styles.cardSelected,
-      ]}
+      activeOpacity={0.9}
+      delayLongPress={220}
+      style={styles.container}
       onPress={() => onPress(item)}
       onLongPress={() => onLongPress?.(item)}
     >
-      {!hasError ? (
-        <Image
-          source={{ uri: item.fileType === 'video' ? getMediaThumbnailUrl(item.id) : getMediaStreamUrl(item.id) }}
-          style={styles.image}
-          resizeMode="cover"
-          onError={() => setHasError(true)}
-        />
-      ) : (
-        <View style={styles.fallback}>
-          <Text style={styles.fallbackText}>
-            {item.fileType === 'video' ? '▶' : '◫'}
-          </Text>
-        </View>
-      )}
+      <Animated.View
+        style={[
+          styles.imageWrapper,
+          {
+            transform: [{ scale: scaleAnim }],
+          },
+        ]}
+      >
+        {!hasError ? (
+          <Image
+            source={{ uri: imageUri }}
+            style={styles.image}
+            resizeMode="cover"
+            onError={() => setHasError(true)}
+          />
+        ) : (
+          <View style={styles.fallback}>
+            <Text style={styles.fallbackText}>
+              {item.fileType === 'video' ? '▶' : '◫'}
+            </Text>
+          </View>
+        )}
 
-      {/* Video Duration Badge */}
-      {item.fileType === 'video' && (
-        <View style={styles.videoBadge}>
-          <Text style={styles.videoBadgeText}>
-            {formatDuration(item.durationSeconds) || '0:00'} ▶
-          </Text>
-        </View>
-      )}
+        {/* Video Duration Badge */}
+        {item.fileType === 'video' && (
+          <View style={styles.videoBadge}>
+            <Text style={styles.videoBadgeText}>
+              {formatDuration(item.durationSeconds) || '0:00'} ▶
+            </Text>
+          </View>
+        )}
 
-      {/* Favorite Star Badge */}
-      {item.isFavorite && !isSelectionMode && (
-        <TouchableOpacity
-          style={styles.starBadge}
-          onPress={() => onToggleFavorite?.(item.id)}
-          activeOpacity={0.7}
+        {/* Favorite Star Badge */}
+        {item.isFavorite && !isSelectionMode && (
+          <TouchableOpacity
+            style={styles.starBadge}
+            onPress={() => onToggleFavorite?.(item.id)}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.starText}>★</Text>
+          </TouchableOpacity>
+        )}
+
+        {/* Selected Highlight Overlay (Border + Tint) */}
+        {isSelected && <View style={styles.selectedOverlay} pointerEvents="none" />}
+      </Animated.View>
+
+      {/* Google Photos Checkbox Circle with spring pop-in */}
+      {(isSelectionMode || isSelected) && (
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            styles.checkCircle,
+            isSelected ? styles.checkCircleSelected : styles.checkCircleUnselected,
+            {
+              transform: [{ scale: checkScaleAnim }],
+            },
+          ]}
         >
-          <Text style={styles.starText}>★</Text>
-        </TouchableOpacity>
-      )}
-
-      {/* Selection Checkbox Overlay */}
-      {isSelectionMode && (
-        <View style={[styles.checkCircle, isSelected && styles.checkCircleSelected]}>
           {isSelected && <Text style={styles.checkMark}>✓</Text>}
-        </View>
+        </Animated.View>
       )}
     </TouchableOpacity>
   );
 }
 
-export const MediaCard = React.memo(MediaCardComponent);
+// Strict shallow comparison to prevent unnecessary re-renders across the grid
+export const MediaCard = React.memo(MediaCardComponent, (prev, next) => {
+  return (
+    prev.item.id === next.item.id &&
+    prev.isSelected === next.isSelected &&
+    prev.isSelectionMode === next.isSelectionMode &&
+    prev.item.isFavorite === next.item.isFavorite &&
+    prev.item.fileType === next.item.fileType &&
+    prev.onPress === next.onPress &&
+    prev.onLongPress === next.onLongPress &&
+    prev.onToggleFavorite === next.onToggleFavorite
+  );
+});
 
 const styles = StyleSheet.create({
-  card: {
+  container: {
     width: COLUMN_WIDTH,
     height: COLUMN_WIDTH,
-    backgroundColor: '#F1F3F4',
+    backgroundColor: '#000000',
     position: 'relative',
-    overflow: 'hidden',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-  cardSelected: {
-    opacity: 0.85,
-    borderWidth: 2,
-    borderColor: '#1A73E8',
+  imageWrapper: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#1E1E1E',
+    borderRadius: 8,
+    overflow: 'hidden',
   },
   image: {
     width: '100%',
     height: '100%',
   },
+  selectedOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 8,
+    borderWidth: 3,
+    borderColor: '#1A73E8',
+    backgroundColor: 'rgba(26, 115, 232, 0.22)',
+  },
   fallback: {
     flex: 1,
-    backgroundColor: '#E8EAED',
+    backgroundColor: '#1E1E1E',
     justifyContent: 'center',
     alignItems: 'center',
   },
   fallbackText: {
     fontSize: 22,
-    color: '#9AA0A6',
+    color: '#5F6368',
     fontWeight: '700',
   },
   videoBadge: {
@@ -169,24 +237,38 @@ const styles = StyleSheet.create({
   },
   checkCircle: {
     position: 'absolute',
-    top: 6,
-    left: 6,
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    borderWidth: 2,
-    borderColor: '#FFFFFF',
-    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+    top: 8,
+    left: 8,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
+    zIndex: 10,
+  },
+  checkCircleUnselected: {
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+    backgroundColor: 'rgba(0, 0, 0, 0.35)',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.25,
+    shadowRadius: 2,
+    elevation: 3,
   },
   checkCircleSelected: {
     backgroundColor: '#1A73E8',
-    borderColor: '#1A73E8',
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+    shadowColor: '#1A73E8',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.35,
+    shadowRadius: 4,
+    elevation: 4,
   },
   checkMark: {
     color: '#FFFFFF',
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '900',
   },
 });
