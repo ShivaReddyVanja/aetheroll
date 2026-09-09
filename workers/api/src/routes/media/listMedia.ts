@@ -24,6 +24,17 @@ listMediaRoute.get("/", async (c) => {
     const channelId = c.req.query("channel_id");
     if (!channelId) return c.json({ error: "channel_id is required" }, 400);
 
+    // Verify channel access
+    const channelAccess = await db.get(
+      `SELECT 1 FROM channels c
+       JOIN gallery_channels gc ON gc.channel_id = c.id
+       WHERE c.id = ? AND gc.user_id = ?`,
+      [channelId, auth.userId]
+    );
+    if (!channelAccess) {
+      return c.json({ error: "Channel not found or unauthorized" }, 404);
+    }
+
     const limit = Math.min(parseInt(c.req.query("limit") || "50", 10), 100);
     const cursor = c.req.query("cursor");
     const fileType = c.req.query("file_type"); // "photo" | "video"
