@@ -13,7 +13,8 @@
     "build:api": "pnpm --filter @aetheroll/api build",
     "test": "turbo test",
     "test:unit": "pnpm --filter @aetheroll/api test:unit",
-    "deploy:api": "pnpm --filter @aetheroll/api deploy"
+    "deploy:api": "pnpm --filter @aetheroll/api deploy",
+    "release:mobile": "node scripts/bump-mobile-version.mjs"
   },
   "devDependencies": {
     "turbo": "^2.4.4",
