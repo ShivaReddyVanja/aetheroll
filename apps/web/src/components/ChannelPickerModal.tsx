@@ -41,6 +41,10 @@ export function ChannelPickerModal({
     async function loadAllChannels() {
       try {
         const res = await apiFetch("/api/channels?all=true");
+        if (res.status === 401) {
+          onClose();
+          return;
+        }
         const data = await res.json();
         if (data.channels) {
           setAllChannels(data.channels);

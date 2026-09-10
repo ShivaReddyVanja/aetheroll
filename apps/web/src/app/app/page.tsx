@@ -92,6 +92,10 @@ export default function AppGalleryPage() {
   const checkAuth = useCallback(async () => {
     try {
       const res = await apiFetch("/api/auth/me");
+      if (res.status === 401) {
+        setUser(null);
+        return;
+      }
       const data = await res.json();
       if (data.authenticated && data.user) {
         setUser(data.user);
@@ -109,11 +113,31 @@ export default function AppGalleryPage() {
     checkAuth();
   }, [checkAuth]);
 
+  // Subscribe to session expiration events across all API requests
+  useEffect(() => {
+    const handleSessionExpired = () => {
+      console.warn("[WEB] Session expired event received -> resetting user and state");
+      setUser(null);
+      setChannels([]);
+      setMediaItems([]);
+      setSelectedChannelId(null);
+    };
+
+    window.addEventListener("aetheroll:session-expired", handleSessionExpired);
+    return () => {
+      window.removeEventListener("aetheroll:session-expired", handleSessionExpired);
+    };
+  }, []);
+
   // 2. Fetch User Channels
   const fetchChannels = useCallback(async () => {
     if (!user) return;
     try {
       const res = await apiFetch("/api/channels");
+      if (res.status === 401) {
+        setUser(null);
+        return;
+      }
       const data = await res.json();
       if (data.channels) {
         setChannels(data.channels);
@@ -201,6 +225,10 @@ export default function AppGalleryPage() {
           url += `&tag_id=${encodeURIComponent(selectedSubFilter.id)}`;
         }
         const res = await apiFetch(url);
+        if (res.status === 401) {
+          setUser(null);
+          return;
+        }
         const data = await res.json();
 
         if (data.items) {

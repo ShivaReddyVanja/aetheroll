@@ -8,7 +8,7 @@ import {
   Dimensions,
   Animated,
 } from 'react-native';
-import { getMediaThumbnailUrl, getMediaStreamUrl } from '../services/api';
+import { getMediaThumbnailUrl } from '../services/api';
 
 const { width } = Dimensions.get('window');
 // Guarantee exactly 3 columns with 2px gap (2 gaps * 2px = 4px)
@@ -47,8 +47,8 @@ function MediaCardComponent({
   const [hasError, setHasError] = useState(false);
 
   const imageUri = useMemo(
-    () => (item.fileType === 'video' ? getMediaThumbnailUrl(item.id) : getMediaStreamUrl(item.id)),
-    [item.id, item.fileType]
+    () => getMediaThumbnailUrl(item.id),
+    [item.id]
   );
 
   // Smooth Google Photos spring animations for selection

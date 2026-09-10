@@ -4,6 +4,7 @@ import { Api, utils } from "telegram";
 import { toSafeNumber } from "../../lib/db";
 import { verifyAetherollSignature } from "../../lib/crypto";
 import { getR2Storage } from "../../lib/r2";
+import { isTelegramAuthError, handleTelegramAuthFailure } from "../../lib/telegram";
 import { getAuthUserClient } from "./utils";
 
 export const manageChannelsRoute = new Hono();
@@ -112,12 +113,19 @@ manageChannelsRoute.post("/add", async (c) => {
         );
       }
       await db.run("UPDATE channels SET last_synced_at = CURRENT_TIMESTAMP WHERE id = ?", [channelId]);
-    } catch (syncErr) {
+    } catch (syncErr: any) {
       console.warn("Initial sync error on add:", syncErr);
+      if (isTelegramAuthError(syncErr)) {
+        await handleTelegramAuthFailure(db, user.id);
+        return c.json({ error: "Telegram session has been revoked or expired" }, 401);
+      }
     }
 
     return c.json({ success: true, channelId });
   } catch (error: any) {
+    if (isTelegramAuthError(error)) {
+      return c.json({ error: "Telegram session has been revoked or expired" }, 401);
+    }
     return c.json({ error: error.message || "Failed to add channel" }, error.message === "Unauthorized" ? 401 : 500);
   }
 });

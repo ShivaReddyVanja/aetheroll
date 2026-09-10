@@ -39,6 +39,27 @@ export function getApiBaseUrl(): string {
   return apiBaseUrl;
 }
 
+type SessionExpiredListener = () => void;
+const sessionExpiredListeners = new Set<SessionExpiredListener>();
+
+export function onSessionExpired(listener: SessionExpiredListener): () => void {
+  sessionExpiredListeners.add(listener);
+  return () => {
+    sessionExpiredListeners.delete(listener);
+  };
+}
+
+export function notifySessionExpired() {
+  console.warn('[API] Session expired / 401 Unauthorized. Notifying registered listeners.');
+  sessionExpiredListeners.forEach((listener) => {
+    try {
+      listener();
+    } catch (err) {
+      console.error('[API] Error in session expired listener:', err);
+    }
+  });
+}
+
 /**
  * Initialize stored credentials from Android KeyStore on app launch
  */
@@ -71,7 +92,7 @@ export async function initializeAuth(): Promise<{ token: string | null; user: an
 /**
  * Authenticate session with backend /api/auth/me
  */
-export async function verifyCurrentSession(): Promise<{ authenticated: boolean; user?: any }> {
+export async function verifyCurrentSession(): Promise<{ authenticated: boolean; user?: any; offline?: boolean }> {
   console.log('[API] verifyCurrentSession starting, current sessionToken:', sessionToken ? `${sessionToken.slice(0, 10)}...` : 'NONE');
   if (!sessionToken) {
     const stored = await getSecureSession();
@@ -95,22 +116,20 @@ export async function verifyCurrentSession(): Promise<{ authenticated: boolean; 
         await saveUserData(data.user);
         return { authenticated: true, user: data.user };
       }
+    } else if (res.status === 401) {
+      console.warn('[API] /api/auth/me returned 401 Unauthorized -> clearing invalid local session');
+      await setSessionToken(null);
+      await saveUserData(null);
+      notifySessionExpired();
+      return { authenticated: false };
     } else {
       const errText = await res.text().catch(() => '');
       console.warn('[API] /api/auth/me response not OK:', res.status, errText);
+      return { authenticated: false };
     }
   } catch (err) {
-    console.warn('[API] Session verification network error (keeping local session):', err);
-  }
-
-  // Fallback: If we have a session token and cached user, keep the user logged in
-  const cachedUser = await getUserData();
-  if (sessionToken) {
-    console.log('[API] Keeping user authenticated with cached session token and user data');
-    return {
-      authenticated: true,
-      user: cachedUser || { displayName: 'Telegram User' },
-    };
+    console.warn('[API] Session verification network error:', err);
+    return { authenticated: false, offline: true };
   }
 
   return { authenticated: false };
@@ -146,10 +165,19 @@ export async function apiFetch(endpoint: string, options: RequestInit = {}): Pro
 
   console.log(`[API FETCH] ${options.method || 'GET'} ${url} (hasToken: ${!!sessionToken})`);
 
-  return fetch(url, {
+  const res = await fetch(url, {
     ...options,
     headers,
   });
+
+  if (res.status === 401 && !endpoint.includes('/api/auth/logout') && !endpoint.includes('/api/auth/phone')) {
+    console.warn(`[API] 401 Unauthorized detected for ${endpoint} -> clearing session and notifying`);
+    setSessionToken(null).catch(() => {});
+    saveUserData(null).catch(() => {});
+    notifySessionExpired();
+  }
+
+  return res;
 }
 
 export function getMediaStreamUrl(mediaId: string): string {

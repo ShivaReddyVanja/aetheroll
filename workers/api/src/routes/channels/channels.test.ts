@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { channelsRouter } from "./index";
 import { generateCompositeSessionToken } from "../../lib/auth";
+import { isTelegramAuthError, handleTelegramAuthFailure } from "../../lib/telegram";
 
 function createMockD1(channels: any[] = []) {
   return {
@@ -45,5 +46,39 @@ describe("⚡ Channels Routes Suite", () => {
       method: "POST",
     });
     assert.equal(res.status, 401);
+  });
+
+  describe("🛡️ Telegram Auth Revocation & Error Identification", () => {
+    it("5. isTelegramAuthError should detect AUTH_KEY_UNREGISTERED", () => {
+      assert.equal(isTelegramAuthError({ errorMessage: "401: AUTH_KEY_UNREGISTERED" }), true);
+      assert.equal(isTelegramAuthError({ message: "AUTH_KEY_UNREGISTERED" }), true);
+      assert.equal(isTelegramAuthError({ errorMessage: "SESSION_REVOKED" }), true);
+      assert.equal(isTelegramAuthError({ errorMessage: "SESSION_EXPIRED" }), true);
+      assert.equal(isTelegramAuthError({ errorMessage: "USER_DEACTIVATED" }), true);
+      assert.equal(isTelegramAuthError({ code: 401 }), true);
+    });
+
+    it("6. isTelegramAuthError should reject non-auth errors", () => {
+      assert.equal(isTelegramAuthError({ errorMessage: "FLOOD_WAIT_60" }), false);
+      assert.equal(isTelegramAuthError({ errorMessage: "CHANNEL_PRIVATE" }), false);
+      assert.equal(isTelegramAuthError({ message: "Network connection timeout" }), false);
+      assert.equal(isTelegramAuthError(null), false);
+    });
+
+    it("7. handleTelegramAuthFailure should execute session deletion in DB", async () => {
+      let deletedUserId = "";
+      let sqlExecuted = "";
+      const mockDb = {
+        run: async (sql: string, params: any[]) => {
+          sqlExecuted = sql;
+          deletedUserId = params[0];
+          return { meta: { changes: 1 } };
+        },
+      };
+
+      await handleTelegramAuthFailure(mockDb, "user-123");
+      assert.ok(sqlExecuted.includes("DELETE FROM user_sessions WHERE user_id = ?"));
+      assert.equal(deletedUserId, "user-123");
+    });
   });
 });

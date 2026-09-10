@@ -3,7 +3,7 @@
 import React, { useRef, useEffect, useState } from "react";
 import { Play, Check, Star, MapPin, User, Loader2, Image as ImageIcon } from "lucide-react";
 import { drawBlurHashToCanvas } from "@/lib/blurhash";
-import { getApiBaseUrl, getMediaStreamUrl, getMediaThumbnailUrl } from "@/lib/config";
+import { getMediaStreamUrl, getMediaThumbnailUrl } from "@/lib/config";
 
 export interface MediaItem {
   id: string;
@@ -197,7 +197,7 @@ export function MediaCard({
       {/* 2. Static Thumbnail Image - Only mounted/requested once within viewport margin */}
       {isVisible && !imageError && (
         <img
-          src={customThumb || (isVideo ? getMediaThumbnailUrl(item.id) : getMediaStreamUrl(item.id))}
+          src={customThumb || getMediaThumbnailUrl(item.id)}
           alt="Media"
           loading="lazy"
           decoding="async"

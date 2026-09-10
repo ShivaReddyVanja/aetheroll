@@ -13,6 +13,7 @@ import {
 } from "../../lib/ledger";
 import type { GalleryEvent, GalleryOp } from "../../lib/ledger";
 import { getR2Storage } from "../../lib/r2";
+import { isTelegramAuthError, handleTelegramAuthFailure } from "../../lib/telegram";
 import { getAuthUserClient } from "./utils";
 
 export const syncChannelRoute = new Hono();
@@ -311,6 +312,15 @@ syncChannelRoute.post("/:id/sync", async (c) => {
     });
   } catch (error: any) {
     console.error("Sync Error:", error);
+    if (isTelegramAuthError(error)) {
+      try {
+        const { user, db } = await getAuthUserClient(c);
+        if (db && user?.id) {
+          await handleTelegramAuthFailure(db, user.id);
+        }
+      } catch {}
+      return c.json({ error: "Telegram session has been revoked or expired" }, 401);
+    }
     return c.json({ error: error.message || "Failed to sync channel" }, error.message === "Unauthorized" ? 401 : 500);
   }
 });

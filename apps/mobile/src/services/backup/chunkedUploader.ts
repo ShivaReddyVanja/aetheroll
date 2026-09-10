@@ -1,4 +1,4 @@
-import { getApiBaseUrl, getSessionToken } from '../api';
+import { getApiBaseUrl, getSessionToken, notifySessionExpired } from '../api';
 import { BackupItem } from './types';
 import { RatePacer } from './ratePacer';
 import { FloodWaitError, UploadResult } from './xhrUploader';
@@ -106,6 +106,9 @@ function uploadChunkXhr(options: UploadChunkOptions): Promise<void> {
         const errJson = JSON.parse(responseText);
         if (errJson?.error) msg = errJson.error;
       } catch {}
+      if (status === 401) {
+        notifySessionExpired();
+      }
       console.error(
         `[ChunkedUploader] ❌ Chunk ${options.chunkIndex + 1}/${options.totalChunks} failed: HTTP ${status} - ${msg}`
       );

@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import crypto from "crypto";
-import { getUserChannels } from "../../lib/telegram";
+import { getUserChannels, isTelegramAuthError, handleTelegramAuthFailure } from "../../lib/telegram";
 import { getAuthUserClient } from "./utils";
 
 export const listChannelsRoute = new Hono();
@@ -59,8 +59,12 @@ listChannelsRoute.get("/", async (c) => {
             await db.run("UPDATE channels SET name = ? WHERE id = ?", [ch.title, channelId]);
           }
         }
-      } catch (tgErr) {
-        console.warn("Failed live TG channel sync, using cached gallery channels:", tgErr);
+      } catch (tgErr: any) {
+        console.warn("Failed live TG channel sync:", tgErr);
+        if (isTelegramAuthError(tgErr)) {
+          await handleTelegramAuthFailure(db, user.id);
+          return c.json({ error: "Telegram session has been revoked or expired" }, 401);
+        }
       }
 
       // Return ONLY the channels that belong to THIS user from Telegram / gallery
@@ -112,6 +116,9 @@ listChannelsRoute.get("/", async (c) => {
 
     return c.json({ channels: userChannels });
   } catch (error: any) {
+    if (isTelegramAuthError(error)) {
+      return c.json({ error: "Telegram session has been revoked or expired" }, 401);
+    }
     return c.json({ error: error.message || "Failed to fetch channels" }, error.message === "Unauthorized" ? 401 : 500);
   }
 });

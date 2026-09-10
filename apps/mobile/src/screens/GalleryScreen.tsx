@@ -12,6 +12,7 @@ import {
   Dimensions,
   ActivityIndicator,
   Vibration,
+  Alert,
 } from 'react-native';
 import { Header } from '../components/Header';
 import { BottomNav, TabType } from '../components/BottomNav';
@@ -30,6 +31,7 @@ import {
   initializeAuth,
   verifyCurrentSession,
   performLogout,
+  onSessionExpired,
 } from '../services/api';
 import { getStoredActiveChannel, saveActiveChannel } from '../services/secureStorage';
 import { BrandLogo } from '../components/BrandLogo';
@@ -127,23 +129,6 @@ export function GalleryScreen() {
 
         if (token) {
           addLog(`Session token found: ${token.slice(0, 8)}...${token.slice(-6)}`);
-          if (cachedUser) {
-            addLog(`Cached user found: "${cachedUser.displayName || cachedUser.username || 'User'}"`);
-            setUser(cachedUser);
-          } else {
-            addLog('No cached user profile found, using fallback user profile');
-            setUser({ displayName: 'Telegram User' });
-          }
-
-          // Restore stored channel immediately if available
-          setAuthStatusText('Restoring active channel...');
-          const storedChannel = await getStoredActiveChannel();
-          if (storedChannel) {
-            addLog(`Restored active channel: "${storedChannel.name}" (${storedChannel.id})`);
-            setActiveChannel(storedChannel);
-          } else {
-            addLog('No previous channel saved in storage');
-          }
 
           // Verify session in background without blowing away the active session
           setAuthStatusText('Verifying session with backend...');
@@ -154,9 +139,32 @@ export function GalleryScreen() {
             if (result.authenticated && result.user) {
               addLog(`Authenticated as: "${result.user.displayName || result.user.username || result.user.id}"`);
               setUser(result.user);
+
+              // Restore stored channel immediately if available
+              setAuthStatusText('Restoring active channel...');
+              const storedChannel = await getStoredActiveChannel();
+              if (storedChannel) {
+                addLog(`Restored active channel: "${storedChannel.name}" (${storedChannel.id})`);
+                setActiveChannel(storedChannel);
+              }
+            } else if (result.offline && cachedUser) {
+              addLog('Network offline: continuing with cached profile');
+              setUser(cachedUser);
+              const storedChannel = await getStoredActiveChannel();
+              if (storedChannel) {
+                setActiveChannel(storedChannel);
+              }
+            } else {
+              addLog('Session expired / invalid token -> redirecting to login');
+              setUser(null);
+              setChannels([]);
+              setItems([]);
+              setActiveChannel(null);
+              Alert.alert('Session Expired', 'Your session has expired. Please log in again to continue.');
             }
           } catch (vErr: any) {
-            addLog(`Session verification notice: ${vErr?.message || 'Network delay, kept local session'}`);
+            addLog(`Session verification error: ${vErr?.message || vErr}`);
+            setUser(null);
           }
         } else {
           addLog('No session token found in KeyStore or AsyncStorage');
@@ -177,6 +185,19 @@ export function GalleryScreen() {
     bootAuth();
   }, []);
 
+  // Subscribe to session expiration events across any API call
+  useEffect(() => {
+    const unsubscribe = onSessionExpired(() => {
+      console.warn('[GALLERY] Session expired event received -> resetting user state');
+      setUser(null);
+      setChannels([]);
+      setItems([]);
+      setActiveChannel(null);
+      Alert.alert('Session Expired', 'Your session has expired. Please log in again to continue.');
+    });
+    return unsubscribe;
+  }, []);
+
   useEffect(() => {
     if (user) {
       console.log('[GALLERY EFFECT] User logged in, fetching channels...');
@@ -195,6 +216,9 @@ export function GalleryScreen() {
     console.log('[GALLERY] User logging out...');
     await performLogout();
     setUser(null);
+    setChannels([]);
+    setItems([]);
+    setActiveChannel(null);
     setShowProfileModal(false);
   };
 
@@ -204,6 +228,10 @@ export function GalleryScreen() {
       console.log('[GALLERY CHANNELS] Calling GET /api/channels?all=true ...');
       const res = await apiFetch('/api/channels?all=true');
       console.log('[GALLERY CHANNELS] Response status:', res.status);
+      if (res.status === 401) {
+        console.warn('[GALLERY CHANNELS] 401 Unauthorized received');
+        return;
+      }
       const data = await res.json();
       console.log('[GALLERY CHANNELS] Channels data:', data);
       if (data && Array.isArray(data.channels) && data.channels.length > 0) {
@@ -236,6 +264,10 @@ export function GalleryScreen() {
       console.log(`[GALLERY MEDIA] Calling GET /api/media?channel_id=${encodeURIComponent(chId)}&limit=60 ...`);
       const res = await apiFetch(`/api/media?channel_id=${encodeURIComponent(chId)}&limit=60`);
       console.log('[GALLERY MEDIA] Response status:', res.status);
+      if (res.status === 401) {
+        console.warn('[GALLERY MEDIA] 401 Unauthorized received');
+        return;
+      }
       const data: any = await res.json();
       console.log('[GALLERY MEDIA] Items returned count:', data?.items?.length || 0);
 

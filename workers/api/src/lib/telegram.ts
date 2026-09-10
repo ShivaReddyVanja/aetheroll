@@ -302,29 +302,30 @@ export async function getUserChannels(client: TelegramClient): Promise<Array<{
   return channels;
 }
 
-/**
- * Helper to convert raw Telegram RPC errors into user-friendly messages
- */
-export function formatTelegramError(err: any): Error {
-  const msg = err?.errorMessage || err?.message || "";
-  const floodMatch = msg.match(/FLOOD_WAIT_(\d+)/i) || msg.match(/wait of (\d+) seconds/i);
-  if (floodMatch) {
-    const seconds = parseInt(floodMatch[1], 10);
-    const hours = Math.floor(seconds / 3600);
-    const minutes = Math.floor((seconds % 3600) / 60);
-    let timeStr = "";
-    if (hours > 0) {
-      timeStr = `${hours} hour${hours > 1 ? "s" : ""}${minutes > 0 ? ` and ${minutes} minute${minutes > 1 ? "s" : ""}` : ""}`;
-    } else if (minutes > 0) {
-      timeStr = `${minutes} minute${minutes > 1 ? "s" : ""}`;
-    } else {
-      timeStr = `${seconds} seconds`;
+export function isTelegramAuthError(err: any): boolean {
+  if (!err) return false;
+  const msg = String(err?.errorMessage || err?.message || "").toUpperCase();
+  const code = err?.code || err?.statusCode || 0;
+  return (
+    code === 401 ||
+    msg.includes("AUTH_KEY_UNREGISTERED") ||
+    msg.includes("AUTH_KEY_INVALID") ||
+    msg.includes("SESSION_REVOKED") ||
+    msg.includes("SESSION_EXPIRED") ||
+    msg.includes("USER_DEACTIVATED") ||
+    msg.includes("UNAUTHORIZED")
+  );
+}
+
+export async function handleTelegramAuthFailure(db: any, userId: string): Promise<void> {
+  try {
+    if (db && userId) {
+      console.warn(`[AUTH] Telegram session invalidated for user ${userId} -> deleting DB user_sessions`);
+      await db.run("DELETE FROM user_sessions WHERE user_id = ?", [userId]);
     }
-    return new Error(
-      `Too many OTP requests for this phone number. Telegram requires waiting ${timeStr} before requesting a new code. You can log in immediately using QR Code!`
-    );
+  } catch (e) {
+    console.error("[AUTH] Failed clearing user_sessions:", e);
   }
-  return err;
 }
 
 /**

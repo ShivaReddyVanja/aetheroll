@@ -78,9 +78,15 @@ export async function apiFetch(path: string, options: RequestInit = {}): Promise
   const cleanPath = path.startsWith("/") ? path : `/${path}`;
   const url = path.startsWith("http") ? path : (base ? `${base}${cleanPath}` : cleanPath);
 
-  return fetch(url, {
+  const res = await fetch(url, {
     ...options,
     credentials: "include",
   });
+
+  if (res.status === 401 && typeof window !== "undefined" && !cleanPath.includes("/api/auth/logout")) {
+    window.dispatchEvent(new CustomEvent("aetheroll:session-expired"));
+  }
+
+  return res;
 }
 
