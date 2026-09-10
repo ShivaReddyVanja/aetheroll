@@ -25,7 +25,10 @@ streamRoute.get("/", async (c) => {
   const workerOrigin = new URL(c.req.url).origin;
   const cacheKeyUrl = `${workerOrigin}/api/stream/cache/v3/${encodeURIComponent(mediaId)}?range=${encodeURIComponent(rangeHeader)}`;
   const cacheKey = new Request(cacheKeyUrl, { method: "GET" });
-  const cache = noCache || typeof caches === "undefined" ? null : (caches as any)?.default;
+  const cache =
+    noCache || typeof (globalThis as any).caches === "undefined"
+      ? null
+      : (globalThis as any).caches?.default;
 
   if (cache) {
     try {

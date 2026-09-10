@@ -64,7 +64,10 @@ thumbnailMediaRoute.post("/:id/thumbnail", async (c) => {
     const workerOrigin = new URL(c.req.url).origin;
     const cacheKeyUrl = `${workerOrigin}/api/media/cache/${encodeURIComponent(mediaId)}/thumbnail`;
     const cacheKey = new Request(cacheKeyUrl, { method: "GET" });
-    const cache = typeof caches !== "undefined" ? (caches as any)?.default : null;
+    const cache =
+      typeof (globalThis as any).caches !== "undefined"
+        ? (globalThis as any).caches?.default
+        : null;
     if (cache) {
       const edgeHeaders = new Headers();
       edgeHeaders.set("Content-Type", "image/jpeg");
@@ -99,7 +102,10 @@ thumbnailMediaRoute.get("/:id/thumbnail", async (c) => {
     const workerOrigin = new URL(c.req.url).origin;
     const cacheKeyUrl = `${workerOrigin}/api/media/cache/${encodeURIComponent(mediaId)}/thumbnail`;
     const cacheKey = new Request(cacheKeyUrl, { method: "GET" });
-    const cache = typeof caches !== "undefined" ? (caches as any)?.default : null;
+    const cache =
+      typeof (globalThis as any).caches !== "undefined"
+        ? (globalThis as any).caches?.default
+        : null;
 
     if (cache) {
       try {
