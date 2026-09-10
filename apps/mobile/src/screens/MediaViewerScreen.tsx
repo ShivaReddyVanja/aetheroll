@@ -32,7 +32,7 @@ import {
   Star,
   ExternalLink,
 } from 'lucide-react-native';
-import { getMediaStreamUrl, getMediaThumbnailUrl, getSessionToken } from '../services/api';
+import { getMediaStreamUrl, getMediaThumbnailUrl, getSessionToken, getAuthImageHeaders } from '../services/api';
 import { MediaItemData } from '../components/MediaCard';
 import { NativeBackgroundService } from '../services/backup/nativeBackgroundService';
 import { videoPrefetchService } from '../services/videoPrefetchService';
@@ -77,7 +77,10 @@ const MediaViewerSlide = React.memo(
       return (
         <View style={styles.slide}>
           <Image
-            source={{ uri: getMediaStreamUrl(item.id) }}
+            source={{
+              uri: getMediaStreamUrl(item.id),
+              headers: getAuthImageHeaders(),
+            }}
             style={styles.fullImage}
             resizeMode="contain"
           />
@@ -93,7 +96,10 @@ const MediaViewerSlide = React.memo(
       return (
         <View style={styles.slide}>
           <Image
-            source={{ uri: getMediaThumbnailUrl(item.id) }}
+            source={{
+              uri: getMediaThumbnailUrl(item.id),
+              headers: getAuthImageHeaders(),
+            }}
             style={styles.fullImage}
             resizeMode="contain"
           />

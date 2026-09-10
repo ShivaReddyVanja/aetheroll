@@ -1,7 +1,6 @@
 import { Hono } from "hono";
 import { getCookie } from "hono/cookie";
-import { getDb } from "../../lib/db";
-import { resolveUserAuth } from "../../lib/auth";
+import { resolveUserAuth, extractAllSessionTokens } from "../../lib/auth";
 import { getConnectedClient } from "../../lib/telegram";
 import { isTelemetryEnabled } from "../logs";
 import {
@@ -16,7 +15,8 @@ streamRoute.get("/", async (c) => {
   const mediaId = c.req.query("media_id");
   if (!mediaId) return c.text("media_id required", 400);
 
-  const token = getCookie(c, "tg_session") || c.req.query("session_token") || "default";
+  const candidates = extractAllSessionTokens(c);
+  const token = candidates[0]?.fullToken || candidates[0]?.sessionId || getCookie(c, "tg_session") || c.req.query("session_token") || "default";
   const rangeHeader = c.req.header("range") || "full";
 
   // 1. Check Cloudflare Edge Cache (Sub-3ms Local PoP Delivery)

@@ -124,9 +124,7 @@ class TelemetryService {
   public async probeStream(mediaId: string, rangeHeader: string = 'bytes=0-1024'): Promise<StreamProbeResult> {
     const baseUrl = getApiBaseUrl();
     const token = getSessionToken();
-    const url = `${baseUrl}/api/stream?media_id=${encodeURIComponent(mediaId)}${
-      token ? `&session_token=${encodeURIComponent(token)}` : ''
-    }`;
+    const url = `${baseUrl}/api/stream?media_id=${encodeURIComponent(mediaId)}`;
 
     const startTime = Date.now();
     this.addLog({
@@ -230,7 +228,7 @@ class TelemetryService {
 
     const baseUrl = getApiBaseUrl();
     const token = getSessionToken();
-    const sseUrl = `${baseUrl}/api/logs/stream${token ? `?session_token=${encodeURIComponent(token)}` : ''}`;
+    const sseUrl = `${baseUrl}/api/logs/stream`;
 
     this.isSseConnecting = true;
     this.sseAbortController = new AbortController();

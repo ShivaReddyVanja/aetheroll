@@ -8,7 +8,7 @@ import {
   Dimensions,
   Animated,
 } from 'react-native';
-import { getMediaThumbnailUrl } from '../services/api';
+import { getMediaThumbnailUrl, getAuthImageHeaders } from '../services/api';
 
 const { width } = Dimensions.get('window');
 // Guarantee exactly 3 columns with 2px gap (2 gaps * 2px = 4px)
@@ -97,7 +97,10 @@ function MediaCardComponent({
       >
         {!hasError ? (
           <Image
-            source={{ uri: imageUri }}
+            source={{
+              uri: imageUri,
+              headers: getAuthImageHeaders(),
+            }}
             style={styles.image}
             resizeMode="cover"
             onError={() => setHasError(true)}

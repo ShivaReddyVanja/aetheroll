@@ -181,11 +181,17 @@ export async function apiFetch(endpoint: string, options: RequestInit = {}): Pro
 }
 
 export function getMediaStreamUrl(mediaId: string): string {
-  const base = `${apiBaseUrl}/api/stream?media_id=${mediaId}`;
-  return sessionToken ? `${base}&session_token=${encodeURIComponent(sessionToken)}` : base;
+  return `${apiBaseUrl}/api/stream?media_id=${encodeURIComponent(mediaId)}`;
 }
 
 export function getMediaThumbnailUrl(mediaId: string): string {
-  const base = `${apiBaseUrl}/api/media/${encodeURIComponent(mediaId)}/thumbnail`;
-  return sessionToken ? `${base}?session_token=${encodeURIComponent(sessionToken)}` : base;
+  return `${apiBaseUrl}/api/media/${encodeURIComponent(mediaId)}/thumbnail`;
+}
+
+export function getAuthImageHeaders(): Record<string, string> | undefined {
+  if (!sessionToken) return undefined;
+  return {
+    Authorization: `Bearer ${sessionToken}`,
+    'x-tg-session': sessionToken,
+  };
 }
