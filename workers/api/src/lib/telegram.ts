@@ -328,6 +328,31 @@ export async function handleTelegramAuthFailure(db: any, userId: string): Promis
   }
 }
 
+export function formatTelegramError(err: any): Error {
+  if (!err) return new Error("Unknown Telegram error");
+  const msg = err.errorMessage || err.message || String(err);
+  if (msg.includes("PHONE_NUMBER_INVALID")) {
+    return new Error("Invalid phone number format. Please include your country code (e.g. +1...).");
+  }
+  if (msg.includes("PHONE_NUMBER_UNREGISTERED")) {
+    return new Error("This phone number is not registered on Telegram.");
+  }
+  if (msg.includes("PHONE_NUMBER_BANNED")) {
+    return new Error("This phone number has been banned from Telegram.");
+  }
+  if (msg.includes("FLOOD_WAIT_")) {
+    const seconds = msg.replace(/\D/g, "") || "a few";
+    return new Error(`Too many attempts. Please wait ${seconds} seconds before trying again.`);
+  }
+  if (msg.includes("PHONE_CODE_INVALID")) {
+    return new Error("Invalid verification code. Please check your Telegram app.");
+  }
+  if (msg.includes("PHONE_CODE_EXPIRED")) {
+    return new Error("Verification code expired. Please request a new code.");
+  }
+  return err instanceof Error ? err : new Error(msg);
+}
+
 /**
  * Initiates phone number verification code sending (Stateless & Serverless safe)
  */

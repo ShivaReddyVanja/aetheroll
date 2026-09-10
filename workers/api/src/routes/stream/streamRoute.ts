@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { getCookie } from "hono/cookie";
+import { getDb } from "../../lib/db";
 import { resolveUserAuth, extractAllSessionTokens } from "../../lib/auth";
 import { getConnectedClient } from "../../lib/telegram";
 import { isTelemetryEnabled } from "../logs";
