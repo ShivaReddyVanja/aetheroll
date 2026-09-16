@@ -209,7 +209,7 @@ export function SelectionSlider({
   const confirmDelete = () => {
     Alert.alert(
       'Delete Selected Media',
-      `Delete ${count} ${count === 1 ? 'item' : 'items'} from your Telegram vault?`,
+      `Delete ${count} ${count === 1 ? 'item' : 'items'} from your Telegram album?`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -220,6 +220,7 @@ export function SelectionSlider({
       ]
     );
   };
+
 
   if (count === 0) return null;
 
@@ -447,8 +448,9 @@ export function SelectionSlider({
                 </View>
                 <View style={styles.moreActionContent}>
                   <Text style={[styles.moreActionTitle, { color: '#DC2626' }]}>Delete</Text>
-                  <Text style={styles.moreActionSubtitle}>Permanently remove from Telegram vault</Text>
+                  <Text style={styles.moreActionSubtitle}>Permanently remove from Telegram album</Text>
                 </View>
+
               </TouchableOpacity>
             </ScrollView>
           </View>

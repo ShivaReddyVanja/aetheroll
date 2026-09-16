@@ -12,7 +12,16 @@ import {
   ActivityIndicator,
   TextInput,
 } from 'react-native';
-import { Check, X, Search, Bookmark } from 'lucide-react-native';
+import {
+  Check,
+  X,
+  Search,
+  Bookmark,
+  Plus,
+  Share2,
+  FolderPlus,
+  Sparkles,
+} from 'lucide-react-native';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -22,6 +31,11 @@ export interface ChannelItem {
   telegram_channel_id: string;
   media_count?: number;
   is_added?: number;
+  is_channel?: boolean;
+  is_group?: boolean;
+  is_public?: boolean;
+  username?: string | null;
+  invite_link?: string | null;
 }
 
 interface ChannelPickerSheetProps {
@@ -31,28 +45,23 @@ interface ChannelPickerSheetProps {
   isLoading?: boolean;
   onClose: () => void;
   onSelectChannel: (channel: ChannelItem) => void;
+  onOpenAddChannels: () => void;
+  onOpenCreateChannel: () => void;
+  onOpenShareChannel: (channel: ChannelItem) => void;
 }
 
-// Vibrant palette for channel avatars
 const AVATAR_COLORS = [
-  '#2563EB', // Royal Blue
-  '#7C3AED', // Purple
-  '#059669', // Emerald Green
-  '#D97706', // Amber
-  '#DB2777', // Pink
-  '#0891B2', // Cyan
-  '#EA580C', // Orange
-  '#4F46E5', // Indigo
+  '#2563EB', '#7C3AED', '#059669', '#D97706',
+  '#DB2777', '#0891B2', '#EA580C', '#4F46E5',
 ];
 
 function getAvatarColor(name: string): string {
-  if (name.toLowerCase().includes('saved')) return '#0088CC'; // Telegram Blue
+  if (name.toLowerCase().includes('saved')) return '#0088CC';
   let hash = 0;
   for (let i = 0; i < name.length; i++) {
     hash = name.charCodeAt(i) + ((hash << 5) - hash);
   }
-  const index = Math.abs(hash) % AVATAR_COLORS.length;
-  return AVATAR_COLORS[index];
+  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
 }
 
 function getInitials(name: string): string {
@@ -72,6 +81,9 @@ export function ChannelPickerSheet({
   isLoading = false,
   onClose,
   onSelectChannel,
+  onOpenAddChannels,
+  onOpenCreateChannel,
+  onOpenShareChannel,
 }: ChannelPickerSheetProps) {
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -84,7 +96,10 @@ export function ChannelPickerSheet({
 
   const renderChannelItem = ({ item: ch }: { item: ChannelItem }) => {
     const isActive = activeChannel?.id === ch.id;
-    const isSavedMessages = ch.name.toLowerCase().includes('saved');
+    const isSavedMessages =
+      ch.telegram_channel_id === 'me' ||
+      ch.telegram_channel_id.startsWith('me_') ||
+      ch.name.toLowerCase().includes('saved');
     const avatarBg = getAvatarColor(ch.name);
     const initials = getInitials(ch.name);
 
@@ -115,18 +130,30 @@ export function ChannelPickerSheet({
             {ch.name}
           </Text>
           <View style={styles.metaRow}>
-            <Text style={styles.metaCount}>
-              {ch.media_count !== undefined
-                ? `${ch.media_count} ${ch.media_count === 1 ? 'item' : 'items'}`
-                : 'Telegram Vault'}
-            </Text>
-            {isSavedMessages && (
+            {isSavedMessages ? (
               <View style={styles.savedBadge}>
-                <Text style={styles.savedBadgeText}>Private</Text>
+                <Text style={styles.savedBadgeText}>Private Cloud</Text>
               </View>
+            ) : (
+              <Text style={styles.metaCount}>
+                {ch.media_count !== undefined && ch.media_count > 0
+                  ? `${ch.media_count} items`
+                  : 'Photo Album'}
+              </Text>
             )}
           </View>
         </View>
+
+        {/* Share Button for Custom Channels */}
+        {!isSavedMessages && (
+          <TouchableOpacity
+            style={styles.shareIconBtn}
+            onPress={() => onOpenShareChannel(ch)}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Share2 size={15} color="#6B7280" strokeWidth={2.2} />
+          </TouchableOpacity>
+        )}
 
         {/* Right Status Indicator */}
         {isActive ? (
@@ -148,17 +175,14 @@ export function ChannelPickerSheet({
       onRequestClose={onClose}
     >
       <Pressable style={styles.backdrop} onPress={onClose}>
-        <View
-          style={styles.sheetContainer}
-          onStartShouldSetResponder={() => true}
-        >
+        <View style={styles.sheetContainer}>
           {/* Top Handle */}
           <View style={styles.sheetHandle} />
 
           {/* Header Row */}
           <View style={styles.sheetHeader}>
             <View style={styles.titleGroup}>
-              <Text style={styles.sheetTitle}>Telegram Channels</Text>
+              <Text style={styles.sheetTitle}>Photo Albums</Text>
               {channels.length > 0 && (
                 <View style={styles.countBadge}>
                   <Text style={styles.countBadgeText}>{channels.length}</Text>
@@ -174,18 +198,44 @@ export function ChannelPickerSheet({
             </TouchableOpacity>
           </View>
 
-          {/* Search Filter Bar */}
-          {channels.length > 4 && (
+          {/* TOP ACTION PILLS: + Add Channels & + New Album */}
+          <View style={styles.actionButtonsRow}>
+            <TouchableOpacity
+              style={styles.actionPillPrimary}
+              onPress={() => {
+                onClose();
+                onOpenAddChannels();
+              }}
+              activeOpacity={0.8}
+            >
+              <FolderPlus size={15} color="#FFFFFF" strokeWidth={2.2} />
+              <Text style={styles.actionPillPrimaryText}>Add Channels</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.actionPillSecondary}
+              onPress={() => {
+                onClose();
+                onOpenCreateChannel();
+              }}
+              activeOpacity={0.8}
+            >
+              <Sparkles size={14} color="#1A73E8" strokeWidth={2.2} />
+              <Text style={styles.actionPillSecondaryText}>New Album</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Search Filter Bar (if more than 3 channels) */}
+          {channels.length > 3 && (
             <View style={styles.searchContainer}>
               <Search size={16} color="#9CA3AF" strokeWidth={2.2} style={styles.searchIcon} />
               <TextInput
                 style={styles.searchInput}
-                placeholder="Search channels..."
+                placeholder="Search photo albums..."
                 placeholderTextColor="#9CA3AF"
                 value={searchQuery}
                 onChangeText={setSearchQuery}
                 autoCorrect={false}
-                clearButtonMode="while-editing"
               />
               {searchQuery.length > 0 && (
                 <TouchableOpacity onPress={() => setSearchQuery('')} style={styles.clearSearchBtn}>
@@ -205,15 +255,15 @@ export function ChannelPickerSheet({
             showsVerticalScrollIndicator={false}
             ItemSeparatorComponent={() => <View style={styles.itemSeparator} />}
             ListEmptyComponent={
-              isLoading && channels.length === 0 ? (
+              isLoading ? (
                 <View style={styles.loadingContainer}>
                   <ActivityIndicator size="small" color="#1A73E8" />
-                  <Text style={styles.loadingText}>Syncing channels from Telegram...</Text>
+                  <Text style={styles.loadingText}>Loading albums...</Text>
                 </View>
               ) : (
                 <View style={styles.emptyContainer}>
                   <Text style={styles.emptyText}>
-                    {searchQuery ? 'No matching channels found' : 'No Telegram channels found'}
+                    {searchQuery ? 'No matching albums found' : 'No photo albums added yet'}
                   </Text>
                 </View>
               )
@@ -224,6 +274,7 @@ export function ChannelPickerSheet({
     </Modal>
   );
 }
+
 
 const styles = StyleSheet.create({
   backdrop: {
@@ -258,7 +309,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: 20,
     paddingTop: 8,
-    paddingBottom: 12,
+    paddingBottom: 10,
   },
   titleGroup: {
     flexDirection: 'row',
@@ -267,7 +318,7 @@ const styles = StyleSheet.create({
   },
   sheetTitle: {
     fontSize: 18,
-    fontWeight: '700',
+    fontWeight: '800',
     color: '#111827',
     letterSpacing: -0.3,
   },
@@ -290,6 +341,49 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  actionButtonsRow: {
+    flexDirection: 'row',
+    gap: 10,
+    paddingHorizontal: 16,
+    marginBottom: 12,
+  },
+  actionPillPrimary: {
+    flex: 1.2,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#1A73E8',
+    paddingVertical: 9.5,
+    borderRadius: 14,
+    shadowColor: '#1A73E8',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  actionPillPrimaryText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  actionPillSecondary: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+    paddingVertical: 9.5,
+    borderRadius: 14,
+  },
+  actionPillSecondaryText: {
+    color: '#1D4ED8',
+    fontSize: 13,
+    fontWeight: '700',
+  },
   searchContainer: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -298,14 +392,14 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     paddingHorizontal: 12,
     borderRadius: 14,
-    height: 40,
+    height: 38,
   },
   searchIcon: {
     marginRight: 8,
   },
   searchInput: {
     flex: 1,
-    fontSize: 14,
+    fontSize: 13.5,
     color: '#1F2937',
     paddingVertical: 0,
   },
@@ -335,29 +429,23 @@ const styles = StyleSheet.create({
     borderColor: '#BFDBFE',
   },
   avatarBox: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 14,
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 3,
-    elevation: 2,
+    marginRight: 12,
   },
   avatarText: {
     color: '#FFFFFF',
-    fontSize: 14,
+    fontSize: 13.5,
     fontWeight: '800',
-    letterSpacing: 0.5,
   },
   channelDetails: {
     flex: 1,
   },
   channelTitle: {
-    fontSize: 15,
+    fontSize: 14.5,
     fontWeight: '600',
     color: '#1F2937',
     marginBottom: 2,
@@ -372,9 +460,8 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   metaCount: {
-    fontSize: 12.5,
+    fontSize: 12,
     color: '#6B7280',
-    fontWeight: '500',
   },
   savedBadge: {
     backgroundColor: '#E0F2FE',
@@ -387,6 +474,15 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '700',
   },
+  shareIconBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#F3F4F6',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 6,
+  },
   activeCheckCircle: {
     width: 22,
     height: 22,
@@ -394,7 +490,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#1A73E8',
     alignItems: 'center',
     justifyContent: 'center',
-    marginLeft: 8,
+    marginLeft: 4,
   },
   inactiveRadioCircle: {
     width: 18,
@@ -402,7 +498,7 @@ const styles = StyleSheet.create({
     borderRadius: 9,
     borderWidth: 1.5,
     borderColor: '#D1D5DB',
-    marginLeft: 8,
+    marginLeft: 4,
   },
   loadingContainer: {
     padding: 36,
@@ -412,7 +508,6 @@ const styles = StyleSheet.create({
   loadingText: {
     fontSize: 13,
     color: '#6B7280',
-    fontWeight: '500',
   },
   emptyContainer: {
     padding: 32,
@@ -421,6 +516,5 @@ const styles = StyleSheet.create({
   emptyText: {
     fontSize: 14,
     color: '#9CA3AF',
-    fontWeight: '500',
   },
 });

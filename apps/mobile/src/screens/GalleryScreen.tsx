@@ -18,9 +18,13 @@ import { Header } from '../components/Header';
 import { BottomNav, TabType } from '../components/BottomNav';
 import { TimelineScrubber } from '../components/TimelineScrubber';
 import { ChannelPickerSheet, ChannelItem } from '../components/ChannelPickerSheet';
+import { AddChannelsModal } from '../components/AddChannelsModal';
+import { CreateChannelSheet } from '../components/CreateChannelSheet';
+import { ChannelShareSheet } from '../components/ChannelShareSheet';
 import { SelectionSlider } from '../components/SelectionSlider';
 import { MediaCard, MediaItemData } from '../components/MediaCard';
 import { MediaViewerScreen } from './MediaViewerScreen';
+
 import { BulkUploadScreen } from './BulkUploadScreen';
 import { PhoneAuthScreen } from './PhoneAuthScreen';
 import { BackupManager } from '../services/backup';
@@ -72,6 +76,9 @@ export function GalleryScreen() {
   const [channels, setChannels] = useState<ChannelItem[]>([]);
   const [activeChannel, setActiveChannel] = useState<ChannelItem | null>(null);
   const [showChannelPicker, setShowChannelPicker] = useState(false);
+  const [showAddChannels, setShowAddChannels] = useState(false);
+  const [showCreateChannel, setShowCreateChannel] = useState(false);
+  const [shareTargetChannel, setShareTargetChannel] = useState<ChannelItem | null>(null);
   const [isChannelsLoading, setIsChannelsLoading] = useState(false);
 
   // Profile Modal & Settings
@@ -225,8 +232,8 @@ export function GalleryScreen() {
   const fetchChannels = async () => {
     try {
       setIsChannelsLoading(true);
-      console.log('[GALLERY CHANNELS] Calling GET /api/channels?all=true ...');
-      const res = await apiFetch('/api/channels?all=true');
+      console.log('[GALLERY CHANNELS] Calling GET /api/channels ...');
+      const res = await apiFetch('/api/channels');
       console.log('[GALLERY CHANNELS] Response status:', res.status);
       if (res.status === 401) {
         console.warn('[GALLERY CHANNELS] 401 Unauthorized received');
@@ -249,6 +256,7 @@ export function GalleryScreen() {
       setIsChannelsLoading(false);
     }
   };
+
 
   const fetchGalleryMedia = async (targetChannelId?: string) => {
     const chId = targetChannelId || activeChannel?.id;
@@ -464,14 +472,14 @@ export function GalleryScreen() {
               </View>
               <View>
                 <Text style={styles.settingsUserName}>{user?.displayName || 'Logged In'}</Text>
-                <Text style={styles.settingsUserSub}>Telegram Cloud Vault</Text>
+                <Text style={styles.settingsUserSub}>Telegram Cloud Account</Text>
               </View>
             </View>
 
             <View style={styles.settingsDivider} />
 
             <View style={styles.settingsItem}>
-              <Text style={styles.settingsItemLabel}>Active Vault Channel</Text>
+              <Text style={styles.settingsItemLabel}>Active Photo Album</Text>
               <Text style={styles.settingsItemValue}>{activeChannel?.name || 'Private Channel'}</Text>
             </View>
 
@@ -507,8 +515,9 @@ export function GalleryScreen() {
               <Text style={styles.emptySub}>
                 {activeTab === 'favorites'
                   ? 'Star any photo or video to easily find it here.'
-                  : 'Upload photos or videos to your Telegram vault to view them here.'}
+                  : 'Upload photos or videos to your Telegram album to view them here.'}
               </Text>
+
               {activeTab !== 'favorites' && (
                 <TouchableOpacity
                   style={styles.emptyUploadBtn}
@@ -639,7 +648,52 @@ export function GalleryScreen() {
           saveActiveChannel(ch);
           fetchGalleryMedia(ch.id);
         }}
+        onOpenAddChannels={() => {
+          setShowChannelPicker(false);
+          setShowAddChannels(true);
+        }}
+        onOpenCreateChannel={() => {
+          setShowChannelPicker(false);
+          setShowCreateChannel(true);
+        }}
+        onOpenShareChannel={(ch) => {
+          setShowChannelPicker(false);
+          setShareTargetChannel(ch);
+        }}
       />
+
+      {/* Add Telegram Channels Discovery Page Modal */}
+      <AddChannelsModal
+        visible={showAddChannels}
+        onClose={() => setShowAddChannels(false)}
+        onOpenCreateChannel={() => {
+          setShowAddChannels(false);
+          setShowCreateChannel(true);
+        }}
+        onChannelsUpdated={() => {
+          fetchChannels();
+        }}
+      />
+
+      {/* Create Channel Bottom Sheet */}
+      <CreateChannelSheet
+        visible={showCreateChannel}
+        onClose={() => setShowCreateChannel(false)}
+        onCreateSuccess={(newChannel) => {
+          setChannels((prev) => [newChannel, ...prev]);
+          setActiveChannel(newChannel);
+          saveActiveChannel(newChannel);
+          fetchGalleryMedia(newChannel.id);
+        }}
+      />
+
+      {/* Share Channel & Invite Friends Sheet */}
+      <ChannelShareSheet
+        visible={!!shareTargetChannel}
+        channel={shareTargetChannel}
+        onClose={() => setShareTargetChannel(null)}
+      />
+
 
       {/* User Profile / Storage Bottom Sheet */}
       <Modal

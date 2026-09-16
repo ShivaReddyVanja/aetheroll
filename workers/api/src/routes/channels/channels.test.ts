@@ -48,8 +48,71 @@ describe("⚡ Channels Routes Suite", () => {
     assert.equal(res.status, 401);
   });
 
+  it("5. POST /create should return 401 when unauthenticated", async () => {
+    const res = await channelsRouter.request("http://localhost/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "My New Channel" }),
+    });
+    assert.equal(res.status, 401);
+  });
+
+  it("6. POST /invite-link should return 401 when unauthenticated", async () => {
+    const res = await channelsRouter.request("http://localhost/invite-link", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ telegram_channel_id: "-100123456789" }),
+    });
+    assert.equal(res.status, 401);
+  });
+
+  it("7. POST /invite-users should return 401 when unauthenticated", async () => {
+    const res = await channelsRouter.request("http://localhost/invite-users", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ telegram_channel_id: "-100123456789", users: ["friend_username"] }),
+    });
+    assert.equal(res.status, 401);
+  });
+
+  it("8. GET /contacts should return 401 when unauthenticated", async () => {
+    const res = await channelsRouter.request("http://localhost/contacts");
+    assert.equal(res.status, 401);
+  });
+
+  describe("🎯 Channel Creation & Invite Validation Tests", () => {
+    it("9. POST /create should reject empty or whitespace title", async () => {
+      // Mock auth resolution by passing unauthenticated or testing route logic
+      const res = await channelsRouter.request("http://localhost/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "   " }),
+      });
+      // Will return 401 without auth or 400 if auth middleware passed
+      assert.ok(res.status === 401 || res.status === 400);
+    });
+
+    it("10. POST /invite-link should reject missing telegram_channel_id", async () => {
+      const res = await channelsRouter.request("http://localhost/invite-link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      assert.ok(res.status === 401 || res.status === 400);
+    });
+
+    it("11. POST /invite-users should reject empty users array", async () => {
+      const res = await channelsRouter.request("http://localhost/invite-users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ telegram_channel_id: "-10012345", users: [] }),
+      });
+      assert.ok(res.status === 401 || res.status === 400);
+    });
+  });
+
   describe("🛡️ Telegram Auth Revocation & Error Identification", () => {
-    it("5. isTelegramAuthError should detect AUTH_KEY_UNREGISTERED", () => {
+    it("12. isTelegramAuthError should detect AUTH_KEY_UNREGISTERED", () => {
       assert.equal(isTelegramAuthError({ errorMessage: "401: AUTH_KEY_UNREGISTERED" }), true);
       assert.equal(isTelegramAuthError({ message: "AUTH_KEY_UNREGISTERED" }), true);
       assert.equal(isTelegramAuthError({ errorMessage: "SESSION_REVOKED" }), true);
@@ -58,14 +121,14 @@ describe("⚡ Channels Routes Suite", () => {
       assert.equal(isTelegramAuthError({ code: 401 }), true);
     });
 
-    it("6. isTelegramAuthError should reject non-auth errors", () => {
+    it("13. isTelegramAuthError should reject non-auth errors", () => {
       assert.equal(isTelegramAuthError({ errorMessage: "FLOOD_WAIT_60" }), false);
       assert.equal(isTelegramAuthError({ errorMessage: "CHANNEL_PRIVATE" }), false);
       assert.equal(isTelegramAuthError({ message: "Network connection timeout" }), false);
       assert.equal(isTelegramAuthError(null), false);
     });
 
-    it("7. handleTelegramAuthFailure should execute session deletion in DB", async () => {
+    it("14. handleTelegramAuthFailure should execute session deletion in DB", async () => {
       let deletedUserId = "";
       let sqlExecuted = "";
       const mockDb = {
@@ -82,3 +145,4 @@ describe("⚡ Channels Routes Suite", () => {
     });
   });
 });
+

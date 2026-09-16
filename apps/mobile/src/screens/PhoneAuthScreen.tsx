@@ -295,8 +295,9 @@ export function PhoneAuthScreen({ onLoginSuccess }: PhoneAuthScreenProps) {
                   <BrandLogo size={52} />
                 </View>
                 <Text style={styles.brandTitle}>AETHEROLL</Text>
-                <Text style={styles.brandSubtitle}>Infinite Cloud Photo & Video Vault</Text>
+                <Text style={styles.brandSubtitle}>Infinite Cloud Photo & Video Gallery</Text>
               </View>
+
 
               <Text style={styles.mainHeading}>Log in with Telegram</Text>
               <Text style={styles.subHeading}>

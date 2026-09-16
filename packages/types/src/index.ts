@@ -53,6 +53,71 @@ export const BRAND_NAME = "Aetheroll";
 export const BRAND_TAGLINE = "Infinite Cloud Photo & Video Gallery";
 export const BRAND_DESCRIPTION = "Unlimited, private, zero-knowledge cloud camera roll and media gallery";
 
+export interface Channel {
+  id: string;
+  telegram_channel_id: string;
+  name: string;
+  username?: string | null;
+  media_count?: number;
+  is_added?: number;
+  is_channel?: boolean;
+  is_group?: boolean;
+  is_public?: boolean;
+  participants_count?: number;
+  invite_link?: string | null;
+}
+
+export interface CreateChannelRequest {
+  title: string;
+  about?: string;
+  is_megagroup?: boolean;
+  is_public?: boolean;
+  username?: string;
+}
+
+export interface CreateChannelResponse {
+  success: boolean;
+  channel?: Channel;
+  error?: string;
+}
+
+export interface ChannelInviteLinkRequest {
+  telegram_channel_id: string;
+}
+
+export interface ChannelInviteLinkResponse {
+  success: boolean;
+  invite_link?: string;
+  error?: string;
+}
+
+export interface InviteUsersRequest {
+  telegram_channel_id: string;
+  users: string[];
+}
+
+export interface InviteUsersResponse {
+  success: boolean;
+  invited?: string[];
+  failed?: Array<{ user: string; reason: string }>;
+  error?: string;
+}
+
+export interface TelegramContact {
+  id: string;
+  first_name: string;
+  last_name?: string;
+  username?: string;
+  phone?: string;
+  mutual_contact?: boolean;
+}
+
+export interface TelegramContactsResponse {
+  success: boolean;
+  contacts?: TelegramContact[];
+  error?: string;
+}
+
 export const PINWHEEL_FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="32" height="32" fill="none">
   <path d="M12 2C9.24 2 7 4.24 7 7C7 9.76 9.24 12 12 12C12 9.24 14.24 7 17 7C19.76 7 22 4.76 22 2H12Z" fill="#EA4335"/>
   <path d="M22 12C22 9.24 19.76 7 17 7C14.24 7 12 9.24 12 12C12 14.76 14.24 17 17 17C17 19.76 19.24 22 22 22V12Z" fill="#FBBC05"/>

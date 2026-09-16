@@ -366,9 +366,10 @@ export function BulkUploadScreen() {
         <View>
           <Text style={styles.title}>Backup & Sync</Text>
           <Text style={styles.subtitle}>
-            {activeChannel ? `Vault: ${activeChannel.name}` : 'Aetheroll Telegram Cloud Vault'}
+            {activeChannel ? `Album: ${activeChannel.name}` : 'Aetheroll Telegram Cloud'}
           </Text>
         </View>
+
       </View>
 
       {/* Battery Optimization Exemption Banner on Android */}

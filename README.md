@@ -103,7 +103,10 @@ Aetheroll is a privacy-first cloud gallery designed as a high-performance altern
 │   ├── ENVIRONMENT_AND_DEPLOYMENT_GUIDE.md  # Configuration matrix
 │   ├── AUTH_AND_SECURITY_ARCHITECTURE.md    # Dual-key encryption specification
 │   ├── CACHING_AND_DATA_FETCHING_ARCHITECTURE.md # 3-tier caching pipeline
-│   └── METRICS_CAPACITY_AND_COST_ARCHITECTURE.md # Resource monitoring
+│   ├── METRICS_CAPACITY_AND_COST_ARCHITECTURE.md # Resource monitoring
+│   └── upcoming/
+│       ├── MASS_DATA_EXPORT_PLAN.md  # IMPORTANT: Zero-cloud-cost mass data export spec
+│       └── DUAL_ASSET_TRANSCODING_PLAN.md # Multi-variant video transcoding spec
 └── migrations/                  # Cloudflare D1 SQL schema migrations
 ```
 
