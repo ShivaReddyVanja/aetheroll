@@ -13,7 +13,11 @@ export const SITE_URL = (
 
 export const GITHUB_REPO_URL = "https://github.com/ShivaReddyVanja/aetheroll";
 export const GITHUB_RELEASES_URL = "https://github.com/ShivaReddyVanja/aetheroll/releases/latest";
-export const APK_DOWNLOAD_URL = "https://github.com/ShivaReddyVanja/aetheroll/releases/latest/download/aetheroll-mobile-latest.apk";
+export const APK_DOWNLOAD_URL = `${(
+  process.env.NEXT_PUBLIC_REMOTE_API_URL ||
+  process.env.REMOTE_API_URL ||
+  "https://aetheroll-api.builtbyshiva.com"
+).replace(/\/$/, "")}/api/releases/android/latest/download`;
 
 export const PINWHEEL_FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="32" height="32" fill="none">
   <path d="M12 2C9.24 2 7 4.24 7 7C7 9.76 9.24 12 12 12C12 9.24 14.24 7 17 7C19.76 7 22 4.76 22 2H12Z" fill="#EA4335"/>

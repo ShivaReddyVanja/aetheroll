@@ -30,6 +30,10 @@
     {
       "binding": "R2_BUCKET",
       "bucket_name": "aetheroll-media"
+    },
+    {
+      "binding": "RELEASES_BUCKET",
+      "bucket_name": "aetheroll-releases"
     }
   ],
 
