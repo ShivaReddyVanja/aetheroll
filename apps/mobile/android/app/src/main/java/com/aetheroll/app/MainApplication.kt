@@ -1,4 +1,4 @@
-package com.mobile
+package com.aetheroll.app
 
 import android.app.Application
 import com.facebook.react.PackageList
@@ -15,7 +15,7 @@ class MainApplication : Application(), ReactApplication {
       packageList =
         PackageList(this).packages.apply {
           // Packages that cannot be autolinked yet can be added manually here, for example:
-          add(com.mobile.backup.BackupServicePackage())
+          add(com.aetheroll.app.backup.BackupServicePackage())
         },
     )
   }

@@ -1,4 +1,4 @@
-package com.mobile.backup
+package com.aetheroll.app.backup
 
 import android.view.View
 import com.facebook.react.ReactPackage

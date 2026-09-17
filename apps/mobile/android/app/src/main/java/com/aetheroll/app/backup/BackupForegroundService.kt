@@ -1,4 +1,4 @@
-package com.mobile.backup
+package com.aetheroll.app.backup
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -13,7 +13,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
-import com.mobile.MainActivity
+import com.aetheroll.app.MainActivity
 
 class BackupForegroundService : Service() {
 

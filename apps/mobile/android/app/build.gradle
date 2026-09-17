@@ -93,9 +93,9 @@ android {
     buildToolsVersion rootProject.ext.buildToolsVersion
     compileSdk rootProject.ext.compileSdkVersion
 
-    namespace "com.mobile"
+    namespace "com.aetheroll.app"
     defaultConfig {
-        applicationId "com.mobile"
+        applicationId "com.aetheroll.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode project.hasProperty('versionCode') ? project.property('versionCode').toInteger() : 1
@@ -119,11 +119,6 @@ android {
                 storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD")
                 keyAlias System.getenv("ANDROID_KEY_ALIAS")
                 keyPassword System.getenv("ANDROID_KEY_PASSWORD")
-            } else {
-                storeFile file('debug.keystore')
-                storePassword 'android'
-                keyAlias 'androiddebugkey'
-                keyPassword 'android'
             }
         }
     }
@@ -136,6 +131,21 @@ android {
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
         }
+    }
+}
+
+gradle.taskGraph.whenReady { taskGraph ->
+    def isReleaseBuild = taskGraph.allTasks.any { task -> task.name.toLowerCase().contains("release") }
+    def hasPropertySigning = project.hasProperty('MYAPP_RELEASE_STORE_FILE') &&
+        file(project.property('MYAPP_RELEASE_STORE_FILE')).exists()
+    def hasEnvironmentSigning = System.getenv("ANDROID_KEYSTORE_PATH") != null &&
+        file(System.getenv("ANDROID_KEYSTORE_PATH")).exists()
+
+    if (isReleaseBuild && !hasPropertySigning && !hasEnvironmentSigning) {
+        throw new GradleException(
+            "Release signing credentials are required. Configure a production keystore " +
+            "through MYAPP_RELEASE_* properties or ANDROID_KEYSTORE_* environment variables."
+        )
     }
 }
 
