@@ -33,6 +33,13 @@ jobs:
     name: Build & Release Android APK
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+      version_code: ${{ steps.version.outputs.version_code }}
+      release_notes: ${{ steps.version.outputs.release_notes }}
+      apk_path: ${{ steps.artifacts.outputs.apk_path }}
+      sha_path: ${{ steps.artifacts.outputs.sha_path }}
 
     steps:
       - name: Checkout repository
@@ -199,16 +206,47 @@ jobs:
             --notes "${RELEASE_BODY}" || \
           gh release upload "${RELEASE_TAG}" "${FULL_APK_PATH}" "${FULL_SHA_PATH}" --clobber
 
+  publish-r2:
+    name: Publish Release to Cloudflare R2
+    needs: build-and-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download APK from GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "${{ needs.build-and-release.outputs.tag }}" \
+            --pattern "aetheroll-mobile-*.apk*" \
+            --dir .
+
       - name: Publish APK and update manifest to R2
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          RELEASE_VERSION: ${{ steps.version.outputs.version }}
-          RELEASE_VERSION_CODE: ${{ steps.version.outputs.version_code }}
-          RELEASE_TAG: ${{ steps.version.outputs.tag }}
-          RELEASE_NOTES: ${{ steps.version.outputs.release_notes }}
-          APK_PATH: ${{ steps.artifacts.outputs.apk_path }}
-          SHA_PATH: ${{ steps.artifacts.outputs.sha_path }}
+          RELEASE_VERSION: ${{ needs.build-and-release.outputs.version }}
+          RELEASE_VERSION_CODE: ${{ needs.build-and-release.outputs.version_code }}
+          RELEASE_TAG: ${{ needs.build-and-release.outputs.tag }}
+          RELEASE_NOTES: ${{ needs.build-and-release.outputs.release_notes }}
+          APK_PATH: ${{ needs.build-and-release.outputs.apk_path }}
+          SHA_PATH: ${{ needs.build-and-release.outputs.sha_path }}
         shell: bash
         run: |
           if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
