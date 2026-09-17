@@ -37,6 +37,20 @@ import {
   performLogout,
   onSessionExpired,
 } from '../services/api';
+import {
+  Smartphone,
+  Download,
+  RefreshCw,
+  CheckCircle2,
+  Sparkles,
+} from 'lucide-react-native';
+import {
+  getAppVersionInfo,
+  checkForAndroidUpdate,
+  downloadAndInstallAndroidUpdate,
+  AndroidRelease,
+  AppVersionInfo,
+} from '../services/appUpdateService';
 import { getStoredActiveChannel, saveActiveChannel } from '../services/secureStorage';
 import { BrandLogo } from '../components/BrandLogo';
 
@@ -118,6 +132,56 @@ export function GalleryScreen() {
   }, []);
 
   const [authStatusText, setAuthStatusText] = useState('Initializing gallery...');
+
+  // Application version & update state
+  const [appVersion, setAppVersion] = useState<AppVersionInfo>({ versionName: '1.0.0', versionCode: 1 });
+  const [availableUpdate, setAvailableUpdate] = useState<AndroidRelease | null>(null);
+  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
+  const [isDownloadingUpdate, setIsDownloadingUpdate] = useState(false);
+  const [updateStatusMessage, setUpdateStatusMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    getAppVersionInfo().then(setAppVersion).catch(() => {});
+    checkForAndroidUpdate()
+      .then((release) => {
+        if (release) setAvailableUpdate(release);
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleCheckForUpdates = useCallback(async () => {
+    try {
+      setIsCheckingUpdate(true);
+      setUpdateStatusMessage(null);
+      const release = await checkForAndroidUpdate({ ignoreDismissed: true });
+      if (release) {
+        setAvailableUpdate(release);
+        setUpdateStatusMessage(null);
+      } else {
+        setAvailableUpdate(null);
+        setUpdateStatusMessage('You are on the latest version.');
+      }
+    } catch {
+      setUpdateStatusMessage('Could not check for updates right now.');
+    } finally {
+      setIsCheckingUpdate(false);
+    }
+  }, []);
+
+  const handleDownloadUpdate = useCallback(async (release: AndroidRelease) => {
+    try {
+      setIsDownloadingUpdate(true);
+      setUpdateStatusMessage(null);
+      await downloadAndInstallAndroidUpdate(release);
+    } catch (err: any) {
+      Alert.alert(
+        'Update Notice',
+        err?.message || 'Failed to download or launch installer. Please try again.',
+      );
+    } finally {
+      setIsDownloadingUpdate(false);
+    }
+  }, []);
 
   const addLog = (msg: string) => {
     console.log(`[AUTH_BOOT] ${msg}`);
@@ -462,7 +526,12 @@ export function GalleryScreen() {
       {activeTab === 'upload' ? (
         <BulkUploadScreen />
       ) : activeTab === 'settings' ? (
-        <View style={styles.settingsContent}>
+        <ScrollView
+          style={styles.settingsContent}
+          contentContainerStyle={styles.settingsScrollContainer}
+          showsVerticalScrollIndicator={false}
+        >
+          {/* User Profile Card */}
           <View style={styles.settingsCard}>
             <View style={styles.settingsUserRow}>
               <View style={styles.settingsAvatarCircle}>
@@ -470,7 +539,7 @@ export function GalleryScreen() {
                   {(user?.displayName || 'U').charAt(0).toUpperCase()}
                 </Text>
               </View>
-              <View>
+              <View style={{ flex: 1 }}>
                 <Text style={styles.settingsUserName}>{user?.displayName || 'Logged In'}</Text>
                 <Text style={styles.settingsUserSub}>Telegram Cloud Account</Text>
               </View>
@@ -487,16 +556,97 @@ export function GalleryScreen() {
               <Text style={styles.settingsItemLabel}>Indexed Media Items</Text>
               <Text style={styles.settingsItemValue}>{items.length} items</Text>
             </View>
-
-            <TouchableOpacity
-              style={styles.logoutButton}
-              onPress={handleLogout}
-              activeOpacity={0.8}
-            >
-              <Text style={styles.logoutButtonText}>Log Out of Aetheroll</Text>
-            </TouchableOpacity>
           </View>
-        </View>
+
+          {/* Software Updates & App Info Card */}
+          <View style={[styles.settingsCard, { marginTop: 16 }]}>
+            <View style={styles.settingsHeaderRow}>
+              <View style={styles.settingsIconCircle}>
+                <Smartphone size={18} color="#0F766E" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.settingsSectionTitle}>Application & Updates</Text>
+                <Text style={styles.settingsSectionSub}>Aetheroll for Android</Text>
+              </View>
+              {availableUpdate && (
+                <View style={styles.updateBadgeContainer}>
+                  <Text style={styles.updateBadgeText}>Update</Text>
+                </View>
+              )}
+            </View>
+
+            <View style={styles.settingsDivider} />
+
+            <View style={styles.settingsItem}>
+              <Text style={styles.settingsItemLabel}>Installed Version</Text>
+              <Text style={styles.settingsItemValue}>
+                v{appVersion.versionName} (Build {appVersion.versionCode})
+              </Text>
+            </View>
+
+            {availableUpdate ? (
+              <View style={styles.updateAvailableBanner}>
+                <View style={styles.updateBannerHeader}>
+                  <Sparkles size={16} color="#047857" />
+                  <Text style={styles.updateBannerTitle}>
+                    New Release v{availableUpdate.version}
+                  </Text>
+                </View>
+                {availableUpdate.releaseNotes && availableUpdate.releaseNotes.length > 0 && (
+                  <Text style={styles.updateBannerNotes} numberOfLines={3}>
+                    {availableUpdate.releaseNotes.join('\n')}
+                  </Text>
+                )}
+                <TouchableOpacity
+                  style={styles.updateActionButton}
+                  onPress={() => handleDownloadUpdate(availableUpdate)}
+                  disabled={isDownloadingUpdate}
+                  activeOpacity={0.8}
+                >
+                  {isDownloadingUpdate ? (
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                  ) : (
+                    <>
+                      <Download size={15} color="#FFFFFF" />
+                      <Text style={styles.updateActionText}>Download & Install Update</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View style={styles.upToDateRow}>
+                <View style={styles.upToDateStatusLeft}>
+                  <CheckCircle2 size={16} color="#059669" />
+                  <Text style={styles.upToDateText}>
+                    {updateStatusMessage || 'You are running the latest version'}
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  style={styles.checkUpdateButton}
+                  onPress={handleCheckForUpdates}
+                  disabled={isCheckingUpdate}
+                  activeOpacity={0.7}
+                >
+                  {isCheckingUpdate ? (
+                    <ActivityIndicator size="small" color="#1A73E8" />
+                  ) : (
+                    <RefreshCw size={13} color="#1A73E8" />
+                  )}
+                  <Text style={styles.checkUpdateText}>Check</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+
+          {/* Logout Button */}
+          <TouchableOpacity
+            style={[styles.logoutButton, { marginTop: 16 }]}
+            onPress={handleLogout}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.logoutButtonText}>Log Out of Aetheroll</Text>
+          </TouchableOpacity>
+        </ScrollView>
       ) : (
         <View style={styles.mainContent}>
           {loading && items.length === 0 ? (
@@ -633,6 +783,7 @@ export function GalleryScreen() {
           activeTab={activeTab}
           onTabChange={setActiveTab}
           pendingUploadCount={pendingUploadCount}
+          hasUpdateAvailable={!!availableUpdate}
         />
       )}
 
@@ -906,7 +1057,11 @@ const styles = StyleSheet.create({
   },
   settingsContent: {
     flex: 1,
-    padding: 20,
+    paddingHorizontal: 20,
+    paddingTop: 16,
+  },
+  settingsScrollContainer: {
+    paddingBottom: 110,
   },
   settingsCard: {
     backgroundColor: '#FFFFFF',
@@ -949,15 +1104,53 @@ const styles = StyleSheet.create({
     color: '#5F6368',
     marginTop: 2,
   },
+  settingsHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 12,
+  },
+  settingsIconCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#CCFBF1',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  settingsSectionTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#1F1F1F',
+  },
+  settingsSectionSub: {
+    fontSize: 12,
+    color: '#6B7280',
+    marginTop: 1,
+  },
+  updateBadgeContainer: {
+    backgroundColor: '#DCFCE7',
+    borderWidth: 1,
+    borderColor: '#86EFAC',
+    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  updateBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#15803D',
+  },
   settingsDivider: {
     height: 1,
     backgroundColor: '#E8EAED',
-    marginVertical: 14,
+    marginVertical: 12,
   },
   settingsItem: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    paddingVertical: 10,
+    paddingVertical: 8,
+    alignItems: 'center',
   },
   settingsItemLabel: {
     fontSize: 14,
@@ -967,6 +1160,84 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     color: '#1F1F1F',
+  },
+  updateAvailableBanner: {
+    backgroundColor: '#F0FDF4',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+    padding: 14,
+    marginTop: 10,
+  },
+  updateBannerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 6,
+  },
+  updateBannerTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#166534',
+  },
+  updateBannerNotes: {
+    fontSize: 12,
+    color: '#15803D',
+    lineHeight: 18,
+    marginBottom: 12,
+  },
+  updateActionButton: {
+    backgroundColor: '#059669',
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  updateActionText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  upToDateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#F9FAFB',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginTop: 8,
+  },
+  upToDateStatusLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flex: 1,
+  },
+  upToDateText: {
+    fontSize: 13,
+    color: '#374151',
+    fontWeight: '500',
+    flex: 1,
+  },
+  checkUpdateButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: '#EFF6FF',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+  },
+  checkUpdateText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#1A73E8',
   },
   logoutButton: {
     marginTop: 20,

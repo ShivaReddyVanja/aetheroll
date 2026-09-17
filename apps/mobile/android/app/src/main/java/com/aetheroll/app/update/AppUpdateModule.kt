@@ -12,6 +12,7 @@ import android.os.Environment
 import android.provider.Settings
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
+import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import java.security.MessageDigest
@@ -23,7 +24,37 @@ class AppUpdateModule(private val reactContext: ReactApplicationContext) :
 
     @ReactMethod
     fun getVersionCode(promise: Promise) {
-        promise.resolve(reactContext.packageManager.getPackageInfo(reactContext.packageName, 0).longVersionCode.toDouble())
+        try {
+            val pInfo = reactContext.packageManager.getPackageInfo(reactContext.packageName, 0)
+            val code = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                pInfo.longVersionCode
+            } else {
+                @Suppress("DEPRECATION")
+                pInfo.versionCode.toLong()
+            }
+            promise.resolve(code.toDouble())
+        } catch (e: Exception) {
+            promise.reject("VERSION_CODE_FAILED", e.message, e)
+        }
+    }
+
+    @ReactMethod
+    fun getAppVersionInfo(promise: Promise) {
+        try {
+            val pInfo = reactContext.packageManager.getPackageInfo(reactContext.packageName, 0)
+            val code = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                pInfo.longVersionCode
+            } else {
+                @Suppress("DEPRECATION")
+                pInfo.versionCode.toLong()
+            }
+            val map = Arguments.createMap()
+            map.putString("versionName", pInfo.versionName ?: "1.0.0")
+            map.putDouble("versionCode", code.toDouble())
+            promise.resolve(map)
+        } catch (e: Exception) {
+            promise.reject("VERSION_INFO_FAILED", e.message, e)
+        }
     }
 
     @ReactMethod
@@ -32,7 +63,7 @@ class AppUpdateModule(private val reactContext: ReactApplicationContext) :
             val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${reactContext.packageName}"))
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             reactContext.startActivity(intent)
-            promise.reject("INSTALL_PERMISSION_REQUIRED", "Allow Aetheroll to install updates, then try again.")
+            promise.reject("INSTALL_PERMISSION_REQUIRED", "Please allow installing apps from Aetheroll in Settings, then tap Download again.")
             return
         }
 
@@ -64,6 +95,10 @@ class AppUpdateModule(private val reactContext: ReactApplicationContext) :
                             digest.update(buffer, 0, read)
                         }
                         digest.digest().joinToString("") { "%02x".format(it) }
+                    }
+                    if (actualSha256 == null) {
+                        promise.reject("UPDATE_CHECKSUM_FAILED", "Could not read the downloaded update file.")
+                        return
                     }
                     if (!actualSha256.equals(expectedSha256, ignoreCase = true)) {
                         promise.reject("UPDATE_CHECKSUM_FAILED", "Downloaded update failed its integrity check.")

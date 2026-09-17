@@ -165,29 +165,39 @@ jobs:
           retention-days: 14
 
       - name: Create Git Tag and GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          target_commitish: ${{ github.sha }}
-          name: "Aetheroll Mobile ${{ steps.version.outputs.tag }}"
-          body: |
-            ## Aetheroll Mobile ${{ steps.version.outputs.tag }} 🚀
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_VERSION_CODE: ${{ steps.version.outputs.version_code }}
+          RELEASE_NOTES: ${{ steps.version.outputs.release_notes }}
+          APK_PATH: ${{ steps.artifacts.outputs.apk_path }}
+          SHA_PATH: ${{ steps.artifacts.outputs.sha_path }}
+        run: |
+          RELEASE_BODY=$(cat <<EOF
+          ## Aetheroll Mobile ${RELEASE_TAG} 🚀
 
-            ### What's Changed
-            ${{ steps.version.outputs.release_notes }}
+          ### What's Changed
+          ${RELEASE_NOTES}
 
-            ---
-            **Release Details**:
-            - **Version Name**: `${{ steps.version.outputs.version }}`
-            - **Version Code**: `${{ steps.version.outputs.version_code }}`
-            - **Commit**: `${{ github.sha }}`
-          files: |
-            ${{ steps.artifacts.outputs.apk_path }}
-            ${{ steps.artifacts.outputs.sha_path }}
-            ${{ steps.artifacts.outputs.latest_apk_path }}
-            ${{ steps.artifacts.outputs.latest_sha_path }}
-          draft: false
-          prerelease: false
+          ---
+          **Release Details**:
+          - **Version Name**: \`${RELEASE_VERSION}\`
+          - **Version Code**: \`${RELEASE_VERSION_CODE}\`
+          - **Commit**: \`${GITHUB_SHA}\`
+          EOF
+          )
+
+          FULL_APK_PATH="$GITHUB_WORKSPACE/${APK_PATH}"
+          FULL_SHA_PATH="$GITHUB_WORKSPACE/${SHA_PATH}"
+
+          gh release create "${RELEASE_TAG}" \
+            "${FULL_APK_PATH}" \
+            "${FULL_SHA_PATH}" \
+            --target "${GITHUB_SHA}" \
+            --title "Aetheroll Mobile ${RELEASE_TAG}" \
+            --notes "${RELEASE_BODY}" || \
+          gh release upload "${RELEASE_TAG}" "${FULL_APK_PATH}" "${FULL_SHA_PATH}" --clobber
 
       - name: Publish APK and update manifest to R2
         env:

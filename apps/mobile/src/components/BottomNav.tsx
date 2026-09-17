@@ -14,9 +14,15 @@ interface BottomNavProps {
   activeTab: TabType;
   onTabChange: (tab: TabType) => void;
   pendingUploadCount?: number;
+  hasUpdateAvailable?: boolean;
 }
 
-export function BottomNav({ activeTab, onTabChange, pendingUploadCount = 0 }: BottomNavProps) {
+export function BottomNav({
+  activeTab,
+  onTabChange,
+  pendingUploadCount = 0,
+  hasUpdateAvailable = false,
+}: BottomNavProps) {
   const insets = useSafeAreaInsets();
 
   const tabs: Array<{
@@ -74,6 +80,9 @@ export function BottomNav({ activeTab, onTabChange, pendingUploadCount = 0 }: Bo
                   <View style={styles.badge}>
                     <Text style={styles.badgeText}>{pendingUploadCount}</Text>
                   </View>
+                )}
+                {tab.id === 'settings' && hasUpdateAvailable && (
+                  <View style={styles.updateDot} />
                 )}
               </View>
               <Text style={[styles.label, isActive && styles.activeLabel]}>
@@ -158,5 +167,16 @@ const styles = StyleSheet.create({
   activeLabel: {
     color: '#001D35',
     fontWeight: '700',
+  },
+  updateDot: {
+    position: 'absolute',
+    top: -2,
+    right: -2,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#0D9488',
+    borderWidth: 1.5,
+    borderColor: '#FFFFFF',
   },
 });

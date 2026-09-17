@@ -14,16 +14,55 @@ export interface AndroidRelease {
   minSupportedVersionCode?: number;
 }
 
+export interface AppVersionInfo {
+  versionName: string;
+  versionCode: number;
+}
+
 interface AppUpdateNativeModule {
   getVersionCode(): Promise<number>;
+  getAppVersionInfo?(): Promise<AppVersionInfo>;
   downloadAndInstall(downloadUrl: string, expectedSha256: string): Promise<void>;
 }
 
 function nativeUpdater(): AppUpdateNativeModule | null {
-  return NativeModules.AppUpdateModule as AppUpdateNativeModule | undefined || null;
+  return (NativeModules.AppUpdateModule as AppUpdateNativeModule | undefined) || null;
 }
 
-export async function checkForAndroidUpdate(): Promise<AndroidRelease | null> {
+export async function getAppVersionInfo(): Promise<AppVersionInfo> {
+  if (Platform.OS !== 'android') {
+    return { versionName: '1.0.0', versionCode: 1 };
+  }
+
+  const updater = nativeUpdater();
+  if (!updater) {
+    return { versionName: '1.0.0', versionCode: 1 };
+  }
+
+  if (typeof updater.getAppVersionInfo === 'function') {
+    try {
+      const info = await updater.getAppVersionInfo();
+      if (info && info.versionName) {
+        return info;
+      }
+    } catch {
+      // fallback to getVersionCode
+    }
+  }
+
+  try {
+    const code = await updater.getVersionCode();
+    return { versionName: '1.0.0', versionCode: code };
+  } catch {
+    return { versionName: '1.0.0', versionCode: 1 };
+  }
+}
+
+export interface CheckUpdateOptions {
+  ignoreDismissed?: boolean;
+}
+
+export async function checkForAndroidUpdate(options?: CheckUpdateOptions): Promise<AndroidRelease | null> {
   if (Platform.OS !== 'android') return null;
 
   const updater = nativeUpdater();
@@ -39,6 +78,10 @@ export async function checkForAndroidUpdate(): Promise<AndroidRelease | null> {
   if (!response.ok) return null;
   const release = await response.json() as AndroidRelease;
   if (!Number.isInteger(release.versionCode) || release.versionCode <= currentVersionCode) return null;
+
+  if (options?.ignoreDismissed) {
+    return release;
+  }
 
   const dismissedVersion = Number(await AsyncStorage.getItem(DISMISSED_UPDATE_VERSION_KEY));
   if (dismissedVersion === release.versionCode && !release.minSupportedVersionCode) return null;
