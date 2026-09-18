@@ -7,3 +7,5 @@ export * from './uploadDispatcher';
 export * from './backupManager';
 export * from './nativeBackgroundService';
 export * from './chunkedUploader';
+export * from './directTelegramUploader';
+export * from './uploadStrategy';

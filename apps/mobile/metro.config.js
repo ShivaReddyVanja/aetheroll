@@ -1,10 +1,13 @@
 const path = require('path');
 const { getDefaultConfig, mergeConfig } = require('@react-native/metro-config');
+const nodeLibs = require('node-libs-react-native');
 
 const projectRoot = __dirname;
 const monorepoRoot = path.resolve(projectRoot, '../..');
 
 const defaultConfig = getDefaultConfig(projectRoot);
+
+const emptyMock = path.resolve(projectRoot, 'src/mocks/emptyMock.js');
 
 /**
  * Metro configuration for pnpm monorepo
@@ -15,6 +18,16 @@ const defaultConfig = getDefaultConfig(projectRoot);
 const config = {
   watchFolders: [monorepoRoot],
   resolver: {
+    extraNodeModules: {
+      ...nodeLibs,
+      crypto: require.resolve('crypto-browserify'),
+      net: emptyMock,
+      tls: emptyMock,
+      fs: emptyMock,
+      child_process: emptyMock,
+      dns: emptyMock,
+      dgram: emptyMock,
+    },
     nodeModulesPaths: [
       path.resolve(projectRoot, 'node_modules'),
       path.resolve(monorepoRoot, 'node_modules'),
@@ -25,3 +38,4 @@ const config = {
 };
 
 module.exports = mergeConfig(defaultConfig, config);
+

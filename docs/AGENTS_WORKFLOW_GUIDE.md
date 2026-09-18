@@ -158,3 +158,15 @@ git add .
 git commit -m "feat(scope): detailed description"
 git push origin feature/<feature-name>
 ```
+
+---
+
+## 6. Authoritative Architecture Specifications
+
+Before designing or modifying core subsystems, consult these primary architecture documents:
+
+* **[Direct Mobile Upload & Zero-Knowledge Architecture](file:///Users/shivareddy/Developer/telegram/docs/DIRECT_MOBILE_UPLOAD_AND_ZERO_KNOWLEDGE_ARCHITECTURE.md)**: Direct App $\rightarrow$ Telegram MTProto streaming, ephemeral session leasing, and dynamic Cloudflare fallback strategy.
+* **[Auth & Security Architecture](file:///Users/shivareddy/Developer/telegram/docs/AUTH_AND_SECURITY_ARCHITECTURE.md)**: Dual-key envelope encryption specification ($K_{\text{derived}} = \text{HKDF}(K_{\text{client}}, K_{\text{server}})$) and QR/phone authentication flows.
+* **[Caching & Data Fetching Architecture](file:///Users/shivareddy/Developer/telegram/docs/CACHING_AND_DATA_FETCHING_ARCHITECTURE.md)**: Chunked video streaming, range requests, and R2 thumbnail caching.
+* **[Metrics, Capacity & Cost Architecture](file:///Users/shivareddy/Developer/telegram/docs/METRICS_CAPACITY_AND_COST_ARCHITECTURE.md)**: Cloudflare Worker invocation budgeting, Durable Object RAM boundaries, and pricing limits.
+
