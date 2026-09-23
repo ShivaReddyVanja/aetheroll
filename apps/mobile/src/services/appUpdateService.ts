@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { NativeModules, Platform } from 'react-native';
+import { NativeModules, Platform, DeviceEventEmitter, EmitterSubscription } from 'react-native';
 import { getApiBaseUrl } from './api';
 
 const DISMISSED_UPDATE_VERSION_KEY = '@aetheroll/dismissed_update_version_code';
@@ -17,6 +17,33 @@ export interface AndroidRelease {
 export interface AppVersionInfo {
   versionName: string;
   versionCode: number;
+}
+
+export interface UpdateProgressEvent {
+  percent: number;
+  bytesWritten: number;
+  totalBytes: number;
+}
+
+export function subscribeToUpdateProgress(
+  onProgress: (event: UpdateProgressEvent) => void,
+  onStatus?: (status: string | null) => void,
+): () => void {
+  const subscriptions: EmitterSubscription[] = [];
+
+  subscriptions.push(
+    DeviceEventEmitter.addListener('onAppUpdateProgress', onProgress),
+  );
+
+  if (onStatus) {
+    subscriptions.push(
+      DeviceEventEmitter.addListener('onAppUpdateStatus', onStatus),
+    );
+  }
+
+  return () => {
+    subscriptions.forEach((sub) => sub.remove());
+  };
 }
 
 interface AppUpdateNativeModule {

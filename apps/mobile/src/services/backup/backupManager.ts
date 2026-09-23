@@ -1,12 +1,12 @@
 import { AppState, AppStateStatus } from 'react-native';
 import { BackupItem, BackupListenerPayload, BackupStats } from './types';
 import { QueueStorage } from './queueStorage';
-import { XhrUploader, FloodWaitError } from './xhrUploader';
-import { ChunkedUploader } from './chunkedUploader';
+import { FloodWaitError } from './xhrUploader';
 import { DynamicUploadDispatcher } from './uploadDispatcher';
 import { formatUploadSpeed, formatUploadDuration } from './speedAggregator';
 import { RatePacer } from './ratePacer';
 import { NativeBackgroundService } from './nativeBackgroundService';
+import { UploadStrategyRouter } from './uploadStrategy';
 
 function formatBytes(bytes: number): string {
   if (!bytes || bytes <= 0) return '0 B';
@@ -37,14 +37,7 @@ class BackupManagerClass {
       () => this.queue,
       {
         executor: async (item, signal, onProgress) => {
-          // Files > 15 MB (large videos, 4K clips) use Chunked pipeline (1 MB parts)
-          // Files <= 15 MB (photos, audio, short clips) use fast One-Shot XHR
-          if (item.fileSize > 15 * 1024 * 1024) {
-            return await ChunkedUploader.uploadItem(item, signal, (uploaded, total) => {
-              onProgress(uploaded, total);
-            });
-          }
-          return await XhrUploader.uploadItem(item, signal, (uploaded, total) => {
+          return await UploadStrategyRouter.uploadItem(item, signal, (uploaded, total, pct) => {
             onProgress(uploaded, total);
           });
         },
@@ -80,6 +73,7 @@ class BackupManagerClass {
     // Reconcile native service state before loading queue — prevents ghost service
     // scenario where the JS flag was reset (hot reload / OOM) while Android kept running.
     await NativeBackgroundService.syncState();
+    await UploadStrategyRouter.init();
 
     this.queue = await QueueStorage.loadQueue();
     this.notify();

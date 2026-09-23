@@ -26,24 +26,17 @@ import { MediaCard, MediaItemData } from '../components/MediaCard';
 import { MediaViewerScreen } from './MediaViewerScreen';
 
 import { BulkUploadScreen } from './BulkUploadScreen';
+import { SettingsScreen } from './SettingsScreen';
 import { PhoneAuthScreen } from './PhoneAuthScreen';
 import { BackupManager } from '../services/backup';
 import {
   apiFetch,
-  getApiBaseUrl,
-  setApiBaseUrl,
   initializeAuth,
   verifyCurrentSession,
   performLogout,
   onSessionExpired,
 } from '../services/api';
-import {
-  Smartphone,
-  Download,
-  RefreshCw,
-  CheckCircle2,
-  Sparkles,
-} from 'lucide-react-native';
+
 import {
   getAppVersionInfo,
   checkForAndroidUpdate,
@@ -97,7 +90,6 @@ export function GalleryScreen() {
 
   // Profile Modal & Settings
   const [showProfileModal, setShowProfileModal] = useState(false);
-  const [serverUrl, setServerUrl] = useState(getApiBaseUrl());
 
   // Multi-selection state
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -526,127 +518,25 @@ export function GalleryScreen() {
       {activeTab === 'upload' ? (
         <BulkUploadScreen />
       ) : activeTab === 'settings' ? (
-        <ScrollView
-          style={styles.settingsContent}
-          contentContainerStyle={styles.settingsScrollContainer}
-          showsVerticalScrollIndicator={false}
-        >
-          {/* User Profile Card */}
-          <View style={styles.settingsCard}>
-            <View style={styles.settingsUserRow}>
-              <View style={styles.settingsAvatarCircle}>
-                <Text style={styles.settingsAvatarText}>
-                  {(user?.displayName || 'U').charAt(0).toUpperCase()}
-                </Text>
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.settingsUserName}>{user?.displayName || 'Logged In'}</Text>
-                <Text style={styles.settingsUserSub}>Telegram Cloud Account</Text>
-              </View>
-            </View>
-
-            <View style={styles.settingsDivider} />
-
-            <View style={styles.settingsItem}>
-              <Text style={styles.settingsItemLabel}>Active Photo Album</Text>
-              <Text style={styles.settingsItemValue}>{activeChannel?.name || 'Private Channel'}</Text>
-            </View>
-
-            <View style={styles.settingsItem}>
-              <Text style={styles.settingsItemLabel}>Indexed Media Items</Text>
-              <Text style={styles.settingsItemValue}>{items.length} items</Text>
-            </View>
-          </View>
-
-          {/* Software Updates & App Info Card */}
-          <View style={[styles.settingsCard, { marginTop: 16 }]}>
-            <View style={styles.settingsHeaderRow}>
-              <View style={styles.settingsIconCircle}>
-                <Smartphone size={18} color="#0F766E" />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.settingsSectionTitle}>Application & Updates</Text>
-                <Text style={styles.settingsSectionSub}>Aetheroll for Android</Text>
-              </View>
-              {availableUpdate && (
-                <View style={styles.updateBadgeContainer}>
-                  <Text style={styles.updateBadgeText}>Update</Text>
-                </View>
-              )}
-            </View>
-
-            <View style={styles.settingsDivider} />
-
-            <View style={styles.settingsItem}>
-              <Text style={styles.settingsItemLabel}>Installed Version</Text>
-              <Text style={styles.settingsItemValue}>
-                v{appVersion.versionName} (Build {appVersion.versionCode})
-              </Text>
-            </View>
-
-            {availableUpdate ? (
-              <View style={styles.updateAvailableBanner}>
-                <View style={styles.updateBannerHeader}>
-                  <Sparkles size={16} color="#047857" />
-                  <Text style={styles.updateBannerTitle}>
-                    New Release v{availableUpdate.version}
-                  </Text>
-                </View>
-                {availableUpdate.releaseNotes && availableUpdate.releaseNotes.length > 0 && (
-                  <Text style={styles.updateBannerNotes} numberOfLines={3}>
-                    {availableUpdate.releaseNotes.join('\n')}
-                  </Text>
-                )}
-                <TouchableOpacity
-                  style={styles.updateActionButton}
-                  onPress={() => handleDownloadUpdate(availableUpdate)}
-                  disabled={isDownloadingUpdate}
-                  activeOpacity={0.8}
-                >
-                  {isDownloadingUpdate ? (
-                    <ActivityIndicator size="small" color="#FFFFFF" />
-                  ) : (
-                    <>
-                      <Download size={15} color="#FFFFFF" />
-                      <Text style={styles.updateActionText}>Download & Install Update</Text>
-                    </>
-                  )}
-                </TouchableOpacity>
-              </View>
-            ) : (
-              <View style={styles.upToDateRow}>
-                <View style={styles.upToDateStatusLeft}>
-                  <CheckCircle2 size={16} color="#059669" />
-                  <Text style={styles.upToDateText}>
-                    {updateStatusMessage || 'You are running the latest version'}
-                  </Text>
-                </View>
-                <TouchableOpacity
-                  style={styles.checkUpdateButton}
-                  onPress={handleCheckForUpdates}
-                  disabled={isCheckingUpdate}
-                  activeOpacity={0.7}
-                >
-                  {isCheckingUpdate ? (
-                    <ActivityIndicator size="small" color="#1A73E8" />
-                  ) : (
-                    <RefreshCw size={13} color="#1A73E8" />
-                  )}
-                  <Text style={styles.checkUpdateText}>Check</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-          </View>
-
-          {/* Logout Button */}
-          <TouchableOpacity
-            style={[styles.logoutButton, { marginTop: 16 }]}
-            onPress={handleLogout}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.logoutButtonText}>Log Out of Aetheroll</Text>
-          </TouchableOpacity>
-        </ScrollView>
+        <SettingsScreen
+          user={user}
+          activeChannel={activeChannel}
+          mediaCount={items.length}
+          appVersion={appVersion}
+          availableUpdate={availableUpdate}
+          isCheckingUpdate={isCheckingUpdate}
+          isDownloadingUpdate={isDownloadingUpdate}
+          updateStatusMessage={updateStatusMessage}
+          isSyncing={refreshing}
+          onSelectChannel={() => {
+            setShowChannelPicker(true);
+            fetchChannels();
+          }}
+          onSync={handleRefresh}
+          onCheckForUpdates={handleCheckForUpdates}
+          onDownloadUpdate={handleDownloadUpdate}
+          onLogout={handleLogout}
+        />
       ) : (
         <View style={styles.mainContent}>
           {loading && items.length === 0 ? (
@@ -1055,204 +945,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
   },
-  settingsContent: {
-    flex: 1,
-    paddingHorizontal: 20,
-    paddingTop: 16,
-  },
-  settingsScrollContainer: {
-    paddingBottom: 110,
-  },
-  settingsCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: '#E8EAED',
-    padding: 20,
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-  settingsUserRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 14,
-    marginBottom: 16,
-  },
-  settingsAvatarCircle: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: '#1A73E8',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  settingsAvatarText: {
-    color: '#FFFFFF',
-    fontSize: 20,
-    fontWeight: '800',
-  },
-  settingsUserName: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: '#1F1F1F',
-  },
-  settingsUserSub: {
-    fontSize: 13,
-    color: '#5F6368',
-    marginTop: 2,
-  },
-  settingsHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    marginBottom: 12,
-  },
-  settingsIconCircle: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: '#CCFBF1',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  settingsSectionTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#1F1F1F',
-  },
-  settingsSectionSub: {
-    fontSize: 12,
-    color: '#6B7280',
-    marginTop: 1,
-  },
-  updateBadgeContainer: {
-    backgroundColor: '#DCFCE7',
-    borderWidth: 1,
-    borderColor: '#86EFAC',
-    borderRadius: 12,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-  },
-  updateBadgeText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#15803D',
-  },
-  settingsDivider: {
-    height: 1,
-    backgroundColor: '#E8EAED',
-    marginVertical: 12,
-  },
-  settingsItem: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingVertical: 8,
-    alignItems: 'center',
-  },
-  settingsItemLabel: {
-    fontSize: 14,
-    color: '#5F6368',
-  },
-  settingsItemValue: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#1F1F1F',
-  },
-  updateAvailableBanner: {
-    backgroundColor: '#F0FDF4',
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: '#BBF7D0',
-    padding: 14,
-    marginTop: 10,
-  },
-  updateBannerHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginBottom: 6,
-  },
-  updateBannerTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#166534',
-  },
-  updateBannerNotes: {
-    fontSize: 12,
-    color: '#15803D',
-    lineHeight: 18,
-    marginBottom: 12,
-  },
-  updateActionButton: {
-    backgroundColor: '#059669',
-    borderRadius: 10,
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-  },
-  updateActionText: {
-    color: '#FFFFFF',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  upToDateRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: '#F9FAFB',
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    marginTop: 8,
-  },
-  upToDateStatusLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    flex: 1,
-  },
-  upToDateText: {
-    fontSize: 13,
-    color: '#374151',
-    fontWeight: '500',
-    flex: 1,
-  },
-  checkUpdateButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    backgroundColor: '#EFF6FF',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#BFDBFE',
-  },
-  checkUpdateText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#1A73E8',
-  },
-  logoutButton: {
-    marginTop: 20,
-    backgroundColor: '#FEE2E2',
-    borderWidth: 1,
-    borderColor: '#FCA5A5',
-    paddingVertical: 13,
-    borderRadius: 12,
-    alignItems: 'center',
-  },
-  logoutButtonText: {
-    color: '#DC2626',
-    fontSize: 14,
-    fontWeight: '700',
-  },
+
   modalBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.4)',

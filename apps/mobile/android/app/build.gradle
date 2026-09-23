@@ -153,6 +153,11 @@ dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
 
+    // Explicit OkHttp3 dependency used by AppUpdateModule for APK downloads.
+    // react-android already bundles OkHttp transitively, but we pin it here
+    // so upgrades to react-native cannot silently remove or change the version.
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
     if (hermesEnabled.toBoolean()) {
         implementation("com.facebook.react:hermes-android")
     } else {
