@@ -7,9 +7,15 @@ import {
   dismissAndroidUpdate,
   downloadAndInstallAndroidUpdate,
 } from './src/services/appUpdateService';
+import { StreamingStrategyRouter } from './src/services/streaming';
+import { UploadStrategyRouter } from './src/services/backup';
 
 export default function App() {
   useEffect(() => {
+    // Eagerly initialize engine strategy routers from AsyncStorage
+    StreamingStrategyRouter.init().catch(() => {});
+    UploadStrategyRouter.init().catch(() => {});
+
     checkForAndroidUpdate()
       .then((release) => {
         if (!release) return;

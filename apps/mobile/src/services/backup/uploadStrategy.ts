@@ -7,22 +7,40 @@ import { DirectTelegramUploader } from './directTelegramUploader';
 export type UploadEngineMode = 'auto' | 'direct' | 'cloudflare';
 
 const STORAGE_KEY_UPLOAD_ENGINE = 'aetheroll_upload_engine_mode';
-let currentEngineMode: UploadEngineMode = 'auto';
+let currentEngineMode: UploadEngineMode = 'direct';
+let isUploadInitialized = false;
+let uploadInitPromise: Promise<UploadEngineMode> | null = null;
 
 export class UploadStrategyRouter {
+  /**
+   * Guarantees stored upload engine mode is loaded before routing.
+   * Single-flighted promise ensures all concurrent callers await the same initial load.
+   */
+  static async ensureInitialized(): Promise<UploadEngineMode> {
+    return this.init();
+  }
+
   /**
    * Initialize configured engine mode from persistent storage.
    */
   static async init(): Promise<UploadEngineMode> {
-    try {
-      const stored = await AsyncStorage.getItem(STORAGE_KEY_UPLOAD_ENGINE);
-      if (stored === 'auto' || stored === 'direct' || stored === 'cloudflare') {
-        currentEngineMode = stored;
-      }
-    } catch (e) {
-      console.warn('[UploadStrategy] Could not load stored upload engine mode:', e);
+    if (isUploadInitialized) return currentEngineMode;
+    if (!uploadInitPromise) {
+      uploadInitPromise = (async () => {
+        try {
+          const stored = await AsyncStorage.getItem(STORAGE_KEY_UPLOAD_ENGINE);
+          if (stored === 'auto' || stored === 'direct' || stored === 'cloudflare') {
+            currentEngineMode = stored;
+          }
+        } catch (e) {
+          console.warn('[UploadStrategy] Could not load stored upload engine mode:', e);
+        } finally {
+          isUploadInitialized = true;
+        }
+        return currentEngineMode;
+      })();
     }
-    return currentEngineMode;
+    return uploadInitPromise;
   }
 
   static getEngineMode(): UploadEngineMode {
@@ -31,6 +49,8 @@ export class UploadStrategyRouter {
 
   static async setEngineMode(mode: UploadEngineMode): Promise<void> {
     currentEngineMode = mode;
+    isUploadInitialized = true;
+    uploadInitPromise = Promise.resolve(mode);
     try {
       await AsyncStorage.setItem(STORAGE_KEY_UPLOAD_ENGINE, mode);
       console.log(`[UploadStrategy] ⚙️ Upload engine mode set to: "${mode}"`);
@@ -47,6 +67,7 @@ export class UploadStrategyRouter {
     signal?: AbortSignal,
     onProgress?: (uploadedBytes: number, totalBytes: number, percent: number) => void
   ): Promise<UploadResult> {
+    await this.ensureInitialized();
     const mode = currentEngineMode;
     console.log(`[UploadStrategy] 🔀 Dispatching "${item.fileName}" using engine mode: [${mode.toUpperCase()}]`);
 
@@ -89,3 +110,6 @@ export class UploadStrategyRouter {
     });
   }
 }
+
+// Eagerly initiate async storage load on module evaluation
+UploadStrategyRouter.init().catch(() => {});

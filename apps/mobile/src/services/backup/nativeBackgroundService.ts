@@ -132,6 +132,31 @@ export class NativeBackgroundService {
     }
   }
 
+  static async getVideoCachePath(mediaId: string, extension = 'mp4'): Promise<string> {
+    if (!BackupServiceModule || typeof BackupServiceModule.getVideoCachePath !== 'function') {
+      throw new Error('Native video cache module not available');
+    }
+    return await BackupServiceModule.getVideoCachePath(mediaId, extension);
+  }
+
+  static async appendChunkToFile(filePath: string, base64Chunk: string): Promise<number> {
+    if (!BackupServiceModule || typeof BackupServiceModule.appendChunkToFile !== 'function') {
+      throw new Error('Native chunk append module not available');
+    }
+    return await BackupServiceModule.appendChunkToFile(filePath, base64Chunk);
+  }
+
+  static async checkFileCached(filePath: string): Promise<{ exists: boolean; size: number }> {
+    if (!BackupServiceModule || typeof BackupServiceModule.checkFileCached !== 'function') {
+      return { exists: false, size: 0 };
+    }
+    try {
+      return await BackupServiceModule.checkFileCached(filePath);
+    } catch {
+      return { exists: false, size: 0 };
+    }
+  }
+
   static async readUriChunkBase64(uriString: string, offset: number, length: number): Promise<string> {
     if (!BackupServiceModule || typeof BackupServiceModule.readUriChunkBase64 !== 'function') {
       throw new Error('Native chunking module not available');
