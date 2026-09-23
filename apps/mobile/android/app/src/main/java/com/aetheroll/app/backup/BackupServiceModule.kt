@@ -270,6 +270,63 @@ class BackupServiceModule(private val reactContext: ReactApplicationContext) :
     }
 
     /**
+     * Gets the full file:// path in app cache for a video or image download stream.
+     */
+    @ReactMethod
+    fun getVideoCachePath(mediaId: String, extension: String, promise: Promise) {
+        try {
+            val videoDir = java.io.File(reactContext.cacheDir, "direct_streams")
+            if (!videoDir.exists()) {
+                videoDir.mkdirs()
+            }
+            val sanitizedExt = extension.removePrefix(".")
+            val targetFile = java.io.File(videoDir, "media_${mediaId}.${sanitizedExt}")
+            promise.resolve("file://${targetFile.absolutePath}")
+        } catch (e: Exception) {
+            promise.reject("CACHE_PATH_ERROR", e.message, e)
+        }
+    }
+
+    /**
+     * Appends a Base64-encoded chunk to a local file (used for MTProto progressive chunk streaming).
+     */
+    @ReactMethod
+    fun appendChunkToFile(filePath: String, base64Chunk: String, promise: Promise) {
+        try {
+            val cleanPath = filePath.removePrefix("file://")
+            val file = java.io.File(cleanPath)
+            file.parentFile?.mkdirs()
+            val bytes = android.util.Base64.decode(base64Chunk, android.util.Base64.NO_WRAP)
+            java.io.FileOutputStream(file, true).use { out ->
+                out.write(bytes)
+            }
+            promise.resolve(file.length().toDouble())
+        } catch (e: Exception) {
+            promise.reject("CHUNK_APPEND_ERROR", e.message, e)
+        }
+    }
+
+    /**
+     * Checks if a file exists in cache and returns its current size on disk.
+     */
+    @ReactMethod
+    fun checkFileCached(filePath: String, promise: Promise) {
+        try {
+            val cleanPath = filePath.removePrefix("file://")
+            val file = java.io.File(cleanPath)
+            val map = com.facebook.react.bridge.Arguments.createMap()
+            map.putBoolean("exists", file.exists())
+            map.putDouble("size", if (file.exists()) file.length().toDouble() else 0.0)
+            promise.resolve(map)
+        } catch (e: Exception) {
+            val fallback = com.facebook.react.bridge.Arguments.createMap()
+            fallback.putBoolean("exists", false)
+            fallback.putDouble("size", 0.0)
+            promise.resolve(fallback)
+        }
+    }
+
+    /**
      * Extracts video duration, dimensions, and first-frame JPEG thumbnail Base64 using Android's MediaMetadataRetriever.
      */
     @ReactMethod

@@ -17,6 +17,7 @@ class MainApplication : Application(), ReactApplication {
           // Packages that cannot be autolinked yet can be added manually here, for example:
           add(com.aetheroll.app.backup.BackupServicePackage())
           add(com.aetheroll.app.update.AppUpdatePackage())
+          add(com.aetheroll.app.streaming.StreamingServicePackage())
         },
     )
   }

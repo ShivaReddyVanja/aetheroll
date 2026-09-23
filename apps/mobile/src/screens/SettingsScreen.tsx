@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -10,7 +10,9 @@ import {
   Modal,
   Pressable,
   TextInput,
+  StatusBar,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   ChevronRight,
   FolderHeart,
@@ -24,11 +26,16 @@ import {
   LogOut,
   CheckCircle2,
   Zap,
+  Film,
+  SlidersHorizontal,
+  ArrowLeft,
+  HardDrive,
 } from 'lucide-react-native';
 import { ChannelItem } from '../components/ChannelPickerSheet';
 import { AppVersionInfo, AndroidRelease, subscribeToUpdateProgress } from '../services/appUpdateService';
 import { getApiBaseUrl, setApiBaseUrl } from '../services/api';
 import { UploadStrategyRouter, UploadEngineMode } from '../services/backup';
+import { StreamingStrategyRouter, StreamingEngineMode, NativeStreamServer } from '../services/streaming';
 
 export interface SettingsScreenProps {
   user: {
@@ -52,6 +59,15 @@ export interface SettingsScreenProps {
   onLogout: () => void;
 }
 
+function formatBytes(bytes: number): string {
+  if (!bytes || bytes <= 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  const val = parseFloat((bytes / Math.pow(k, i)).toFixed(1));
+  return `${val} ${sizes[i]}`;
+}
+
 export function SettingsScreen({
   user,
   activeChannel,
@@ -68,16 +84,39 @@ export function SettingsScreen({
   onDownloadUpdate,
   onLogout,
 }: SettingsScreenProps) {
+  const insets = useSafeAreaInsets();
+  const [showAdvancedModal, setShowAdvancedModal] = useState(false);
   const [showServerModal, setShowServerModal] = useState(false);
   const [serverUrlInput, setServerUrlInput] = useState('');
   const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
   const [liveStatusText, setLiveStatusText] = useState<string | null>(null);
   const [uploadEngineMode, setUploadEngineMode] = useState<UploadEngineMode>(UploadStrategyRouter.getEngineMode());
   const [showEngineModal, setShowEngineModal] = useState(false);
+  const [streamingEngineMode, setStreamingEngineMode] = useState<StreamingEngineMode>(StreamingStrategyRouter.getEngineMode());
+  const [showStreamingModal, setShowStreamingModal] = useState(false);
+  const [streamCacheSize, setStreamCacheSize] = useState<number>(0);
+  const [isClearingCache, setIsClearingCache] = useState(false);
+
+  const refreshStreamCacheSize = useCallback(async () => {
+    try {
+      const sizeBytes = await NativeStreamServer.getStreamCacheSizeBytes();
+      setStreamCacheSize(sizeBytes || 0);
+    } catch {
+      setStreamCacheSize(0);
+    }
+  }, []);
 
   useEffect(() => {
-    setUploadEngineMode(UploadStrategyRouter.getEngineMode());
-  }, []);
+    UploadStrategyRouter.init().then(setUploadEngineMode);
+    StreamingStrategyRouter.init().then(setStreamingEngineMode);
+    refreshStreamCacheSize();
+  }, [refreshStreamCacheSize]);
+
+  useEffect(() => {
+    if (showAdvancedModal) {
+      refreshStreamCacheSize();
+    }
+  }, [showAdvancedModal, refreshStreamCacheSize]);
 
   // Sync input to current stored URL each time the modal opens
   useEffect(() => {
@@ -118,6 +157,36 @@ export function SettingsScreen({
         { text: 'Cancel', style: 'cancel' },
         { text: 'Log Out', style: 'destructive', onPress: onLogout },
       ],
+    );
+  };
+
+  const handleClearStreamCache = () => {
+    if (isClearingCache || streamCacheSize <= 0) {
+      Alert.alert('Stream Cache', 'There are currently no cached video chunks stored on this device.');
+      return;
+    }
+    Alert.alert(
+      'Clear Stream Cache',
+      `This will delete ${formatBytes(streamCacheSize)} of temporarily cached video parts from this device. Future playback will fetch chunks directly from Telegram.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear Cache',
+          style: 'destructive',
+          onPress: async () => {
+            setIsClearingCache(true);
+            try {
+              await NativeStreamServer.clearStreamCache();
+              await refreshStreamCacheSize();
+              Alert.alert('Cache Cleared', 'Video stream cache has been emptied successfully.');
+            } catch (err: any) {
+              Alert.alert('Error', err?.message || 'Failed to clear stream cache.');
+            } finally {
+              setIsClearingCache(false);
+            }
+          },
+        },
+      ]
     );
   };
 
@@ -236,38 +305,33 @@ export function SettingsScreen({
               {isSyncing ? 'Syncing' : 'Sync Now'}
             </Text>
           </TouchableOpacity>
+        </View>
+      </View>
 
-          <View style={styles.divider} />
-
-          {/* Upload Engine Pipeline */}
+      {/* Section 2: Preferences & Advanced */}
+      <View style={styles.section}>
+        <Text style={styles.sectionHeader}>Preferences & Advanced</Text>
+        <View style={styles.groupCard}>
           <TouchableOpacity
             style={styles.rowItem}
             activeOpacity={0.7}
-            onPress={() => setShowEngineModal(true)}
+            onPress={() => setShowAdvancedModal(true)}
           >
-            <View style={[styles.iconBox, { backgroundColor: '#FFF7ED' }]}>
-              <Zap size={18} color="#EA580C" />
+            <View style={[styles.iconBox, { backgroundColor: '#F5F3FF' }]}>
+              <SlidersHorizontal size={18} color="#7C3AED" />
             </View>
             <View style={styles.rowTextCol}>
-              <Text style={styles.rowLabel}>Upload Pipeline</Text>
+              <Text style={styles.rowLabel}>Advanced Settings</Text>
               <Text style={styles.rowSubtitle} numberOfLines={1}>
-                {uploadEngineMode === 'auto'
-                  ? 'Auto (Direct MTProto + Fallback)'
-                  : uploadEngineMode === 'direct'
-                  ? 'Direct Telegram (Fastest)'
-                  : 'Cloudflare Proxy (Relay)'}
+                Upload pipelines, streaming engine & network
               </Text>
             </View>
-            <View style={[styles.badgePill, { backgroundColor: '#FFEDD5', borderColor: '#FED7AA' }]}>
-              <Text style={[styles.badgeText, { color: '#C2410C' }]}>
-                {uploadEngineMode.toUpperCase()}
-              </Text>
-            </View>
+            <ChevronRight size={18} color="#94A3B8" />
           </TouchableOpacity>
         </View>
       </View>
 
-      {/* Section 2: Application & Updates */}
+      {/* Section 3: Application & Updates */}
       <View style={styles.section}>
         <Text style={styles.sectionHeader}>Application & Updates</Text>
         <View style={styles.groupCard}>
@@ -375,34 +439,6 @@ export function SettingsScreen({
           ) : null}
         </View>
       </View>
-
-      {/* Section 3: Server & Network (Dev Mode Only) */}
-      {__DEV__ && (
-        <View style={styles.section}>
-          <Text style={styles.sectionHeader}>Developer & Server</Text>
-          <View style={styles.groupCard}>
-            <TouchableOpacity
-              style={styles.rowItem}
-              activeOpacity={0.7}
-              onPress={() => {
-                setServerUrlInput(getApiBaseUrl());
-                setShowServerModal(true);
-              }}
-            >
-              <View style={[styles.iconBox, { backgroundColor: '#EEF2FF' }]}>
-                <Server size={18} color="#4F46E5" />
-              </View>
-              <View style={styles.rowTextCol}>
-                <Text style={styles.rowLabel}>Server Endpoint</Text>
-                <Text style={styles.rowSubtitle} numberOfLines={1}>
-                  {getApiBaseUrl()}
-                </Text>
-              </View>
-              <ChevronRight size={18} color="#94A3B8" />
-            </TouchableOpacity>
-          </View>
-        </View>
-      )}
 
       {/* Section 4: Account & Session */}
       <View style={styles.section}>
@@ -517,14 +553,14 @@ export function SettingsScreen({
 
             {([
               {
-                mode: 'auto' as UploadEngineMode,
-                title: 'Auto (Direct + Fallback)',
-                desc: 'Direct MTProto upload with automatic seamless fallback to Cloudflare proxy if blocked (Recommended).',
+                mode: 'direct' as UploadEngineMode,
+                title: 'Direct Telegram MTProto (Default)',
+                desc: 'Uploads 512KB parts directly to Telegram Data Centers for maximum throughput and zero server overhead.',
               },
               {
-                mode: 'direct' as UploadEngineMode,
-                title: 'Direct Telegram MTProto',
-                desc: 'Uploads 512KB parts directly to Telegram Data Centers for maximum throughput and zero server overhead.',
+                mode: 'auto' as UploadEngineMode,
+                title: 'Auto (Direct + Fallback)',
+                desc: 'Direct MTProto upload with automatic seamless fallback to Cloudflare proxy if blocked.',
               },
               {
                 mode: 'cloudflare' as UploadEngineMode,
@@ -559,6 +595,239 @@ export function SettingsScreen({
             })}
           </View>
         </Pressable>
+      </Modal>
+
+      {/* Streaming Pipeline Selection Modal */}
+      <Modal
+        visible={showStreamingModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowStreamingModal(false)}
+      >
+        <Pressable
+          style={styles.modalBackdrop}
+          onPress={() => setShowStreamingModal(false)}
+        >
+          <View
+            style={styles.modalDialog}
+            onStartShouldSetResponder={() => true}
+          >
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Streaming Engine Pipeline</Text>
+              <TouchableOpacity
+                style={styles.modalCloseBtn}
+                onPress={() => setShowStreamingModal(false)}
+              >
+                <Text style={styles.modalCloseText}>✕</Text>
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.modalDesc}>
+              Select how videos and large media are decoded and streamed for playback.
+            </Text>
+
+            {([
+              {
+                mode: 'direct' as StreamingEngineMode,
+                title: 'Direct Telegram MTProto (Default)',
+                desc: 'Streams parts directly from Telegram Data Centers over client session leases (Zero server egress).',
+              },
+              {
+                mode: 'cloudflare' as StreamingEngineMode,
+                title: 'Cloudflare Turbo Edge',
+                desc: 'Streams via Cloudflare global edge network with HTTP byte-range seeking, HLS caching, and instant startup.',
+              },
+              {
+                mode: 'auto' as StreamingEngineMode,
+                title: 'Auto Hybrid',
+                desc: 'Attempts Direct Telegram MTProto first, falling back to Cloudflare Turbo Edge if unreachable.',
+              },
+            ]).map((opt) => {
+              const isSelected = streamingEngineMode === opt.mode;
+              return (
+                <TouchableOpacity
+                  key={opt.mode}
+                  style={[
+                    styles.engineOptionCard,
+                    isSelected && styles.engineOptionCardSelected,
+                  ]}
+                  activeOpacity={0.7}
+                  onPress={async () => {
+                    await StreamingStrategyRouter.setEngineMode(opt.mode);
+                    setStreamingEngineMode(opt.mode);
+                    setShowStreamingModal(false);
+                  }}
+                >
+                  <View style={styles.engineOptionHeader}>
+                    <Text style={[styles.engineOptionTitle, isSelected && { color: '#4F46E5' }]}>
+                      {opt.title}
+                    </Text>
+                    {isSelected && <CheckCircle2 size={18} color="#4F46E5" />}
+                  </View>
+                  <Text style={styles.engineOptionDesc}>{opt.desc}</Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </Pressable>
+      </Modal>
+
+      {/* Advanced Settings Sub-Page Modal */}
+      <Modal
+        visible={showAdvancedModal}
+        animationType="slide"
+        statusBarTranslucent={true}
+        onRequestClose={() => setShowAdvancedModal(false)}
+      >
+        <View style={[styles.advancedModalContainer, { paddingTop: insets.top }]}>
+          <StatusBar barStyle="dark-content" translucent={true} />
+          {/* Header */}
+          <View style={styles.advancedHeader}>
+            <TouchableOpacity
+              style={styles.advancedBackBtn}
+              onPress={() => setShowAdvancedModal(false)}
+              activeOpacity={0.7}
+            >
+              <ArrowLeft size={20} color="#0F172A" />
+            </TouchableOpacity>
+            <View style={styles.advancedHeaderTitleCol}>
+              <Text style={styles.advancedTitle}>Advanced Settings</Text>
+              <Text style={styles.advancedSubtitle}>
+                Protocol pipelines and performance tuning
+              </Text>
+            </View>
+          </View>
+
+          <ScrollView
+            style={styles.container}
+            contentContainerStyle={[
+              styles.advancedScrollContainer,
+              { paddingBottom: Math.max(insets.bottom + 24, 60) },
+            ]}
+            showsVerticalScrollIndicator={false}
+          >
+            {/* Section 1: Transfer & Streaming Engines */}
+            <View style={styles.section}>
+              <Text style={styles.sectionHeader}>Transfer & Streaming Engines</Text>
+              <View style={styles.groupCard}>
+                {/* Upload Engine Pipeline */}
+                <TouchableOpacity
+                  style={styles.rowItem}
+                  activeOpacity={0.7}
+                  onPress={() => setShowEngineModal(true)}
+                >
+                  <View style={[styles.iconBox, { backgroundColor: '#FFF7ED' }]}>
+                    <Zap size={18} color="#EA580C" />
+                  </View>
+                  <View style={styles.rowTextCol}>
+                    <Text style={styles.rowLabel}>Upload Pipeline</Text>
+                    <Text style={styles.rowSubtitle} numberOfLines={1}>
+                      {uploadEngineMode === 'direct'
+                        ? 'Direct Telegram (Default)'
+                        : uploadEngineMode === 'auto'
+                        ? 'Auto (Direct MTProto + Fallback)'
+                        : 'Cloudflare Proxy (Relay)'}
+                    </Text>
+                  </View>
+                  <View style={[styles.badgePill, { backgroundColor: '#FFEDD5', borderColor: '#FED7AA' }]}>
+                    <Text style={[styles.badgeText, { color: '#C2410C' }]}>
+                      {uploadEngineMode.toUpperCase()}
+                    </Text>
+                  </View>
+                  <ChevronRight size={16} color="#94A3B8" style={{ marginLeft: 6 }} />
+                </TouchableOpacity>
+
+                <View style={styles.divider} />
+
+                {/* Streaming Pipeline */}
+                <TouchableOpacity
+                  style={styles.rowItem}
+                  activeOpacity={0.7}
+                  onPress={() => setShowStreamingModal(true)}
+                >
+                  <View style={[styles.iconBox, { backgroundColor: '#EEF2FF' }]}>
+                    <Film size={18} color="#4F46E5" />
+                  </View>
+                  <View style={styles.rowTextCol}>
+                    <Text style={styles.rowLabel}>Streaming Engine</Text>
+                    <Text style={styles.rowSubtitle} numberOfLines={1}>
+                      {streamingEngineMode === 'direct'
+                        ? 'Direct Telegram MTProto (Default)'
+                        : streamingEngineMode === 'cloudflare'
+                        ? 'Cloudflare Turbo Edge'
+                        : 'Auto Hybrid'}
+                    </Text>
+                  </View>
+                  <View style={[styles.badgePill, { backgroundColor: '#E0E7FF', borderColor: '#C7D2FE' }]}>
+                    <Text style={[styles.badgeText, { color: '#4338CA' }]}>
+                      {streamingEngineMode.toUpperCase()}
+                    </Text>
+                  </View>
+                  <ChevronRight size={16} color="#94A3B8" style={{ marginLeft: 6 }} />
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {/* Section 2: Storage & Cache */}
+            <View style={styles.section}>
+              <Text style={styles.sectionHeader}>Storage & Cache</Text>
+              <View style={styles.groupCard}>
+                <View style={styles.rowItem}>
+                  <View style={[styles.iconBox, { backgroundColor: '#ECFDF5' }]}>
+                    <HardDrive size={18} color="#059669" />
+                  </View>
+                  <View style={styles.rowTextCol}>
+                    <Text style={styles.rowLabel}>Stream Cache</Text>
+                    <Text style={styles.rowSubtitle} numberOfLines={1}>
+                      {formatBytes(streamCacheSize)} cached (1GB LRU limit)
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    style={[
+                      styles.smallActionBtn,
+                      streamCacheSize <= 0 && { opacity: 0.5 },
+                    ]}
+                    onPress={handleClearStreamCache}
+                    disabled={isClearingCache || streamCacheSize <= 0}
+                    activeOpacity={0.7}
+                  >
+                    {isClearingCache ? (
+                      <ActivityIndicator size="small" color="#DC2626" />
+                    ) : (
+                      <Text style={styles.smallActionBtnText}>Clear Cache</Text>
+                    )}
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+
+            {/* Section 3: Server Endpoint */}
+            <View style={styles.section}>
+              <Text style={styles.sectionHeader}>Server & Backend</Text>
+              <View style={styles.groupCard}>
+                <TouchableOpacity
+                  style={styles.rowItem}
+                  activeOpacity={0.7}
+                  onPress={() => {
+                    setServerUrlInput(getApiBaseUrl());
+                    setShowServerModal(true);
+                  }}
+                >
+                  <View style={[styles.iconBox, { backgroundColor: '#EEF2FF' }]}>
+                    <Server size={18} color="#4F46E5" />
+                  </View>
+                  <View style={styles.rowTextCol}>
+                    <Text style={styles.rowLabel}>Server Endpoint</Text>
+                    <Text style={styles.rowSubtitle} numberOfLines={1}>
+                      {getApiBaseUrl()}
+                    </Text>
+                  </View>
+                  <ChevronRight size={18} color="#94A3B8" />
+                </TouchableOpacity>
+              </View>
+            </View>
+          </ScrollView>
+        </View>
       </Modal>
     </ScrollView>
   );
@@ -931,5 +1200,58 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#64748B',
     lineHeight: 16,
+  },
+  advancedModalContainer: {
+    flex: 1,
+    backgroundColor: '#F8FAFC',
+  },
+  advancedHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 16,
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E2E8F0',
+  },
+  advancedBackBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    backgroundColor: '#F1F5F9',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  advancedHeaderTitleCol: {
+    flex: 1,
+  },
+  advancedTitle: {
+    fontSize: 19,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  advancedSubtitle: {
+    fontSize: 12,
+    color: '#64748B',
+    marginTop: 1,
+  },
+  advancedScrollContainer: {
+    paddingHorizontal: 16,
+    paddingTop: 16,
+  },
+  smallActionBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: '#FEF2F2',
+    borderWidth: 1,
+    borderColor: '#FECACA',
+  },
+  smallActionBtnText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#DC2626',
   },
 });

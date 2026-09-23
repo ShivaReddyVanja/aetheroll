@@ -1,3 +1,4 @@
+import { Platform } from 'react-native';
 import { TelegramClient } from 'telegram';
 import { StringSession } from 'telegram/sessions';
 import { apiFetch, getSessionToken } from '../api';
@@ -75,6 +76,9 @@ class MobileTelegramClientManager {
             useWSS: true,
             autoReconnect: true,
             floodSleepThreshold: 60,
+            deviceModel: Platform.OS === 'android' ? 'Android Device' : 'iOS Device',
+            systemVersion: String(Platform.Version || '14.0'),
+            appVersion: '1.0.0',
           });
           this.currentSessionString = credentials.sessionString;
         }

@@ -36,6 +36,7 @@ import { getMediaStreamUrl, getMediaThumbnailUrl, getSessionToken, getAuthImageH
 import { MediaItemData } from '../components/MediaCard';
 import { NativeBackgroundService } from '../services/backup/nativeBackgroundService';
 import { videoPrefetchService } from '../services/videoPrefetchService';
+import { StreamingStrategyRouter, VideoStreamSource } from '../services/streaming';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -114,18 +115,58 @@ const MediaViewerSlide = React.memo(
       );
     }
 
+    const [videoSource, setVideoSource] = useState<VideoStreamSource | null>(null);
+
+    useEffect(() => {
+      if (!isCurrent || !isVideo) return;
+      let isMounted = true;
+
+      StreamingStrategyRouter.resolveVideoSourceAsync(item)
+        .then((src) => {
+          if (isMounted) {
+            console.log(`[MediaViewer] 🎬 Loading video player for #${item.id} -> ${src.uri} (${src.isDirect ? 'Direct MTProto/Local' : 'Cloudflare Edge'})`);
+            setVideoSource(src);
+          }
+        })
+        .catch((err) => {
+          console.warn('[MediaViewerSlide] Direct stream resolution error:', err);
+          if (isMounted) {
+            const fallback = StreamingStrategyRouter.getCloudflareStreamSource(item.id);
+            console.log(`[MediaViewer] ⚡ Fallback video player for #${item.id} -> ${fallback.uri}`);
+            setVideoSource(fallback);
+          }
+        });
+
+      return () => {
+        isMounted = false;
+      };
+    }, [isCurrent, isVideo, item.id]);
+
+    if (!videoSource) {
+      return (
+        <View style={styles.slide}>
+          <Image
+            source={{
+              uri: getMediaThumbnailUrl(item.id),
+              headers: getAuthImageHeaders(),
+            }}
+            style={styles.fullImage}
+            resizeMode="contain"
+          />
+          <View style={styles.centerSpinnerOverlay} pointerEvents="none">
+            <ActivityIndicator size="large" color="#3B82F6" />
+          </View>
+        </View>
+      );
+    }
+
     return (
       <View style={styles.slide}>
         <Video
           ref={videoRef as any}
           source={{
-            uri: getMediaStreamUrl(item.id),
-            headers: getSessionToken()
-              ? {
-                  Authorization: `Bearer ${getSessionToken()}`,
-                  'x-tg-session': getSessionToken()!,
-                }
-              : undefined,
+            uri: videoSource.uri,
+            headers: videoSource.headers,
             bufferConfig: {
               minBufferMs: 25000,
               maxBufferMs: 60000,
