@@ -6,7 +6,7 @@ import {
   TouchableOpacity,
   Pressable,
   StyleSheet,
-  Dimensions,
+  useWindowDimensions,
   Modal,
   ActivityIndicator,
   StatusBar,
@@ -31,17 +31,19 @@ import {
   VolumeX,
   Star,
   ExternalLink,
+  Maximize2,
+  Minimize2,
 } from 'lucide-react-native';
-import { getMediaStreamUrl, getMediaThumbnailUrl, getSessionToken, getAuthImageHeaders } from '../services/api';
+import { getMediaStreamUrl, getMediaThumbnailUrl, getAuthImageHeaders } from '../services/api';
 import { MediaItemData } from '../components/MediaCard';
 import { NativeBackgroundService } from '../services/backup/nativeBackgroundService';
 import { videoPrefetchService } from '../services/videoPrefetchService';
 import { StreamingStrategyRouter, VideoStreamSource } from '../services/streaming';
 
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
-
 interface MediaViewerSlideProps {
   item: MediaItemData;
+  windowWidth: number;
+  windowHeight: number;
   isCurrent: boolean;
   isPlaying: boolean;
   isMuted: boolean;
@@ -57,8 +59,10 @@ interface MediaViewerSlideProps {
 }
 
 const MediaViewerSlide = React.memo(
-  function MediaViewerSlide({
+  function MediaViewerSlideComponent({
     item,
+    windowWidth,
+    windowHeight,
     isCurrent,
     isPlaying,
     isMuted,
@@ -73,48 +77,6 @@ const MediaViewerSlide = React.memo(
     onError,
   }: MediaViewerSlideProps) {
     const isVideo = item.fileType === 'video';
-
-    if (!isVideo) {
-      return (
-        <View style={styles.slide}>
-          <Image
-            source={{
-              uri: getMediaStreamUrl(item.id),
-              headers: getAuthImageHeaders(),
-            }}
-            style={styles.fullImage}
-            resizeMode="contain"
-          />
-          <Pressable
-            style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0, 0, 0, 0.001)' }]}
-            onPress={(e) => onTap(e, false)}
-          />
-        </View>
-      );
-    }
-
-    if (!isCurrent) {
-      return (
-        <View style={styles.slide}>
-          <Image
-            source={{
-              uri: getMediaThumbnailUrl(item.id),
-              headers: getAuthImageHeaders(),
-            }}
-            style={styles.fullImage}
-            resizeMode="contain"
-          />
-          <View style={styles.centerPlayButton} pointerEvents="none">
-            <Play size={34} color="#FFFFFF" fill="#FFFFFF" style={{ marginLeft: 3 }} />
-          </View>
-          <Pressable
-            style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0, 0, 0, 0.001)' }]}
-            onPress={(e) => onTap(e, true)}
-          />
-        </View>
-      );
-    }
-
     const [videoSource, setVideoSource] = useState<VideoStreamSource | null>(null);
 
     useEffect(() => {
@@ -140,17 +102,58 @@ const MediaViewerSlide = React.memo(
       return () => {
         isMounted = false;
       };
-    }, [isCurrent, isVideo, item.id]);
+    }, [isCurrent, isVideo, item]);
 
-    if (!videoSource) {
+    if (!isVideo) {
       return (
-        <View style={styles.slide}>
+        <View style={[styles.slide, { width: windowWidth, height: windowHeight }]}>
+          <Image
+            source={{
+              uri: getMediaStreamUrl(item.id),
+              headers: getAuthImageHeaders(),
+            }}
+            style={[styles.fullImage, { width: windowWidth, height: windowHeight }]}
+            resizeMode="contain"
+          />
+          <Pressable
+            style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0, 0, 0, 0.001)' }]}
+            onPress={(e) => onTap(e, false)}
+          />
+        </View>
+      );
+    }
+
+    if (!isCurrent) {
+      return (
+        <View style={[styles.slide, { width: windowWidth, height: windowHeight }]}>
           <Image
             source={{
               uri: getMediaThumbnailUrl(item.id),
               headers: getAuthImageHeaders(),
             }}
-            style={styles.fullImage}
+            style={[styles.fullImage, { width: windowWidth, height: windowHeight }]}
+            resizeMode="contain"
+          />
+          <View style={styles.centerPlayButton} pointerEvents="none">
+            <Play size={34} color="#FFFFFF" fill="#FFFFFF" style={{ marginLeft: 3 }} />
+          </View>
+          <Pressable
+            style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0, 0, 0, 0.001)' }]}
+            onPress={(e) => onTap(e, true)}
+          />
+        </View>
+      );
+    }
+
+    if (!videoSource) {
+      return (
+        <View style={[styles.slide, { width: windowWidth, height: windowHeight }]}>
+          <Image
+            source={{
+              uri: getMediaThumbnailUrl(item.id),
+              headers: getAuthImageHeaders(),
+            }}
+            style={[styles.fullImage, { width: windowWidth, height: windowHeight }]}
             resizeMode="contain"
           />
           <View style={styles.centerSpinnerOverlay} pointerEvents="none">
@@ -161,7 +164,7 @@ const MediaViewerSlide = React.memo(
     }
 
     return (
-      <View style={styles.slide}>
+      <View style={[styles.slide, { width: windowWidth, height: windowHeight }]}>
         <Video
           ref={videoRef as any}
           source={{
@@ -178,7 +181,7 @@ const MediaViewerSlide = React.memo(
               minBufferMemoryReservePercent: 0.2,
             },
           }}
-          style={styles.fullVideo}
+          style={[styles.fullVideo, { width: windowWidth, height: windowHeight }]}
           resizeMode="contain"
           paused={!isPlaying}
           muted={isMuted}
@@ -221,6 +224,8 @@ const MediaViewerSlide = React.memo(
   (prev, next) => {
     return (
       prev.item.id === next.item.id &&
+      prev.windowWidth === next.windowWidth &&
+      prev.windowHeight === next.windowHeight &&
       prev.isCurrent === next.isCurrent &&
       prev.isPlaying === next.isPlaying &&
       prev.isMuted === next.isMuted &&
@@ -238,17 +243,18 @@ interface MediaViewerScreenProps {
 }
 
 export function MediaViewerScreen({ item, items, onClose, onToggleFavorite }: MediaViewerScreenProps) {
-  if (!item) return null;
-
   const insets = useSafeAreaInsets();
-  const initialIdx = items.findIndex((i) => i.id === item.id);
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const isLandscape = windowWidth > windowHeight;
+
+  const initialIdx = item ? items.findIndex((i) => i.id === item.id) : 0;
   const [currentIndex, setCurrentIndex] = useState(initialIdx >= 0 ? initialIdx : 0);
   const activeItem = items[currentIndex] || item;
 
   const [isPlaying, setIsPlaying] = useState(true);
   const [isMuted, setIsMuted] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState(activeItem.durationSeconds || 0);
+  const [duration, setDuration] = useState(activeItem?.durationSeconds || 0);
   const [isBuffering, setIsBuffering] = useState(false);
   const [playbackRate, setPlaybackRate] = useState(1.0);
   const [showControls, setShowControls] = useState(true);
@@ -256,9 +262,35 @@ export function MediaViewerScreen({ item, items, onClose, onToggleFavorite }: Me
 
   const flatListRef = useRef<FlatList<MediaItemData>>(null);
   const videoRef = useRef<VideoRef | null>(null);
-  const scrubberWidthRef = useRef<number>(SCREEN_WIDTH - 48);
-  const durationRef = useRef<number>(activeItem.durationSeconds || 0);
+  const scrubberWidthRef = useRef<number>(windowWidth - 48);
+  const durationRef = useRef<number>(activeItem?.durationSeconds || 0);
   const lastTapRef = useRef<{ time: number; x: number }>({ time: 0, x: 0 });
+
+  // Orientation lifecycle: unlock orientation while viewing media, restore portrait on close
+  useEffect(() => {
+    NativeBackgroundService.unlockOrientation();
+    return () => {
+      NativeBackgroundService.lockToPortrait();
+    };
+  }, []);
+
+  // When window width changes (rotation between portrait and landscape), re-align flatlist
+  const isInitialMount = useRef(true);
+  useEffect(() => {
+    if (isInitialMount.current) {
+      isInitialMount.current = false;
+      return;
+    }
+    flatListRef.current?.scrollToIndex({ index: currentIndex, animated: false });
+  }, [windowWidth, currentIndex]);
+
+  const toggleOrientation = useCallback(() => {
+    if (isLandscape) {
+      NativeBackgroundService.lockToPortrait();
+    } else {
+      NativeBackgroundService.lockToLandscape();
+    }
+  }, [isLandscape]);
 
   // Smooth 2D swipe-down to dismiss gesture animation
   const translateX = useRef(new Animated.Value(0)).current;
@@ -302,7 +334,7 @@ export function MediaViewerScreen({ item, items, onClose, onToggleFavorite }: Me
           isDismissingRef.current = true;
           Animated.parallel([
             Animated.timing(translateY, {
-              toValue: SCREEN_HEIGHT * 1.15,
+              toValue: windowHeight * 1.15,
               duration: 180,
               easing: Easing.out(Easing.quad),
               useNativeDriver: true,
@@ -359,7 +391,7 @@ export function MediaViewerScreen({ item, items, onClose, onToggleFavorite }: Me
 
   // Ultra-smooth native interpolations
   const rotate = translateX.interpolate({
-    inputRange: [-SCREEN_WIDTH, SCREEN_WIDTH],
+    inputRange: [-windowWidth, windowWidth],
     outputRange: ['-10deg', '10deg'],
     extrapolate: 'clamp',
   });
@@ -383,23 +415,20 @@ export function MediaViewerScreen({ item, items, onClose, onToggleFavorite }: Me
   });
 
   useEffect(() => {
-    durationRef.current = activeItem.durationSeconds || 0;
-    setDuration(activeItem.durationSeconds || 0);
+    durationRef.current = activeItem?.durationSeconds || 0;
+    setDuration(activeItem?.durationSeconds || 0);
     setCurrentTime(0);
     setIsPlaying(true);
     setIsBuffering(false);
 
-    let isMounted = true;
-
-    if (isVideo && activeItem.fileSizeBytes) {
+    if (isVideo && activeItem?.fileSizeBytes) {
       videoPrefetchService.prefetchInitialChunks(activeItem.id, activeItem.fileSizeBytes);
     }
 
     return () => {
-      isMounted = false;
       videoPrefetchService.cancelAll();
     };
-  }, [currentIndex, activeItem.id]);
+  }, [currentIndex, activeItem?.id, isVideo, activeItem?.fileSizeBytes, activeItem?.durationSeconds]);
 
   // Auto-hide controls after 4 seconds when playing
   useEffect(() => {
@@ -436,13 +465,13 @@ export function MediaViewerScreen({ item, items, onClose, onToggleFavorite }: Me
 
   const handleTap = useCallback((evt: GestureResponderEvent, isVideoItem: boolean) => {
     const now = Date.now();
-    const pageX = evt.nativeEvent.pageX ?? evt.nativeEvent.locationX ?? SCREEN_WIDTH / 2;
+    const pageX = evt.nativeEvent.pageX ?? evt.nativeEvent.locationX ?? windowWidth / 2;
     const timeSinceLastTap = now - lastTapRef.current.time;
     const DOUBLE_TAP_DELAY = 280;
 
     if (isVideoItem && timeSinceLastTap > 0 && timeSinceLastTap < DOUBLE_TAP_DELAY) {
       lastTapRef.current = { time: 0, x: 0 };
-      if (pageX > SCREEN_WIDTH / 2) {
+      if (pageX > windowWidth / 2) {
         handleSkip(10);
       } else {
         handleSkip(-10);
@@ -452,7 +481,7 @@ export function MediaViewerScreen({ item, items, onClose, onToggleFavorite }: Me
       lastTapRef.current = { time: now, x: pageX };
       setShowControls((prev) => !prev);
     }
-  }, [handleSkip]);
+  }, [handleSkip, windowWidth]);
 
   const cycleSpeed = () => {
     const speeds = [1.0, 1.25, 1.5, 2.0];
@@ -465,7 +494,7 @@ export function MediaViewerScreen({ item, items, onClose, onToggleFavorite }: Me
     const dur = durationRef.current;
     if (!dur || dur <= 0) return;
     const clickX = evt.nativeEvent.locationX;
-    const totalW = scrubberWidthRef.current || (SCREEN_WIDTH - 48);
+    const totalW = scrubberWidthRef.current || (windowWidth - (isLandscape ? 64 : 48));
     const progressFraction = Math.max(0, Math.min(1, clickX / totalW));
     const targetTime = progressFraction * dur;
     setCurrentTime(targetTime);
@@ -475,11 +504,11 @@ export function MediaViewerScreen({ item, items, onClose, onToggleFavorite }: Me
 
   const handleMomentumScrollEnd = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const offsetX = e.nativeEvent.contentOffset.x;
-    const nextIdx = Math.round(offsetX / SCREEN_WIDTH);
+    const nextIdx = Math.round(offsetX / windowWidth);
     if (nextIdx >= 0 && nextIdx < items.length) {
       setCurrentIndex(nextIdx);
     }
-  }, [items.length]);
+  }, [items.length, windowWidth]);
 
   const handleVideoLoad = useCallback((data: any) => {
     if (data.duration && data.duration > 0) {
@@ -522,6 +551,8 @@ export function MediaViewerScreen({ item, items, onClose, onToggleFavorite }: Me
       return (
         <MediaViewerSlide
           item={slideItem}
+          windowWidth={windowWidth}
+          windowHeight={windowHeight}
           isCurrent={isCurrent}
           isPlaying={isPlaying}
           isMuted={isMuted}
@@ -539,6 +570,8 @@ export function MediaViewerScreen({ item, items, onClose, onToggleFavorite }: Me
     },
     [
       currentIndex,
+      windowWidth,
+      windowHeight,
       isPlaying,
       isMuted,
       playbackRate,
@@ -553,6 +586,8 @@ export function MediaViewerScreen({ item, items, onClose, onToggleFavorite }: Me
   );
 
   const progressPercent = duration > 0 ? Math.min(100, Math.max(0, (currentTime / duration) * 100)) : 0;
+
+  if (!item || !activeItem) return null;
 
   return (
     <Modal
@@ -577,6 +612,8 @@ export function MediaViewerScreen({ item, items, onClose, onToggleFavorite }: Me
           style={[
             styles.mediaContainer,
             {
+              width: windowWidth,
+              height: windowHeight,
               transform: [
                 { translateY },
                 { translateX },
@@ -597,8 +634,8 @@ export function MediaViewerScreen({ item, items, onClose, onToggleFavorite }: Me
             showsHorizontalScrollIndicator={false}
             initialScrollIndex={initialIdx >= 0 ? initialIdx : 0}
             getItemLayout={(_, index) => ({
-              length: SCREEN_WIDTH,
-              offset: SCREEN_WIDTH * index,
+              length: windowWidth,
+              offset: windowWidth * index,
               index,
             })}
             onScrollToIndexFailed={(info) => {
@@ -648,7 +685,9 @@ export function MediaViewerScreen({ item, items, onClose, onToggleFavorite }: Me
           style={[
             styles.topBarContainer,
             {
-              paddingTop: insets.top + 8,
+              paddingTop: insets.top + (isLandscape ? 6 : 8),
+              paddingLeft: insets.left + 16,
+              paddingRight: insets.right + 16,
               opacity: showControls ? controlsCombinedOpacity : 0,
             },
           ]}
@@ -724,7 +763,9 @@ export function MediaViewerScreen({ item, items, onClose, onToggleFavorite }: Me
             style={[
               styles.bottomBarContainer,
               {
-                paddingBottom: insets.bottom + 16,
+                paddingBottom: insets.bottom + (isLandscape ? 10 : 16),
+                paddingLeft: insets.left + 20,
+                paddingRight: insets.right + 20,
                 opacity: showControls ? controlsCombinedOpacity : 0,
               },
             ]}
@@ -805,14 +846,29 @@ export function MediaViewerScreen({ item, items, onClose, onToggleFavorite }: Me
                 </TouchableOpacity>
               </View>
 
-              {/* Speed Rate Pill (Right) */}
-              <TouchableOpacity
-                style={styles.speedPill}
-                activeOpacity={0.75}
-                onPress={cycleSpeed}
-              >
-                <Text style={styles.speedPillText}>{playbackRate}x</Text>
-              </TouchableOpacity>
+              <View style={styles.controlsRight}>
+                {/* Speed Rate Pill (Right) */}
+                <TouchableOpacity
+                  style={styles.speedPill}
+                  activeOpacity={0.75}
+                  onPress={cycleSpeed}
+                >
+                  <Text style={styles.speedPillText}>{playbackRate}x</Text>
+                </TouchableOpacity>
+
+                {/* Fullscreen / Landscape Toggle Button */}
+                <TouchableOpacity
+                  style={styles.actionIconBtn}
+                  activeOpacity={0.7}
+                  onPress={toggleOrientation}
+                >
+                  {isLandscape ? (
+                    <Minimize2 size={19} color="#CBD5E1" strokeWidth={2} />
+                  ) : (
+                    <Maximize2 size={19} color="#CBD5E1" strokeWidth={2} />
+                  )}
+                </TouchableOpacity>
+              </View>
             </View>
           </Animated.View>
         )}
@@ -832,8 +888,6 @@ const styles = StyleSheet.create({
   },
   mediaContainer: {
     flex: 1,
-    width: SCREEN_WIDTH,
-    height: SCREEN_HEIGHT,
   },
   topBarContainer: {
     position: 'absolute',
@@ -874,20 +928,18 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   slide: {
-    width: SCREEN_WIDTH,
-    height: SCREEN_HEIGHT,
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: 'transparent',
     position: 'relative',
   },
   fullImage: {
-    width: SCREEN_WIDTH,
-    height: SCREEN_HEIGHT,
+    width: '100%',
+    height: '100%',
   },
   fullVideo: {
-    width: SCREEN_WIDTH,
-    height: SCREEN_HEIGHT,
+    width: '100%',
+    height: '100%',
   },
   centerSpinnerOverlay: {
     ...StyleSheet.absoluteFill,
@@ -1011,6 +1063,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 16,
+  },
+  controlsRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
   },
   playPauseBtn: {
     width: 44,

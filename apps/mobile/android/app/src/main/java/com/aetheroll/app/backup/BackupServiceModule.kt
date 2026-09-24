@@ -1,6 +1,7 @@
 package com.aetheroll.app.backup
 
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.os.Build
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
@@ -427,6 +428,57 @@ class BackupServiceModule(private val reactContext: ReactApplicationContext) :
             promise.resolve(true)
         } catch (e: Exception) {
             promise.reject("VIDEO_PLAYER_ERROR", e.message, e)
+        }
+    }
+
+    @ReactMethod
+    fun lockToLandscape(promise: Promise) {
+        try {
+            val activity = reactContext.currentActivity
+            if (activity != null) {
+                activity.runOnUiThread {
+                    activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                    promise.resolve(true)
+                }
+            } else {
+                promise.resolve(false)
+            }
+        } catch (e: Exception) {
+            promise.reject("ORIENTATION_ERROR", e.message, e)
+        }
+    }
+
+    @ReactMethod
+    fun lockToPortrait(promise: Promise) {
+        try {
+            val activity = reactContext.currentActivity
+            if (activity != null) {
+                activity.runOnUiThread {
+                    activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                    promise.resolve(true)
+                }
+            } else {
+                promise.resolve(false)
+            }
+        } catch (e: Exception) {
+            promise.reject("ORIENTATION_ERROR", e.message, e)
+        }
+    }
+
+    @ReactMethod
+    fun unlockOrientation(promise: Promise) {
+        try {
+            val activity = reactContext.currentActivity
+            if (activity != null) {
+                activity.runOnUiThread {
+                    activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                    promise.resolve(true)
+                }
+            } else {
+                promise.resolve(false)
+            }
+        } catch (e: Exception) {
+            promise.reject("ORIENTATION_ERROR", e.message, e)
         }
     }
 }
