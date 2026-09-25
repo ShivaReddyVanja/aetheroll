@@ -1,9 +1,10 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { Film, Image as ImageIcon, Download, ShieldCheck, Clock, AlertCircle, Share2, Sparkles } from "lucide-react";
+import { Film, Image as ImageIcon, Download, ShieldCheck, Clock, AlertCircle, HardDrive, Maximize2 } from "lucide-react";
 import { getApiBaseUrl, getPublicStreamUrl } from "@/lib/config";
 import { BRAND_NAME } from "@/lib/brand";
+import { BrandIcon } from "@/components/BrandIcon";
 import type { PublicShareInfo } from "@aetheroll/types";
 
 interface PageProps {
@@ -32,14 +33,14 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
 
   if (!info) {
     return {
-      title: `Shared Video — ${BRAND_NAME}`,
+      title: `Shared Media — ${BRAND_NAME}`,
       description: "Private shared media link",
     };
   }
 
   const isVideo = info.file_type === "video";
   const title = info.title || (isVideo ? "Shared Video" : "Shared Photo");
-  const description = `Watch "${title}" in full 4K resolution on ${BRAND_NAME}.`;
+  const description = `Watch "${title}" in full original quality on ${BRAND_NAME}.`;
 
   return {
     title: `${title} | ${BRAND_NAME}`,
@@ -109,12 +110,10 @@ export default async function PublicSharePage({ params }: PageProps) {
     <main className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col selection:bg-indigo-500 selection:text-white">
       {/* Top Header */}
       <header className="h-16 px-4 md:px-8 border-b border-zinc-900/80 bg-zinc-950/80 backdrop-blur-xl flex items-center justify-between sticky top-0 z-30">
-        <Link href="/" className="flex items-center gap-2.5 group">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-indigo-500 to-violet-500 flex items-center justify-center shadow-lg shadow-indigo-500/20">
-            <Sparkles className="w-4 h-4 text-white" />
-          </div>
+        <Link href="/" className="flex items-center gap-3 group">
+          <BrandIcon className="w-7 h-7 drop-shadow-sm transition-transform group-hover:scale-105" size={28} />
           <div className="flex flex-col">
-            <span className="font-bold text-sm tracking-tight text-white group-hover:text-indigo-400 transition-colors">
+            <span className="font-semibold text-sm tracking-tight text-white group-hover:text-indigo-400 transition-colors">
               {BRAND_NAME}
             </span>
             <span className="text-[10px] text-zinc-400 -mt-0.5">Zero-Knowledge Cloud</span>
@@ -134,7 +133,7 @@ export default async function PublicSharePage({ params }: PageProps) {
       </header>
 
       {/* Main Player Viewport */}
-      <div className="flex-1 max-w-6xl w-full mx-auto p-4 md:p-8 flex flex-col gap-6">
+      <div className="flex-1 max-w-5xl w-full mx-auto p-4 md:p-8 flex flex-col gap-6">
         <div className="relative w-full aspect-video md:aspect-[16/9] max-h-[75vh] bg-black rounded-2xl overflow-hidden border border-zinc-800/80 shadow-2xl flex items-center justify-center">
           {isVideo ? (
             <video
@@ -161,7 +160,7 @@ export default async function PublicSharePage({ params }: PageProps) {
           <div className="md:col-span-2 bg-zinc-900/40 p-6 rounded-2xl border border-zinc-800/60 backdrop-blur-sm space-y-4">
             <div className="space-y-1">
               <h1 className="text-xl md:text-2xl font-semibold tracking-tight text-white">
-                {info.title || (isVideo ? "Untitled Video" : "Untitled Photo")}
+                {info.title || (isVideo ? "Shared Video" : "Shared Photo")}
               </h1>
               <p className="text-xs text-zinc-400">
                 Shared on {new Date(info.created_at).toLocaleDateString(undefined, { dateStyle: "long" })}
@@ -170,25 +169,27 @@ export default async function PublicSharePage({ params }: PageProps) {
 
             {/* Metrics Pills */}
             <div className="flex flex-wrap items-center gap-2.5 pt-2">
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-zinc-800/80 border border-zinc-700/50 text-xs text-zinc-300">
-                {isVideo ? <Film className="w-3.5 h-3.5 text-indigo-400" /> : <ImageIcon className="w-3.5 h-3.5 text-indigo-400" />}
-                {isVideo ? "4K Stream" : "Original Photo"}
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-zinc-900/90 border border-zinc-800 text-xs text-zinc-300">
+                {isVideo ? <Film className="w-3.5 h-3.5 text-zinc-400" /> : <ImageIcon className="w-3.5 h-3.5 text-zinc-400" />}
+                <span>{isVideo ? "Video Stream" : "Original Photo"}</span>
               </span>
 
               {info.duration_seconds ? (
-                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-zinc-800/80 border border-zinc-700/50 text-xs text-zinc-300">
-                  <Clock className="w-3.5 h-3.5 text-amber-400" />
-                  {formatDuration(info.duration_seconds)}
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-zinc-900/90 border border-zinc-800 text-xs text-zinc-300">
+                  <Clock className="w-3.5 h-3.5 text-zinc-400" />
+                  <span>{formatDuration(info.duration_seconds)}</span>
                 </span>
               ) : null}
 
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-zinc-800/80 border border-zinc-700/50 text-xs text-zinc-300">
-                {formatBytes(info.file_size_bytes)}
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-zinc-900/90 border border-zinc-800 text-xs text-zinc-300">
+                <HardDrive className="w-3.5 h-3.5 text-zinc-400" />
+                <span>{formatBytes(info.file_size_bytes)}</span>
               </span>
 
               {info.width && info.height ? (
-                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-zinc-800/80 border border-zinc-700/50 text-xs text-zinc-300">
-                  {info.width} × {info.height}
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-zinc-900/90 border border-zinc-800 text-xs text-zinc-300">
+                  <Maximize2 className="w-3.5 h-3.5 text-zinc-400" />
+                  <span>{info.width} × {info.height}</span>
                 </span>
               ) : null}
             </div>
@@ -202,7 +203,7 @@ export default async function PublicSharePage({ params }: PageProps) {
                 <span>Zero-Knowledge Relay</span>
               </div>
               <p className="text-xs text-zinc-400 leading-relaxed">
-                Streamed via Cloudflare Serverless Edge with sub-5ms seek caching. The owner&apos;s Telegram account remains 100% private and isolated.
+                Streamed via Cloudflare Serverless Edge with sub-second segment caching. The owner&apos;s Telegram account remains private and isolated.
               </p>
             </div>
 
@@ -219,3 +220,5 @@ export default async function PublicSharePage({ params }: PageProps) {
     </main>
   );
 }
+
+

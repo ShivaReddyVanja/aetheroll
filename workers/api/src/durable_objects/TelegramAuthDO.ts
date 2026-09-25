@@ -166,6 +166,7 @@ export class TelegramAuthDO {
     const headerTelemetry = request.headers.get("x-enable-telemetry");
     const headerBotToken = request.headers.get("x-tg-bot-token");
     const headerPublicVault = request.headers.get("x-tg-public-vault");
+    const headerWebAppUrl = request.headers.get("x-web-app-url");
 
     const effectiveEnv = {
       ...this.env,
@@ -176,6 +177,7 @@ export class TelegramAuthDO {
       ENABLE_TELEMETRY: headerTelemetry || this.env?.ENABLE_TELEMETRY || process.env?.ENABLE_TELEMETRY,
       TELEGRAM_BOT_TOKEN: headerBotToken || this.env?.TELEGRAM_BOT_TOKEN || process.env?.TELEGRAM_BOT_TOKEN,
       PUBLIC_VAULT_CHANNEL_ID: headerPublicVault || this.env?.PUBLIC_VAULT_CHANNEL_ID || process.env?.PUBLIC_VAULT_CHANNEL_ID,
+      WEB_APP_URL: headerWebAppUrl || this.env?.WEB_APP_URL || process.env?.WEB_APP_URL || "https://aetheroll.builtbyshiva.com",
     };
 
     // 0. Live Log Stream (Server-Sent Events) - Strictly gated behind isTelemetryActive

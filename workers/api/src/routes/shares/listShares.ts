@@ -56,12 +56,12 @@ listSharesRoute.get("/media/:mediaId", async (c) => {
       [auth.userId, mediaId]
     );
 
-    const origin = new URL(c.req.url).origin;
+    const webAppUrl = ((c.env as any)?.WEB_APP_URL || "https://aetheroll.builtbyshiva.com").replace(/\/$/, "");
 
     return c.json({
       success: true,
       share: share || null,
-      share_url: share ? `${origin}/v/${share.id}` : null,
+      share_url: share ? `${webAppUrl}/v/${share.id}` : null,
     });
   } catch (err: any) {
     return c.json({ error: err.message || "Failed to fetch share for media" }, 500);

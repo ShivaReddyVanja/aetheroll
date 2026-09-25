@@ -63,6 +63,7 @@ createShareRoute.post("/create", async (c) => {
     if (envObj.SESSION_ENCRYPTION_KEY) headers.set("x-tg-enc-key", String(envObj.SESSION_ENCRYPTION_KEY));
     if (envObj.ENABLE_TELEMETRY) headers.set("x-enable-telemetry", String(envObj.ENABLE_TELEMETRY));
     if (envObj.PUBLIC_VAULT_CHANNEL_ID) headers.set("x-tg-public-vault", String(envObj.PUBLIC_VAULT_CHANNEL_ID));
+    if (envObj.WEB_APP_URL) headers.set("x-web-app-url", String(envObj.WEB_APP_URL));
 
     // Content-Type and Content-Length are set fresh from our known body
     headers.set("content-type", "application/json");
@@ -108,7 +109,7 @@ createShareRoute.post("/create", async (c) => {
       return c.json({ error: "Media item not found or permission denied" }, 404);
     }
 
-    const origin = new URL(c.req.url).origin;
+    const webAppUrl = ((c.env as any)?.WEB_APP_URL || "https://aetheroll.builtbyshiva.com").replace(/\/$/, "");
 
     // 2. Return existing active share if one already exists
     const existingShare = await db.get(
@@ -123,7 +124,7 @@ createShareRoute.post("/create", async (c) => {
       return c.json({
         success: true,
         share: existingShare,
-        share_url: `${origin}/v/${existingShare.id}`,
+        share_url: `${webAppUrl}/v/${existingShare.id}`,
       });
     }
 
@@ -249,7 +250,7 @@ createShareRoute.post("/create", async (c) => {
       created_at: now,
     };
 
-    return c.json({ success: true, share: shareRecord, share_url: `${origin}/v/${shareId}` });
+    return c.json({ success: true, share: shareRecord, share_url: `${webAppUrl}/v/${shareId}` });
   } catch (err: any) {
     console.error("[Share:Create Error]:", err);
     return c.json({ error: err.message || "Failed to create share link" }, 500);

@@ -58,7 +58,7 @@ export class ShareHandler {
         );
       }
 
-      const origin = new URL(request.url).origin;
+      const webAppUrl = (effectiveEnv?.WEB_APP_URL || "https://aetheroll.builtbyshiva.com").replace(/\/$/, "");
 
       // 2. Return existing active share if one already exists
       const existingShare = await db.get(
@@ -74,7 +74,7 @@ export class ShareHandler {
           JSON.stringify({
             success: true,
             share: existingShare,
-            share_url: `${origin}/v/${existingShare.id}`,
+            share_url: `${webAppUrl}/v/${existingShare.id}`,
           }),
           { status: 200, headers: { "Content-Type": "application/json" } }
         );
@@ -215,7 +215,7 @@ export class ShareHandler {
       };
 
       return new Response(
-        JSON.stringify({ success: true, share: shareRecord, share_url: `${origin}/v/${shareId}` }),
+        JSON.stringify({ success: true, share: shareRecord, share_url: `${webAppUrl}/v/${shareId}` }),
         { status: 200, headers: { "Content-Type": "application/json" } }
       );
     } catch (err: any) {
