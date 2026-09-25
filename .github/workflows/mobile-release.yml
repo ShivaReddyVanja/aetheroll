@@ -24,6 +24,10 @@ on:
         description: 'Explicit version (e.g. 1.2.0 - overrides bump type)'
         required: false
         type: string
+      release_notes:
+        description: 'Custom release notes (bullet points for in-app update & GitHub release)'
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -68,12 +72,17 @@ jobs:
         id: version
         env:
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
+          INPUT_RELEASE_NOTES: ${{ github.event.inputs.release_notes }}
         run: |
           BUMP_ARGS="--github-output --sync-package"
           if [ -n "${{ github.event.inputs.custom_version }}" ]; then
             BUMP_ARGS="$BUMP_ARGS --custom ${{ github.event.inputs.custom_version }}"
           elif [ -n "${{ github.event.inputs.bump_type }}" ]; then
             BUMP_ARGS="$BUMP_ARGS --type ${{ github.event.inputs.bump_type }}"
+          fi
+          if [ -n "$INPUT_RELEASE_NOTES" ]; then
+            echo "$INPUT_RELEASE_NOTES" > /tmp/workflow_custom_notes.txt
+            BUMP_ARGS="$BUMP_ARGS --notes-file /tmp/workflow_custom_notes.txt"
           fi
           node scripts/bump-mobile-version.mjs $BUMP_ARGS
 
