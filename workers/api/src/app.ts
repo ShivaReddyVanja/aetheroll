@@ -79,8 +79,9 @@ app.route("/releases", releasesRouter);
 app.route("/shares", sharesRouter);
 
 import { PINWHEEL_FAVICON_SVG } from "@aetheroll/types";
+import { viewSharePageRoute } from "./routes/shares/viewSharePage";
 
-// Mount root router to handle root favicon and API routes
+// Mount root router to handle root favicon, player page, and API routes
 export const rootApp = new Hono();
 rootApp.get("/favicon.ico", (c) => {
   return new Response(PINWHEEL_FAVICON_SVG, {
@@ -98,6 +99,7 @@ rootApp.get("/favicon.svg", (c) => {
     },
   });
 });
+rootApp.route("/", viewSharePageRoute);
 rootApp.route("/api", app);
 rootApp.route("/", app);
 

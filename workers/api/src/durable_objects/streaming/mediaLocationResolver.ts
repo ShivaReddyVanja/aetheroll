@@ -1,6 +1,7 @@
 import { Api } from "telegram";
 import { toBigInt } from "../common/ratePacer";
 import type { MediaLocationCacheEntry } from "../common/types";
+import { resolveTelegramPeer } from "../../lib/shareUtils";
 
 export class MediaLocationResolver {
   mediaLocationCache: Map<string, MediaLocationCacheEntry>;
@@ -32,18 +33,7 @@ export class MediaLocationResolver {
       } catch {}
     }
 
-    let targetPeer: any = item.telegram_channel_id;
-    if (item.telegram_channel_id !== "me" && !item.telegram_channel_id.startsWith("me_")) {
-      try {
-        targetPeer = await client.getInputEntity(item.telegram_channel_id);
-      } catch {
-        try {
-          targetPeer = await client.getEntity(item.telegram_channel_id);
-        } catch {}
-      }
-    } else {
-      targetPeer = "me";
-    }
+    const targetPeer = await resolveTelegramPeer(client, item.telegram_channel_id);
 
     const msgId = Number(item.telegram_message_id);
     const messages = await client.getMessages(targetPeer, { ids: [msgId] });

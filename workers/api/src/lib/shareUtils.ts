@@ -8,25 +8,61 @@ import { toSafeString } from "./db";
 // ---------------------------------------------------------------------------
 
 /**
- * Resolves a Telegram peer from a raw channel-id string.
- * Tries getInputEntity first (cheap), falls back to getEntity (full lookup),
- * and throws a descriptive error if both fail so callers surface a proper
- * HTTP status instead of silently continuing with a broken peer value.
+ * Normalizes Telegram channel IDs so GramJS correctly classifies them as PeerChannel
+ * rather than mistaking positive channel ID integers as PeerUser.
  */
-export async function resolveTelegramPeer(client: any, channelId: string): Promise<any> {
-  if (channelId === "me" || channelId.startsWith("me_")) {
+export function normalizeTelegramPeerId(rawId: string): string {
+  if (!rawId) return "me";
+  const str = String(rawId).trim();
+  if (str === "me" || str.startsWith("me_")) {
     return "me";
   }
-  try {
-    return await client.getInputEntity(channelId);
-  } catch {
-    try {
-      return await client.getEntity(channelId);
-    } catch (err: any) {
-      throw new Error(
-        `Unable to resolve Telegram peer for channel "${channelId}": ${err?.message ?? String(err)}`
-      );
+  if (str.startsWith("-") || str.startsWith("@")) {
+    return str;
+  }
+  if (/^\d+$/.test(str)) {
+    if (str.startsWith("100") && str.length >= 11) {
+      return `-${str}`;
     }
+    return `-100${str}`;
+  }
+  return str;
+}
+
+/**
+ * Resolves a Telegram peer from a raw channel-id string.
+ * Normalizes the peer ID format, checks in-memory cache, warms dialogs on cache miss,
+ * and falls back safely.
+ */
+export async function resolveTelegramPeer(client: any, channelId: string): Promise<any> {
+  const normalizedId = normalizeTelegramPeerId(channelId);
+  if (normalizedId === "me") {
+    return "me";
+  }
+
+  // 1. Fast path: Check in-memory entity cache with normalized and raw IDs
+  try {
+    const peer = await client.getInputEntity(normalizedId);
+    if (peer) return peer;
+  } catch {}
+
+  try {
+    const peer = await client.getEntity(normalizedId);
+    if (peer) return peer;
+  } catch {}
+
+  // 2. Cache Miss: Prime the GramJS entity cache by fetching dialogs
+  try {
+    if (typeof client.getDialogs === "function") {
+      await client.getDialogs({ limit: 100 });
+    }
+    return (await client.getInputEntity(normalizedId).catch(() => null)) ||
+           (await client.getEntity(normalizedId).catch(() => null)) ||
+           (await client.getInputEntity(channelId).catch(() => null)) ||
+           (await client.getEntity(channelId).catch(() => null)) ||
+           normalizedId;
+  } catch {
+    return normalizedId;
   }
 }
 
