@@ -43,7 +43,7 @@
       "binding": "DB",
       "database_name": "aetheroll-db",
       "database_id": "c43a6484-be96-49c4-8558-a8da284796a1",
-      "migrations_dir": "migrations"
+      "migrations_dir": "../../migrations"
     }
   ],
 
