@@ -41,21 +41,63 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
   const title = info.title || (isVideo ? "Shared Video" : "Shared Photo");
   const description = `Watch "${title}" in full original quality on ${BRAND_NAME}.`;
 
+  const pageUrl = `https://aetheroll.builtbyshiva.com/v/${encodeURIComponent(shareId)}`;
+  const width = info.width || 1280;
+  const height = info.height || 720;
+  const mimeType = info.mime_type || "video/mp4";
+
   return {
     title: `${title} | ${BRAND_NAME}`,
     description,
     openGraph: {
       title,
       description,
+      url: pageUrl,
       type: isVideo ? "video.other" : "article",
-      videos: isVideo ? [{ url: info.stream_url, type: info.mime_type || "video/mp4" }] : undefined,
-      images: info.thumbnail_url ? [{ url: info.thumbnail_url }] : undefined,
+      videos: isVideo
+        ? [
+            {
+              url: info.stream_url,
+              secureUrl: info.stream_url,
+              type: mimeType,
+              width,
+              height,
+            },
+          ]
+        : undefined,
+      images: info.thumbnail_url
+        ? [
+            {
+              url: info.thumbnail_url,
+              secureUrl: info.thumbnail_url,
+              width,
+              height,
+              type: "image/jpeg",
+            },
+          ]
+        : undefined,
     },
-    twitter: {
-      card: isVideo ? "player" : "summary_large_image",
-      title,
-      description,
-    },
+    twitter: isVideo
+      ? {
+          card: "player",
+          title,
+          description,
+          images: info.thumbnail_url ? [info.thumbnail_url] : undefined,
+          players: [
+            {
+              playerUrl: pageUrl,
+              streamUrl: info.stream_url,
+              width,
+              height,
+            },
+          ],
+        }
+      : {
+          card: "summary_large_image",
+          title,
+          description,
+          images: info.thumbnail_url ? [info.thumbnail_url] : undefined,
+        },
   };
 }
 
