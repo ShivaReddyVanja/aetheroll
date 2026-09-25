@@ -9,6 +9,7 @@ import { ParallelSegmentFetcher } from "./streaming/parallelSegmentFetcher";
 import { StreamHandler } from "./streaming/streamHandler";
 import { UploadWebSocketHandler } from "./upload/uploadWebSocketHandler";
 import { UploadHttpHandler } from "./upload/uploadHttpHandler";
+import { ShareHandler } from "./shares/shareHandler";
 import { emitGalleryEvent, emitGalleryBatch } from "../lib/ledger";
 import { getDb } from "../lib/db";
 import { flushSessionBilling, type BillingPurpose } from "../lib/billing/index";
@@ -35,6 +36,7 @@ export class TelegramAuthDO {
   streamHandler: StreamHandler;
   uploadWebSocketHandler: UploadWebSocketHandler;
   uploadHttpHandler: UploadHttpHandler;
+  shareHandler: ShareHandler;
 
   constructor(state: any, env: any) {
     this.state = state;
@@ -50,6 +52,7 @@ export class TelegramAuthDO {
     this.streamHandler = new StreamHandler();
     this.uploadWebSocketHandler = new UploadWebSocketHandler();
     this.uploadHttpHandler = new UploadHttpHandler();
+    this.shareHandler = new ShareHandler();
   }
 
   // Backward compatibility getters for internal maps
@@ -213,6 +216,11 @@ export class TelegramAuthDO {
     // 2. Upload media HTTP endpoint with persistent warm MTProto connection
     if (url.pathname.includes("/upload") || url.pathname.includes("/api/media/upload")) {
       return this.uploadHttpHandler.handleUpload(request, effectiveEnv, this.clientSessionManager, this.ratePacer, this.state?.storage);
+    }
+
+    // 2.5 Create Public Media Share with warm MTProto connection
+    if (url.pathname.endsWith("/shares/create")) {
+      return this.shareHandler.handleCreateShare(request, effectiveEnv, this.clientSessionManager);
     }
 
     // 3. Stream media chunks endpoint with persistent warm MTProto connection

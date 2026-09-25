@@ -62,4 +62,33 @@ describe("⚡ Public Shares Routes Suite", () => {
 
     assert.equal(res.status, 404);
   });
+
+  it("6. POST /shares/create should forward to AUTH_DO when configured", async () => {
+    let forwarded = false;
+    const mockAuthDO = {
+      idFromName: (name: string) => ({ name }),
+      get: (id: any) => ({
+        fetch: async (req: Request) => {
+          forwarded = true;
+          return new Response(JSON.stringify({ success: true, share_url: "https://example.com/v/sh_test" }));
+        },
+      }),
+    };
+
+    const res = await app.request(
+      "/shares/create",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-tg-session": "test-session" },
+        body: JSON.stringify({ media_id: "item_123" }),
+      },
+      { AUTH_DO: mockAuthDO }
+    );
+
+    assert.equal(res.status, 200);
+    assert.equal(forwarded, true);
+    const data = await res.json();
+    assert.equal((data as any).success, true);
+  });
 });
+
