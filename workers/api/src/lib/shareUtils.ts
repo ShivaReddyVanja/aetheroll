@@ -51,9 +51,10 @@ export async function resolveTelegramPeer(client: any, channelId: string): Promi
     if (peer) return peer;
   } catch {}
 
-  // 2. Cache Miss: Prime the GramJS entity cache by fetching dialogs
+  // 2. Cache Miss: Prime the GramJS entity cache by fetching dialogs (users only, bots cannot call getDialogs)
   try {
-    if (typeof client.getDialogs === "function") {
+    const isBot = client?._bot || client?.isBot || false;
+    if (!isBot && typeof client.getDialogs === "function") {
       await client.getDialogs({ limit: 100 });
     }
     return (await client.getInputEntity(normalizedId).catch(() => null)) ||

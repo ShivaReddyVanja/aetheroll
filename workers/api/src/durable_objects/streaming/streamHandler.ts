@@ -179,7 +179,7 @@ export class StreamHandler {
       // If no range header and totalSize > 2MB, start remains 0, requestedEnd remains undefined (safely delivers first 2MB slice without 140MB buffer OOM)
 
       const BROWSER_CHUNK_SIZE = 2 * 1024 * 1024; // 2MB chunk size for fast TTFB and low memory usage
-      const SEGMENT_SIZE = 16 * 1024 * 1024;
+      const SEGMENT_SIZE = 2 * 1024 * 1024;
 
       let end: number;
       // If client specifically probes for a tiny range (< 64KB, e.g. moov atom / metadata probe), honor the tiny probe
@@ -237,8 +237,8 @@ export class StreamHandler {
         }
       }
 
-      // 4. Fetch the primary 16MB segment in parallel
-      const primarySegBuffer = await segmentFetcher.fetchSegmentParallel(
+      // 4. Fetch the primary 2MB segment in parallel
+      let primarySegBuffer = await segmentFetcher.fetchSegmentParallel(
         client,
         item,
         fileLocation,
@@ -250,6 +250,28 @@ export class StreamHandler {
         logger,
         mediaLocationResolver
       );
+
+      // If initial fetch failed, force-refresh the file reference from Telegram and retry
+      if (!primarySegBuffer || primarySegBuffer.length === 0) {
+        mediaLocationResolver.deleteLocation(item.id);
+        const freshLocation = await mediaLocationResolver.resolveMediaLocation(client, item, true);
+        if (freshLocation) {
+          fileLocation = freshLocation;
+          primarySegBuffer = await segmentFetcher.fetchSegmentParallel(
+            client,
+            item,
+            fileLocation,
+            segmentIndex,
+            r2,
+            true,
+            streamSignal,
+            ratePacer,
+            logger,
+            mediaLocationResolver
+          );
+        }
+      }
+
       if (!primarySegBuffer || primarySegBuffer.length === 0) {
         return new Response("Segment unavailable", { status: 502 });
       }

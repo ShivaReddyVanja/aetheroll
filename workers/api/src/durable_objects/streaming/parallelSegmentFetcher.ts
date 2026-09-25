@@ -40,7 +40,7 @@ export class ParallelSegmentFetcher {
     logger?: TelemetryLogger,
     mediaLocationResolver?: MediaLocationResolver
   ): Promise<Buffer | null> {
-    const SEGMENT_SIZE = 16 * 1024 * 1024;
+    const SEGMENT_SIZE = 2 * 1024 * 1024; // 2MB segments for sub-300ms initial TTFB
     const TG_CHUNK_SIZE = 512 * 1024;
     const totalSize = Number(item.file_size_bytes) || 0;
     const segStart = segmentIndex * SEGMENT_SIZE;
@@ -262,7 +262,7 @@ export class ParallelSegmentFetcher {
     }
 
     // 2. Check Ring-Buffer Segment Cache
-    const SEGMENT_SIZE = 16 * 1024 * 1024;
+    const SEGMENT_SIZE = 2 * 1024 * 1024;
     const segmentIndex = Math.floor(alignedOffset / SEGMENT_SIZE);
     const segment = await this.fetchSegmentParallel(
       client,

@@ -10,34 +10,38 @@ export class MediaLocationResolver {
     this.mediaLocationCache = new Map();
   }
 
-  async resolveMediaLocation(client: any, item: any): Promise<any> {
+  async resolveMediaLocation(client: any, item: any, forceRefresh: boolean = false): Promise<any> {
     const now = Date.now();
-    const cached = this.mediaLocationCache.get(item.id);
-    if (cached && cached.expires > now) {
-      return cached.fileLocation;
+    if (!forceRefresh) {
+      const cached = this.mediaLocationCache.get(item.id);
+      if (cached && cached.expires > now) {
+        return cached.fileLocation;
+      }
+
+      if (item.document_id && item.access_hash && item.file_reference_hex) {
+        try {
+          const directDocLoc = new Api.InputDocumentFileLocation({
+            id: toBigInt(item.document_id) as any,
+            accessHash: toBigInt(item.access_hash) as any,
+            fileReference: Buffer.from(item.file_reference_hex, "hex"),
+            thumbSize: "",
+          });
+          this.mediaLocationCache.set(item.id, {
+            fileLocation: directDocLoc,
+            expires: now + 60 * 60 * 1000,
+          });
+          return directDocLoc;
+        } catch {}
+      }
     }
 
-    if (item.document_id && item.access_hash && item.file_reference_hex) {
-      try {
-        const directDocLoc = new Api.InputDocumentFileLocation({
-          id: toBigInt(item.document_id) as any,
-          accessHash: toBigInt(item.access_hash) as any,
-          fileReference: Buffer.from(item.file_reference_hex, "hex"),
-          thumbSize: "",
-        });
-        this.mediaLocationCache.set(item.id, {
-          fileLocation: directDocLoc,
-          expires: now + 60 * 60 * 1000,
-        });
-        return directDocLoc;
-      } catch {}
-    }
-
+    // Fresh resolution via Telegram MTProto message lookup
     const targetPeer = await resolveTelegramPeer(client, item.telegram_channel_id);
-
     const msgId = Number(item.telegram_message_id);
-    const messages = await client.getMessages(targetPeer, { ids: [msgId] });
-    const msg = messages[0];
+    if (!msgId) return null;
+
+    const messages = await client.getMessages(targetPeer, { ids: [msgId] }).catch(() => null);
+    const msg = messages?.[0];
     if (!msg || !msg.media) return null;
 
     const doc = msg.media.document || (msg.media.className === "MessageMediaDocument" ? msg.media.document : null);
