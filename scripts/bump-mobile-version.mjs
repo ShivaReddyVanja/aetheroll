@@ -32,41 +32,8 @@ function formatSemVer({ major, minor, patch }) {
   return `${major}.${minor}.${patch}`;
 }
 
-function formatCleanCommitList(rawCommitLogs) {
-  if (!rawCommitLogs) return "";
-  const lines = rawCommitLogs.split("\n").map((l) => l.trim()).filter(Boolean);
-  const formattedLines = [];
-
-  for (const line of lines) {
-    // Ignore chore, ci, test, merge commits
-    if (/^-( )?(chore|ci|test|build|refactor\(internal\))(\(.*\))?:/i.test(line)) continue;
-    if (/^-( )?Merge (branch|pull request)/i.test(line)) continue;
-
-    // Clean up conventional commit prefixes for public display
-    let cleaned = line
-      .replace(/^-( )?feat(\([^)]+\))?:\s*/i, "- New: ")
-      .replace(/^-( )?fix(\([^)]+\))?:\s*/i, "- Fixed: ")
-      .replace(/^-( )?perf(\([^)]+\))?:\s*/i, "- Improved: ")
-      .replace(/^-( )?docs(\([^)]+\))?:\s*/i, "- Docs: ");
-
-    // Remove commit hashes at the end like (a752881)
-    cleaned = cleaned.replace(/\s*\([a-f0-9]{7,10}\)$/i, "");
-
-    // Capitalize first letter after dash
-    if (cleaned.startsWith("- ")) {
-      cleaned = "- " + cleaned.slice(2).charAt(0).toUpperCase() + cleaned.slice(3);
-    }
-
-    if (cleaned && !formattedLines.includes(cleaned)) {
-      formattedLines.push(cleaned);
-    }
-  }
-
-  return formattedLines.join("\n");
-}
-
 export function determineNextVersion(options = {}) {
-  const { customVersion, bumpType, runNumber, customNotes, notesFile } = options;
+  const { customVersion, bumpType, runNumber } = options;
 
   // 1. Get latest git tag
   const allTagsOutput = runGit("tag -l 'v*'");
@@ -153,37 +120,10 @@ export function determineNextVersion(options = {}) {
     versionCode = Math.max(1, commitCount);
   }
 
-  // ── Determine Release Notes ──
-  let releaseNotes = "";
-
-  // Priority 1: Explicit customNotes passed as string
-  if (customNotes && customNotes.trim()) {
-    releaseNotes = customNotes.trim();
-  }
-  // Priority 2: File specified via notesFile
-  else if (notesFile && fs.existsSync(notesFile)) {
-    try {
-      releaseNotes = fs.readFileSync(notesFile, "utf8").trim();
-    } catch (e) {
-      console.warn(`Could not read notesFile: ${notesFile}`);
-    }
-  }
-  // Priority 3: RELEASE_NOTES.md at root or apps/mobile/RELEASE_NOTES.md
-  else if (fs.existsSync(path.join(rootDir, "RELEASE_NOTES.md"))) {
-    const content = fs.readFileSync(path.join(rootDir, "RELEASE_NOTES.md"), "utf8").trim();
-    if (content) releaseNotes = content;
-  } else if (fs.existsSync(path.join(rootDir, "apps", "mobile", "RELEASE_NOTES.md"))) {
-    const content = fs.readFileSync(path.join(rootDir, "apps", "mobile", "RELEASE_NOTES.md"), "utf8").trim();
-    if (content) releaseNotes = content;
-  }
-
-  // Priority 4: Clean, formatted git commit log fallback
-  if (!releaseNotes) {
-    const logRange = latestTag ? `${latestTag}..HEAD` : "-n 10";
-    const rawCommitList = runGit(`log ${logRange} --pretty=format:"- %s (%h)"`);
-    const cleanNotes = formatCleanCommitList(rawCommitList);
-    releaseNotes = cleanNotes || "- General performance improvements and bug fixes";
-  }
+  // Generate release notes
+  const logRange = latestTag ? `${latestTag}..HEAD` : "-n 10";
+  const commitList = runGit(`log ${logRange} --pretty=format:"- %s (%h)"`);
+  const releaseNotes = commitList || "- General improvements and bug fixes";
 
   return {
     previousTag: latestTag || "none",
@@ -199,8 +139,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2);
   let customVersion = null;
   let bumpType = null;
-  let customNotes = null;
-  let notesFile = null;
   let syncPackage = false;
   let writeGithubOutput = false;
 
@@ -209,10 +147,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       customVersion = args[++i];
     } else if (args[i] === "--type" && args[i + 1]) {
       bumpType = args[++i];
-    } else if (args[i] === "--notes" && args[i + 1]) {
-      customNotes = args[++i];
-    } else if (args[i] === "--notes-file" && args[i + 1]) {
-      notesFile = args[++i];
     } else if (args[i] === "--sync-package") {
       syncPackage = true;
     } else if (args[i] === "--github-output") {
@@ -221,7 +155,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   }
 
   const runNumber = process.env.GITHUB_RUN_NUMBER || null;
-  const result = determineNextVersion({ customVersion, bumpType, runNumber, customNotes, notesFile });
+  const result = determineNextVersion({ customVersion, bumpType, runNumber });
 
   console.log(JSON.stringify(result, null, 2));
 
