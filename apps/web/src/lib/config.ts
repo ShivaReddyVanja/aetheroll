@@ -42,6 +42,17 @@ export function getMediaThumbnailUrl(mediaId: string): string {
 }
 
 /**
+ * Returns the public video streaming URL for a shared item
+ */
+export function getPublicStreamUrl(shareId: string): string {
+  const base = getApiBaseUrl();
+  return base
+    ? `${base}/api/stream/public/${encodeURIComponent(shareId)}`
+    : `/api/stream/public/${encodeURIComponent(shareId)}`;
+}
+
+
+/**
  * Returns the WebSocket URL for real-time authentication
  */
 export function getAuthWsUrl(): string {

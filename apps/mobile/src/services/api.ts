@@ -195,3 +195,40 @@ export function getAuthImageHeaders(): Record<string, string> | undefined {
     'x-tg-session': sessionToken,
   };
 }
+
+export async function createMediaShare(mediaId: string, title?: string, expiresInSeconds?: number): Promise<{ success: boolean; share?: any; share_url?: string; error?: string }> {
+  try {
+    const res = await apiFetch('/api/shares/create', {
+      method: 'POST',
+      body: JSON.stringify({
+        media_id: mediaId,
+        title,
+        expires_in_seconds: expiresInSeconds,
+      }),
+    });
+    return await res.json();
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Failed to create share link' };
+  }
+}
+
+export async function getMediaShare(mediaId: string): Promise<{ success: boolean; share?: any; share_url?: string }> {
+  try {
+    const res = await apiFetch(`/api/shares/media/${encodeURIComponent(mediaId)}`);
+    return await res.json();
+  } catch {
+    return { success: false };
+  }
+}
+
+export async function revokeMediaShare(shareId: string): Promise<{ success: boolean; error?: string }> {
+  try {
+    const res = await apiFetch(`/api/shares/${encodeURIComponent(shareId)}/revoke`, {
+      method: 'POST',
+    });
+    return await res.json();
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Failed to revoke share link' };
+  }
+}
+

@@ -46,33 +46,18 @@ export function LandingNavbar({ hasActiveSession }: LandingNavbarProps) {
         </Link>
 
         {/* Desktop Nav Links */}
-        <nav className="hidden md:flex items-center gap-7 text-xs font-medium text-zinc-400">
+        <nav className="hidden md:flex items-center gap-8 text-xs font-medium text-zinc-400">
           <Link href="/#features" className="hover:text-zinc-100 transition-colors">
             Features
+          </Link>
+          <Link href="/#use-cases" className="hover:text-zinc-100 transition-colors">
+            Use Cases
           </Link>
           <Link href="/#comparison" className="hover:text-zinc-100 transition-colors">
             Comparison
           </Link>
           <Link href="/#faq" className="hover:text-zinc-100 transition-colors">
             FAQ
-          </Link>
-          <Link
-            href="/compare/google-photos"
-            className="hover:text-zinc-200 transition-colors"
-          >
-            vs Google Photos
-          </Link>
-          <Link
-            href="/compare/teledrive"
-            className="hover:text-zinc-200 transition-colors"
-          >
-            vs TeleDrive
-          </Link>
-          <Link
-            href="/compare/icloud"
-            className="hover:text-zinc-200 transition-colors"
-          >
-            vs iCloud
           </Link>
         </nav>
 
@@ -128,6 +113,13 @@ export function LandingNavbar({ hasActiveSession }: LandingNavbarProps) {
               Features
             </Link>
             <Link
+              href="/#use-cases"
+              onClick={() => setMobileMenuOpen(false)}
+              className="p-2 rounded-lg bg-zinc-900/50 hover:bg-zinc-900 border border-zinc-800/50"
+            >
+              Use Cases
+            </Link>
+            <Link
               href="/#comparison"
               onClick={() => setMobileMenuOpen(false)}
               className="p-2 rounded-lg bg-zinc-900/50 hover:bg-zinc-900 border border-zinc-800/50"
@@ -141,15 +133,6 @@ export function LandingNavbar({ hasActiveSession }: LandingNavbarProps) {
             >
               FAQ
             </Link>
-            <a
-              href="https://github.com/ShivaReddyVanja/aetheroll"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="p-2 rounded-lg bg-zinc-900/50 hover:bg-zinc-900 border border-zinc-800/50 flex items-center gap-1.5 text-zinc-300"
-            >
-              <GithubIcon className="w-3.5 h-3.5" />
-              <span>GitHub</span>
-            </a>
           </div>
 
           <div className="space-y-1 pt-1 text-xs">

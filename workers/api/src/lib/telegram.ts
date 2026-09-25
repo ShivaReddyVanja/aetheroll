@@ -548,5 +548,39 @@ export async function verifyPhoneCode(
   }
 }
 
+/**
+ * Singleton / Persistent MTProto client authenticated via Telegram Bot Token
+ */
+let botClientInstance: TelegramClient | null = null;
+let botClientConnecting: Promise<TelegramClient> | null = null;
 
+export async function getConnectedBotClient(envObj?: any): Promise<TelegramClient> {
+  const botToken = envObj?.TELEGRAM_BOT_TOKEN ?? process.env?.TELEGRAM_BOT_TOKEN;
+  if (!botToken || String(botToken).trim() === "") {
+    throw new Error("Missing required variable: TELEGRAM_BOT_TOKEN. Please set it in .dev.vars or via `wrangler secret put TELEGRAM_BOT_TOKEN`.");
+  }
 
+  if (botClientInstance && botClientInstance.connected) {
+    return botClientInstance;
+  }
+
+  if (botClientConnecting) {
+    return botClientConnecting;
+  }
+
+  botClientConnecting = (async () => {
+    try {
+      const cfg = getDefaultTelegramConfig(envObj);
+      const client = createTelegramClient("", cfg);
+      await client.start({
+        botAuthToken: botToken.trim(),
+      });
+      botClientInstance = client;
+      return client;
+    } finally {
+      botClientConnecting = null;
+    }
+  })();
+
+  return botClientConnecting;
+}

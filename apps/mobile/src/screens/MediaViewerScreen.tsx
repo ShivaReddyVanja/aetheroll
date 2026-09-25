@@ -18,6 +18,8 @@ import {
   GestureResponderEvent,
   NativeSyntheticEvent,
   NativeScrollEvent,
+  Share,
+  Alert,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Video, { VideoRef } from 'react-native-video';
@@ -33,8 +35,9 @@ import {
   ExternalLink,
   Maximize2,
   Minimize2,
+  Share2,
 } from 'lucide-react-native';
-import { getMediaStreamUrl, getMediaThumbnailUrl, getAuthImageHeaders } from '../services/api';
+import { getMediaStreamUrl, getMediaThumbnailUrl, getAuthImageHeaders, createMediaShare } from '../services/api';
 import { MediaItemData } from '../components/MediaCard';
 import { NativeBackgroundService } from '../services/backup/nativeBackgroundService';
 import { videoPrefetchService } from '../services/videoPrefetchService';
@@ -502,6 +505,23 @@ export function MediaViewerScreen({ item, items, onClose, onToggleFavorite }: Me
     setShowControls(true);
   };
 
+  const handleSharePublicLink = useCallback(async () => {
+    if (!activeItem) return;
+    try {
+      const res = await createMediaShare(activeItem.id);
+      if (res.success && res.share_url) {
+        await Share.share({
+          message: `Watch this video on Aetheroll:\n${res.share_url}`,
+          url: res.share_url,
+        });
+      } else {
+        Alert.alert('Sharing Notice', res.error || 'Unable to generate public share link');
+      }
+    } catch (err: any) {
+      Alert.alert('Sharing Notice', err?.message || 'Failed to open share dialog');
+    }
+  }, [activeItem]);
+
   const handleMomentumScrollEnd = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const offsetX = e.nativeEvent.contentOffset.x;
     const nextIdx = Math.round(offsetX / windowWidth);
@@ -721,6 +741,14 @@ export function MediaViewerScreen({ item, items, onClose, onToggleFavorite }: Me
                 />
               </TouchableOpacity>
             )}
+
+            <TouchableOpacity
+              style={styles.frostedIconButton}
+              activeOpacity={0.7}
+              onPress={handleSharePublicLink}
+            >
+              <Share2 size={18} color="#FFFFFF" strokeWidth={2.2} />
+            </TouchableOpacity>
 
             {isVideo && (
               <TouchableOpacity

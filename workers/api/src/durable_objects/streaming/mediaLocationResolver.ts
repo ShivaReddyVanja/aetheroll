@@ -1,4 +1,5 @@
 import { Api } from "telegram";
+import { toBigInt } from "../common/ratePacer";
 import type { MediaLocationCacheEntry } from "../common/types";
 
 export class MediaLocationResolver {
@@ -13,6 +14,22 @@ export class MediaLocationResolver {
     const cached = this.mediaLocationCache.get(item.id);
     if (cached && cached.expires > now) {
       return cached.fileLocation;
+    }
+
+    if (item.document_id && item.access_hash && item.file_reference_hex) {
+      try {
+        const directDocLoc = new Api.InputDocumentFileLocation({
+          id: toBigInt(item.document_id) as any,
+          accessHash: toBigInt(item.access_hash) as any,
+          fileReference: Buffer.from(item.file_reference_hex, "hex"),
+          thumbSize: "",
+        });
+        this.mediaLocationCache.set(item.id, {
+          fileLocation: directDocLoc,
+          expires: now + 60 * 60 * 1000,
+        });
+        return directDocLoc;
+      } catch {}
     }
 
     let targetPeer: any = item.telegram_channel_id;

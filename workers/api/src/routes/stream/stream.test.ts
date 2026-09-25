@@ -43,4 +43,39 @@ describe("⚡ Stream Routes Suite", () => {
     const res = await streamRouter.request("http://localhost/?media_id=item_123");
     assert.equal(res.status, 401);
   });
+
+  it("4. GET /public/:shareId should forward to AUTH_DO with bot_stream_coordinator", async () => {
+    let targetDoId = "";
+    let forwardedShareId = "";
+
+    const mockAuthDO = {
+      idFromName: (name: string) => {
+        targetDoId = name;
+        return name;
+      },
+      get: () => ({
+        fetch: async (req: Request) => {
+          forwardedShareId = req.headers.get("x-share-id") || "";
+          return new Response(Buffer.from("public video chunk"), {
+            status: 206,
+            headers: {
+              "Content-Range": "bytes 0-17/100",
+              "Content-Type": "video/mp4",
+            },
+          });
+        },
+      }),
+    };
+
+    const res = await streamRouter.request(
+      "http://localhost/public/sh_sample123",
+      {},
+      { AUTH_DO: mockAuthDO }
+    );
+
+    assert.equal(res.status, 206);
+    assert.equal(targetDoId, "bot_stream_coordinator");
+    assert.equal(forwardedShareId, "sh_sample123");
+    assert.equal(res.headers.get("x-edge-cache"), "MISS");
+  });
 });

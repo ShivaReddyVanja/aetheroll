@@ -7,15 +7,15 @@ import { ArrowUpRight } from "lucide-react";
 export function ComparisonSection() {
   const specs = [
     {
-      metric: "Free Storage Allocation",
-      google: "15 GB Free (Shared with Gmail/Drive)",
-      icloud: "5 GB Free",
+      metric: "Free Storage Space",
+      google: "15 GB (Shared with Gmail & Drive)",
+      icloud: "5 GB (Fills up quickly)",
       teledrive: "Unlimited (Telegram)",
-      aetheroll: "100% Unlimited (Telegram)",
+      aetheroll: "100% Unlimited Free Storage",
       highlight: true,
     },
     {
-      metric: "Monthly Cost (2 TB)",
+      metric: "Monthly Cost (2 TB+)",
       google: "$9.99 / mo ($120/yr)",
       icloud: "$9.99 / mo ($120/yr)",
       teledrive: "$5–$20/mo VPS Server",
@@ -23,43 +23,43 @@ export function ComparisonSection() {
       highlight: true,
     },
     {
-      metric: "Media Compression & EXIF",
-      google: "Lossy compression unless paying",
-      icloud: "Fills paid quota",
-      teledrive: "Generic file list",
-      aetheroll: "100% Original Quality + Full EXIF",
+      metric: "Photo & Video Quality",
+      google: "Compressed unless paying top tier",
+      icloud: "Original (fills paid quota)",
+      teledrive: "Original file list",
+      aetheroll: "100% Original (48MP RAW & 4K HDR)",
       highlight: true,
     },
     {
-      metric: "4K Video Scrubbing Engine",
-      google: "Proprietary transcoding",
-      icloud: "Native",
-      teledrive: "Buffers on range seeks",
-      aetheroll: "10-Worker Parallel 16MB Chunk Stream",
+      metric: "4K Video Playback",
+      google: "Transcoded / delayed buffering",
+      icloud: "Native iOS playback",
+      teledrive: "Buffers on range seek",
+      aetheroll: "Instant, Smooth 4K Streaming",
       highlight: true,
     },
     {
-      metric: "Zero-Knowledge Encryption",
-      google: "No (Scanned by Google AI)",
-      icloud: "No (Apple managed keys)",
-      teledrive: "Plaintext DB Tokens",
-      aetheroll: "Dual-Key HKDF-SHA256 Envelope",
+      metric: "Privacy & Data Scanning",
+      google: "Scanned for Ads & AI training",
+      icloud: "Apple managed server keys",
+      teledrive: "Unencrypted server tokens",
+      aetheroll: "Zero Scanning • 100% Private Vault",
       highlight: true,
     },
     {
-      metric: "Disaster Recovery",
-      google: "Manual Google Takeout",
-      icloud: "iCloud Sync",
-      teledrive: "Database backup required",
-      aetheroll: "Append-Only Telegram WAL Replay",
+      metric: "Automatic Phone Backup",
+      google: "Included",
+      icloud: "Included (Apple devices)",
+      teledrive: "Manual upload only",
+      aetheroll: "Background Camera Roll Sync",
       highlight: false,
     },
     {
-      metric: "Self-Hosting Requirement",
-      google: "N/A (Closed SaaS)",
-      icloud: "N/A (Closed SaaS)",
-      teledrive: "24/7 VPS Server (Go/Node daemon)",
-      aetheroll: "$0/mo Serverless (Cloudflare Workers)",
+      metric: "Ease of Access",
+      google: "Web & Mobile apps",
+      icloud: "Best on Apple devices only",
+      teledrive: "Web app only",
+      aetheroll: "Android App & Universal Web App",
       highlight: true,
     },
   ];
@@ -68,14 +68,14 @@ export function ComparisonSection() {
     <section id="comparison" className="py-24 md:py-32 bg-zinc-950 border-t border-zinc-800/80 scroll-mt-16">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="max-w-3xl mb-16 text-left">
-          <div className="inline-flex items-center gap-2 px-2.5 py-0.5 rounded-full bg-zinc-900 border border-zinc-800 text-zinc-400 text-xs font-mono mb-4">
-            <span>BENCHMARK COMPARISON</span>
+          <div className="inline-flex items-center gap-2 px-2.5 py-0.5 rounded-full bg-zinc-900 border border-zinc-800 text-zinc-400 text-xs font-medium mb-4">
+            <span>HOW WE COMPARE</span>
           </div>
           <h2 className="text-3xl sm:text-4xl md:text-5xl font-bold tracking-tight text-white mb-4">
-            Built Different from the Ground Up
+            Better Storage. Zero Monthly Bills.
           </h2>
           <p className="text-base text-zinc-400 leading-relaxed">
-            See how Aetheroll compares against legacy cloud photo silos and generic Telegram drive wrappers.
+            See how Aetheroll gives you the full experience of premium cloud photo apps without the recurring subscriptions.
           </p>
         </div>
 

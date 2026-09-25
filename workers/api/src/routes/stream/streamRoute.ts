@@ -277,3 +277,132 @@ streamRoute.get("/", async (c) => {
     return c.text(error.message || "Streaming failed", 500);
   }
 });
+
+/**
+ * GET /public/:shareId
+ * Public, unauthenticated video/media streaming endpoint powered by the existing Cloudflare Edge & DO pipeline
+ */
+streamRoute.get("/public/:shareId", async (c) => {
+  const shareId = c.req.param("shareId");
+  if (!shareId) return c.text("share_id required", 400);
+
+  const rangeHeader = c.req.header("range") || "full";
+  const noCache = c.req.query("nocache") === "1" || c.req.query("nocache") === "true";
+  const workerOrigin = new URL(c.req.url).origin;
+  const cacheKeyUrl = `${workerOrigin}/api/stream/cache/public/v1/${encodeURIComponent(shareId)}?range=${encodeURIComponent(rangeHeader)}`;
+  const cacheKey = new Request(cacheKeyUrl, { method: "GET" });
+  const cache =
+    noCache || typeof (globalThis as any).caches === "undefined"
+      ? null
+      : (globalThis as any).caches?.default;
+
+  // 1. Check Cloudflare Edge Cache (< 3ms response)
+  if (cache) {
+    try {
+      const cachedRes = await cache.match(cacheKey);
+      if (cachedRes) {
+        const hitHeaders = new Headers(cachedRes.headers);
+        hitHeaders.set("x-edge-cache", "HIT");
+        const originalStatus = parseInt(hitHeaders.get("x-original-status") || "206", 10);
+        hitHeaders.delete("x-original-status");
+
+        return new Response(cachedRes.body, {
+          status: originalStatus,
+          headers: hitHeaders,
+        });
+      }
+    } catch (cacheErr) {
+      console.warn("[EdgeCache:Public] Stream match error:", cacheErr);
+    }
+  }
+
+  // 2. Fast Path: Route to Cloudflare Durable Object using Bot Streaming Coordinator
+  const authDo = (c.env as any)?.AUTH_DO;
+  if (authDo && typeof authDo.idFromName === "function") {
+    const doId = authDo.idFromName("bot_stream_coordinator");
+    const stub = authDo.get(doId);
+
+    const envObj = (c.env as any) || {};
+    const headers = new Headers(c.req.raw?.headers || c.req.header());
+    if (envObj.TELEGRAM_API_ID) headers.set("x-tg-api-id", String(envObj.TELEGRAM_API_ID));
+    if (envObj.TELEGRAM_API_HASH) headers.set("x-tg-api-hash", String(envObj.TELEGRAM_API_HASH));
+    if (envObj.TELEGRAM_TEST_MODE) headers.set("x-tg-test-mode", String(envObj.TELEGRAM_TEST_MODE));
+    if (envObj.SESSION_ENCRYPTION_KEY) headers.set("x-tg-enc-key", String(envObj.SESSION_ENCRYPTION_KEY));
+    if (envObj.TELEGRAM_BOT_TOKEN) headers.set("x-tg-bot-token", String(envObj.TELEGRAM_BOT_TOKEN));
+    if (envObj.PUBLIC_VAULT_CHANNEL_ID) headers.set("x-tg-public-vault", String(envObj.PUBLIC_VAULT_CHANNEL_ID));
+    if (envObj.ENABLE_TELEMETRY) headers.set("x-enable-telemetry", String(envObj.ENABLE_TELEMETRY));
+    headers.set("x-share-id", shareId);
+
+    const reqUrl = `${workerOrigin}/api/stream?share_id=${encodeURIComponent(shareId)}`;
+    const req = new Request(reqUrl, {
+      method: c.req.method,
+      headers,
+    });
+
+    const browserAbort = new Promise<never>((_, reject) => {
+      if (c.req.raw?.signal?.aborted) {
+        reject(new Error("Browser disconnected"));
+        return;
+      }
+      c.req.raw?.signal?.addEventListener("abort", () => reject(new Error("Browser disconnected")), { once: true });
+    });
+
+    let doRes: Response;
+    try {
+      doRes = await Promise.race([stub.fetch(req), browserAbort]);
+    } catch {
+      return new Response("", { status: 499 }) as any;
+    }
+
+    const resHeaders = new Headers(doRes.headers);
+    const body = await doRes.arrayBuffer();
+    const response = new Response(body, {
+      status: doRes.status,
+      headers: resHeaders,
+    });
+
+    // 3. Save Successful 200/206 Partial Content Response to Edge Cache in Background
+    if (cache && (response.status === 200 || response.status === 206)) {
+      try {
+        const resToCache = response.clone();
+        const edgeHeaders = new Headers(resToCache.headers);
+        edgeHeaders.set("Cache-Control", "public, max-age=31536000, immutable");
+        edgeHeaders.set("x-original-status", response.status.toString());
+
+        const edgeResponse = new Response(resToCache.body, {
+          status: 200,
+          headers: edgeHeaders,
+        });
+
+        const putPromise = cache.put(cacheKey, edgeResponse).catch(() => {});
+        if ((c.executionCtx as any)?.waitUntil) {
+          c.executionCtx.waitUntil(putPromise);
+        }
+      } catch (putErr) {
+        console.warn("[EdgeCache:Public] Save error:", putErr);
+      }
+    }
+
+    const outHeaders = new Headers(response.headers);
+    outHeaders.set("Accept-Ranges", "bytes");
+    outHeaders.set("Access-Control-Allow-Origin", "*");
+    outHeaders.set("Access-Control-Expose-Headers", "Content-Range, Content-Length, Accept-Ranges");
+    outHeaders.set("x-edge-cache", "MISS");
+
+    return new Response(response.body, {
+      status: response.status,
+      headers: outHeaders,
+    });
+  }
+
+  // Local Server Fallback (development mode)
+  const db = getDb((c.env as any)?.DB);
+  const share = await db.get(
+    `SELECT * FROM media_shares WHERE id = ? AND is_revoked = 0 AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)`,
+    [shareId]
+  );
+  if (!share) return c.text("Share not found or expired", 404);
+
+  return c.text("Local streaming not configured for standalone bot stream without DO", 501);
+});
+

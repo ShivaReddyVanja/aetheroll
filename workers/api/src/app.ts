@@ -11,6 +11,7 @@ import { logsRouter } from "./routes/logs";
 import { tripsRouter } from "./routes/trips";
 import { billingRouter } from "./routes/billing";
 import { releasesRouter } from "./routes/releases";
+import { sharesRouter } from "./routes/shares";
 
 export const app = new Hono().basePath("/api");
 
@@ -75,6 +76,7 @@ app.route("/stream", streamRouter);
 app.route("/logs", logsRouter);
 app.route("/billing", billingRouter);
 app.route("/releases", releasesRouter);
+app.route("/shares", sharesRouter);
 
 import { PINWHEEL_FAVICON_SVG } from "@aetheroll/types";
 

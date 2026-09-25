@@ -6,6 +6,7 @@ import { ClientSessionManager } from "../auth/clientSessionManager";
 import { MediaLocationResolver } from "./mediaLocationResolver";
 import { ParallelSegmentFetcher } from "./parallelSegmentFetcher";
 import { flushSessionBilling } from "../../lib/billing/index";
+import { getConnectedBotClient } from "../../lib/telegram";
 
 export class StreamHandler {
   streamAbortController: AbortController;
@@ -40,14 +41,17 @@ export class StreamHandler {
 
     try {
       const url = new URL(request.url);
+      const shareId = url.searchParams.get("share_id") || request.headers.get("x-share-id");
       const mediaId = url.searchParams.get("media_id");
-      if (!mediaId) return new Response("media_id required", { status: 400 });
+
+      if (!shareId && !mediaId) {
+        return new Response("media_id required", { status: 400 });
+      }
 
       const noCache = url.searchParams.get("nocache") === "1" || url.searchParams.get("nocache") === "true";
+      const trackingId = shareId || mediaId;
 
       // Reset the DO-wide stream abort controller for this media session.
-      // When browser disconnects (request.signal fires), we abort the controller so
-      // all background prefetch tasks also stop — not just the primary fetch.
       this.streamAbortController = new AbortController();
       const streamSignal = this.streamAbortController.signal;
       request.signal.addEventListener(
@@ -58,24 +62,65 @@ export class StreamHandler {
           logger.logEvent(
             "STREAM",
             "warn",
-            `🛑 [Stream Cancelled] Browser disconnected for ${mediaId?.slice(0, 8)}... — aborting all background fetches`
+            `🛑 [Stream Cancelled] Browser disconnected for ${trackingId?.slice(0, 8)}... — aborting all background fetches`
           );
         },
         { once: true }
       );
 
-      const { client, userId, error } = await clientSessionManager.getOrConnectUserClient(request, envObj);
-      if (!client) return new Response(error || "Unauthorized", { status: 401 });
-      activeUserId = userId;
+      let client: any = null;
+      let item: any = null;
 
-      const db = getDb(envObj?.DB);
-      const item = await db.get(
-        `SELECT m.*, c.telegram_channel_id FROM media_items m
-         JOIN channels c ON c.id = m.channel_id
-         WHERE m.id = ?`,
-        [mediaId]
-      );
-      if (!item) return new Response("Media item not found", { status: 404 });
+      if (shareId) {
+        // Public Bot-Relayed Share Mode
+        const db = getDb(envObj?.DB);
+        const share = await db.get(
+          `SELECT * FROM media_shares WHERE id = ? AND is_revoked = 0 AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)`,
+          [shareId]
+        );
+        if (!share) {
+          return new Response("Share not found, revoked, or expired", { status: 404 });
+        }
+
+        try {
+          client = await getConnectedBotClient(envObj);
+        } catch (botErr: any) {
+          return new Response(`Bot streaming error: ${botErr?.message || "Failed to connect bot client"}`, { status: 500 });
+        }
+
+        activeUserId = share.user_id;
+        item = {
+          id: share.id,
+          telegram_channel_id: share.public_channel_id,
+          telegram_message_id: share.public_message_id,
+          file_size_bytes: Number(share.file_size_bytes) || 0,
+          mime_type: share.mime_type,
+          document_id: share.document_id,
+          access_hash: share.access_hash,
+          file_reference_hex: share.file_reference_hex,
+        };
+
+        // Asynchronously increment public view counter
+        const incPromise = db.run("UPDATE media_shares SET view_count = view_count + 1 WHERE id = ?", [shareId]);
+        if ((globalThis as any).waitUntil) {
+          (globalThis as any).waitUntil(incPromise);
+        }
+      } else {
+        // Authenticated User Media Mode
+        const { client: userClient, userId, error } = await clientSessionManager.getOrConnectUserClient(request, envObj);
+        if (!userClient) return new Response(error || "Unauthorized", { status: 401 });
+        client = userClient;
+        activeUserId = userId;
+
+        const db = getDb(envObj?.DB);
+        item = await db.get(
+          `SELECT m.*, c.telegram_channel_id FROM media_items m
+           JOIN channels c ON c.id = m.channel_id
+           WHERE m.id = ?`,
+          [mediaId]
+        );
+        if (!item) return new Response("Media item not found", { status: 404 });
+      }
 
       const totalSize = Number(item.file_size_bytes) || 0;
       const rangeHeader = request.headers.get("range");

@@ -5,33 +5,34 @@ export interface FaqItem {
 
 export const FAQ_ITEMS: FaqItem[] = [
   {
-    question: "Is photo and video storage on Telegram truly unlimited?",
+    question: "Is the photo and video storage really unlimited and free?",
     answer:
-      "Yes. Telegram permits users to upload individual files up to 2 GB each (4 GB with Telegram Premium) with no overall account storage quota in Saved Messages, private channels, or private groups. Aetheroll leverages these private channels as unmetered, high-speed storage backends.",
+      "Yes, 100%! Unlike other cloud services that start charging you as soon as you hit 15 GB, Aetheroll connects directly to your private Telegram cloud storage. You can store tens of thousands of full-resolution photos and 4K videos with $0 monthly subscription fees.",
   },
   {
-    question: "How does Aetheroll protect my privacy and Telegram credentials?",
+    question: "Does it compress my photos or reduce video quality?",
     answer:
-      "Aetheroll utilizes Dual-Key HKDF-SHA256 Envelope Encryption. Your MTProto session string is encrypted with a master key derived from a client secret cookie and a server master key. The server database stores only AES-256-GCM ciphertext. An attacker with full database access cannot decrypt your Telegram session without your client cookie.",
+      "No. Every photo and video is preserved in 100% original quality—including 48MP ProRAW photos, 4K HDR videos, and original camera settings (aperture, ISO, capture date, and GPS location).",
   },
   {
-    question: "Does Aetheroll compress my photos or re-encode my videos?",
+    question: "Can anyone else—or even Aetheroll—see my photos?",
     answer:
-      "No. All media is stored in its 100% original binary format. Aetheroll extracts EXIF camera metadata, lens focal lengths, ISO settings, and GPS coordinates during indexing without altering the original files.",
+      "Never. Your files are stored in your own private cloud vault with client-side encryption. Nobody can view, scan, or analyze your memories. We do not run ads and we never use your personal photos to train AI models.",
   },
   {
-    question: "How does the 10-worker 4K video streaming engine work?",
+    question: "How does automatic mobile backup work?",
     answer:
-      "Aetheroll employs a 10-worker MTProto parallel segment fetcher inside Cloudflare Durable Objects. It splits video streams into 16 MB pre-buffered slices using HTTP Range requests, enabling instant scrubbing across multi-gigabyte 4K HDR videos with sub-5ms seek latency.",
+      "With the Android mobile app, you can turn on background camera roll backup. Any new photo or video you take will automatically sync to your private vault in full resolution without draining your battery.",
   },
   {
-    question: "What is the Append-Only WAL disaster recovery system?",
+    question: "Can I watch 4K videos smoothly without buffering?",
     answer:
-      "All user interactions—including tags, trip groupings, and favorites—are recorded as encrypted event messages inside your Telegram message threads. If your Cloudflare D1 database is wiped, clicking 'Sync Channel' replays the event ledger directly from Telegram to restore 100% of your metadata.",
+      "Yes! Our video streaming engine delivers instantaneous playback and seamless fast-forwarding or rewinding, so you don't have to wait for large multi-gigabyte video files to download before watching.",
   },
   {
-    question: "How much does it cost to self-host Aetheroll?",
+    question: "Can I share full-quality albums with friends and family?",
     answer:
-      "Zero dollars. Aetheroll is optimized for Cloudflare's generous free tier (Cloudflare Workers, Durable Objects, D1 SQLite, and R2). You can host your personal, unlimited photo vault for $0.00/month indefinitely.",
+      "Yes! You can create simple, private share links for specific photos or entire albums. Your friends and family can view and download the full-resolution photos on any phone, tablet, or computer without needing an account.",
   },
 ];
+
