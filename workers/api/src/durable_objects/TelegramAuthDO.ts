@@ -161,6 +161,8 @@ export class TelegramAuthDO {
     const headerTestMode = request.headers.get("x-tg-test-mode");
     const headerEncKey = request.headers.get("x-tg-enc-key");
     const headerTelemetry = request.headers.get("x-enable-telemetry");
+    const headerBotToken = request.headers.get("x-tg-bot-token");
+    const headerPublicVault = request.headers.get("x-tg-public-vault");
 
     const effectiveEnv = {
       ...this.env,
@@ -169,6 +171,8 @@ export class TelegramAuthDO {
       TELEGRAM_TEST_MODE: headerTestMode || this.env?.TELEGRAM_TEST_MODE || process.env?.TELEGRAM_TEST_MODE,
       SESSION_ENCRYPTION_KEY: headerEncKey || this.env?.SESSION_ENCRYPTION_KEY || process.env?.SESSION_ENCRYPTION_KEY,
       ENABLE_TELEMETRY: headerTelemetry || this.env?.ENABLE_TELEMETRY || process.env?.ENABLE_TELEMETRY,
+      TELEGRAM_BOT_TOKEN: headerBotToken || this.env?.TELEGRAM_BOT_TOKEN || process.env?.TELEGRAM_BOT_TOKEN,
+      PUBLIC_VAULT_CHANNEL_ID: headerPublicVault || this.env?.PUBLIC_VAULT_CHANNEL_ID || process.env?.PUBLIC_VAULT_CHANNEL_ID,
     };
 
     // 0. Live Log Stream (Server-Sent Events) - Strictly gated behind isTelemetryActive

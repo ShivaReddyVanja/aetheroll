@@ -1,9 +1,10 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
-import { X, ChevronLeft, ChevronRight, Heart, Download, Info, Trash2, Play, Pause } from "lucide-react";
+import { X, ChevronLeft, ChevronRight, Heart, Download, Info, Trash2, Play, Pause, Share2 } from "lucide-react";
 import { MediaItem } from "./MediaCard";
 import { TagDrawer } from "./TagDrawer";
+import { ShareModal } from "./ShareModal";
 import { getApiBaseUrl, getMediaStreamUrl, getMediaThumbnailUrl } from "@/lib/config";
 
 interface MediaViewerProps {
@@ -28,6 +29,7 @@ export function MediaViewer({
   onDelete,
 }: MediaViewerProps) {
   const [showTagDrawer, setShowTagDrawer] = useState(false);
+  const [showShareModal, setShowShareModal] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
 
   const currentIndex = items.findIndex((i) => i.id === item.id);
@@ -99,6 +101,15 @@ export function MediaViewer({
               }`}
             >
               <Heart className={`w-5 h-5 ${isFavorite ? "fill-rose-500 text-rose-500" : ""}`} />
+            </button>
+
+            {/* Share Public Link Button */}
+            <button
+              onClick={() => setShowShareModal(true)}
+              title="Share public streaming link"
+              className="p-2 rounded-full text-slate-300 hover:text-indigo-400 hover:bg-white/10 transition-colors"
+            >
+              <Share2 className="w-5 h-5" />
             </button>
 
             {/* Download Original Button */}
@@ -193,6 +204,14 @@ export function MediaViewer({
           channelId={channelId}
           onClose={() => setShowTagDrawer(false)}
           onItemUpdated={onItemUpdated}
+        />
+      )}
+
+      {/* Public Share Modal */}
+      {showShareModal && (
+        <ShareModal
+          item={item}
+          onClose={() => setShowShareModal(false)}
         />
       )}
     </div>

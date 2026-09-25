@@ -15,14 +15,14 @@ export function FaqSection() {
     <section id="faq" className="py-24 md:py-32 bg-zinc-950 border-t border-zinc-800/80 scroll-mt-16">
       <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="max-w-2xl mb-16 text-left">
-          <div className="inline-flex items-center gap-2 px-2.5 py-0.5 rounded-full bg-zinc-900 border border-zinc-800 text-zinc-400 text-xs font-mono mb-4">
-            <span>FREQUENTLY ASKED QUESTIONS</span>
+          <div className="inline-flex items-center gap-2 px-2.5 py-0.5 rounded-full bg-zinc-900 border border-zinc-800 text-zinc-400 text-xs font-medium mb-4">
+            <span>COMMON QUESTIONS</span>
           </div>
           <h2 className="text-3xl sm:text-4xl md:text-5xl font-bold tracking-tight text-white mb-4">
-            Technical & Architecture FAQ
+            Everything You Need to Know
           </h2>
           <p className="text-base text-zinc-400 leading-relaxed">
-            Everything you need to know about Telegram cloud storage, encryption protocols, and streaming speeds.
+            Simple answers to how unlimited storage, original quality, privacy, and mobile backup work.
           </p>
         </div>
 

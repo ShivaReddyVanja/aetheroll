@@ -118,6 +118,66 @@ export interface TelegramContactsResponse {
   error?: string;
 }
 
+export interface MediaShare {
+  id: string;
+  user_id: string;
+  media_id: string;
+  public_channel_id: string;
+  public_message_id: number;
+  document_id: string;
+  access_hash: string;
+  file_reference_hex: string;
+  mime_type: string;
+  file_size_bytes: number;
+  duration_seconds?: number | null;
+  title?: string | null;
+  is_revoked: number;
+  expires_at?: string | null;
+  view_count: number;
+  created_at: string;
+}
+
+export interface PublicShareInfo {
+  id: string;
+  media_id: string;
+  file_type: MediaType;
+  mime_type: string;
+  file_size_bytes: number;
+  duration_seconds?: number | null;
+  width?: number | null;
+  height?: number | null;
+  blurhash?: string | null;
+  title?: string | null;
+  created_at: string;
+  expires_at?: string | null;
+  stream_url: string;
+  thumbnail_url?: string;
+}
+
+export interface CreateShareRequest {
+  media_id: string;
+  title?: string;
+  expires_in_seconds?: number;
+}
+
+export interface CreateShareResponse {
+  success: boolean;
+  share?: MediaShare;
+  share_url?: string;
+  error?: string;
+}
+
+export interface RevokeShareResponse {
+  success: boolean;
+  error?: string;
+}
+
+export interface ListSharesResponse {
+  success: boolean;
+  shares?: MediaShare[];
+  error?: string;
+}
+
 export const PINWHEEL_FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="32" height="32" fill="none">
   <path d="M12 2C9.24 2 7 4.24 7 7C7 9.76 9.24 12 12 12C12 9.24 14.24 7 17 7C19.76 7 22 4.76 22 2H12Z" fill="#EA4335"/>
   <path d="M22 12C22 9.24 19.76 7 17 7C14.24 7 12 9.24 12 12C12 14.76 14.24 17 17 17C17 19.76 19.24 22 22 22V12Z" fill="#FBBC05"/>

@@ -4,8 +4,9 @@ import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { LandingNavbar } from "@/components/landing/LandingNavbar";
 import { HeroSection } from "@/components/landing/HeroSection";
-import { ComparisonSection } from "@/components/landing/ComparisonSection";
 import { FeaturesSection } from "@/components/landing/FeaturesSection";
+import { UseCasesSection } from "@/components/landing/UseCasesSection";
+import { ComparisonSection } from "@/components/landing/ComparisonSection";
 import { FaqSection } from "@/components/landing/FaqSection";
 import { LandingFooter } from "@/components/landing/LandingFooter";
 import { apiFetch } from "@/lib/config";
@@ -66,10 +67,13 @@ export default function RootLandingPage() {
         {/* Hero with Interactive Product Simulator */}
         <HeroSection hasActiveSession={!!user} />
 
-        {/* Bento Grid Architecture */}
+        {/* Features Small Boxes */}
         <FeaturesSection />
 
-        {/* Technical Benchmark Matrix */}
+        {/* Popular Everyday Use Cases */}
+        <UseCasesSection />
+
+        {/* Comparison Matrix */}
         <ComparisonSection />
 
         {/* Technical FAQ */}

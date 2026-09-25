@@ -187,4 +187,31 @@ export class NativeBackgroundService {
       return false;
     }
   }
+
+  static async lockToLandscape(): Promise<boolean> {
+    if (Platform.OS !== 'android' || !BackupServiceModule?.lockToLandscape) return false;
+    try {
+      return await BackupServiceModule.lockToLandscape();
+    } catch {
+      return false;
+    }
+  }
+
+  static async lockToPortrait(): Promise<boolean> {
+    if (Platform.OS !== 'android' || !BackupServiceModule?.lockToPortrait) return false;
+    try {
+      return await BackupServiceModule.lockToPortrait();
+    } catch {
+      return false;
+    }
+  }
+
+  static async unlockOrientation(): Promise<boolean> {
+    if (Platform.OS !== 'android' || !BackupServiceModule?.unlockOrientation) return false;
+    try {
+      return await BackupServiceModule.unlockOrientation();
+    } catch {
+      return false;
+    }
+  }
 }
