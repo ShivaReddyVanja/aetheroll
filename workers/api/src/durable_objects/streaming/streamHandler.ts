@@ -75,11 +75,13 @@ export class StreamHandler {
         // Public Bot-Relayed Share Mode
         const db = getDb(envObj?.DB);
         const share = await db.get(
-          `SELECT * FROM media_shares WHERE id = ? AND is_revoked = 0 AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)`,
+          `SELECT ms.*, u.is_tier_held FROM media_shares ms
+           JOIN users u ON u.id = ms.user_id
+           WHERE ms.id = ? AND ms.is_revoked = 0 AND (ms.expires_at IS NULL OR ms.expires_at > CURRENT_TIMESTAMP)`,
           [shareId]
         );
-        if (!share) {
-          return new Response("Share not found, revoked, or expired", { status: 404 });
+        if (!share || share.is_tier_held === 1) {
+          return new Response("Share not found, revoked, or unavailable", { status: 404 });
         }
 
         try {
@@ -108,11 +110,30 @@ export class StreamHandler {
       } else {
         // Authenticated User Media Mode
         const { client: userClient, userId, error } = await clientSessionManager.getOrConnectUserClient(request, envObj);
-        if (!userClient) return new Response(error || "Unauthorized", { status: 401 });
+        if (!userClient || !userId) return new Response(error || "Unauthorized", { status: 401 });
         client = userClient;
         activeUserId = userId;
 
         const db = getDb(envObj?.DB);
+
+        // Strict server-side tier gate: only active, un-held Pro/Admin users can stream through Cloudflare edge
+        const userRow = await db.get(`SELECT tier, tier_expires_at, is_tier_held FROM users WHERE id = ?`, [userId]);
+        const isPro = userRow && (userRow.tier === "premium" || userRow.tier === "admin");
+        const isExpired = userRow?.tier_expires_at && new Date(userRow.tier_expires_at).getTime() < Date.now();
+        const isHeld = userRow?.is_tier_held === 1;
+
+        if (!isPro || isExpired || isHeld) {
+          return new Response(
+            JSON.stringify({
+              error: "UPGRADE_REQUIRED",
+              message: isHeld
+                ? "Pro access is currently on hold. Please contact support."
+                : "Cloudflare Edge Streaming is exclusively available for Pro members.",
+            }),
+            { status: 403, headers: { "Content-Type": "application/json" } }
+          );
+        }
+
         item = await db.get(
           `SELECT m.*, c.telegram_channel_id FROM media_items m
            JOIN channels c ON c.id = m.channel_id

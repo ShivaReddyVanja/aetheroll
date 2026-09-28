@@ -438,6 +438,25 @@ export class UploadWebSocketHandler {
               return;
             }
 
+            // Strict server-side tier gate: only active, un-held Pro/Admin users can upload through Cloudflare Turbo WS
+            const userRow = await db.get(`SELECT tier, tier_expires_at, is_tier_held FROM users WHERE id = ?`, [session.user_id]);
+            const isPro = userRow && (userRow.tier === "premium" || userRow.tier === "admin");
+            const isExpired = userRow?.tier_expires_at && new Date(userRow.tier_expires_at).getTime() < Date.now();
+            const isHeld = userRow?.is_tier_held === 1;
+
+            if (!isPro || isExpired || isHeld) {
+              logToClient("TIER_RESTRICTED", { isPro, isHeld, isExpired });
+              ws.send(
+                JSON.stringify({
+                  type: "error",
+                  error: isHeld
+                    ? "Pro access is currently on hold. Please contact support."
+                    : "Cloudflare Turbo Uploads is exclusively available for Pro members.",
+                })
+              );
+              return;
+            }
+
             const channelId = msg.channelId;
             const channel = await db.get(
               `SELECT c.* FROM channels c

@@ -1,6 +1,7 @@
-import { describe, it } from "node:test";
+import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
 import { mediaRouter } from "./index";
+import { encryptSession } from "../../lib/crypto";
 
 function createMockD1(items: any[] = []) {
   return {
@@ -16,12 +17,27 @@ function createMockD1(items: any[] = []) {
 }
 
 describe("⚡ Media Routes Suite", () => {
+  const serverKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+  const clientSecret = "client_secret_abc";
+  let encryptedSessionStr = "";
+
+  before(async () => {
+    encryptedSessionStr = await encryptSession("12345678:valid_string", serverKey, clientSecret);
+  });
+
   it("1. GET / should return 401 when unauthenticated", async () => {
     const res = await mediaRouter.request("http://localhost/?channel_id=chan_1");
     assert.equal(res.status, 401);
   });
 
-  it("2. POST /upload/init should forward to AUTH_DO when configured", async () => {
+  it("2. POST /upload/init should reject when unauthenticated and forward when authorized as Pro", async () => {
+    const unauthedRes = await mediaRouter.request("http://localhost/upload/init", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ channel_id: "c1", file_name: "test.jpg", file_size: 1000, total_chunks: 1 }),
+    });
+    assert.equal(unauthedRes.status, 401);
+
     let forwarded = false;
     const mockAuthDO = {
       idFromName: () => "mock-id",
@@ -35,14 +51,38 @@ describe("⚡ Media Routes Suite", () => {
       }),
     };
 
+    const mockDb = {
+      prepare: (sql: string) => ({
+        bind: (...params: any[]) => ({
+          first: async () => ({
+            user_id: "u1",
+            telegram_user_id: 12345,
+            display_name: "Pro User",
+            session_string: encryptedSessionStr,
+            tier: "premium",
+            is_tier_held: 0,
+            tier_expires_at: null,
+          }),
+          all: async () => ({ results: [] }),
+          run: async () => ({ success: true }),
+        }),
+      }),
+    };
+
     const res = await mediaRouter.request(
       "http://localhost/upload/init",
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "x-tg-session": `session_123.${clientSecret}` },
         body: JSON.stringify({ channel_id: "c1", file_name: "test.jpg", file_size: 1000, total_chunks: 1 }),
       },
-      { AUTH_DO: mockAuthDO }
+      {
+        AUTH_DO: mockAuthDO,
+        DB: mockDb,
+        SESSION_ENCRYPTION_KEY: serverKey,
+        TELEGRAM_API_ID: "12345",
+        TELEGRAM_API_HASH: "mock_hash",
+      }
     );
 
     assert.equal(res.status, 200);

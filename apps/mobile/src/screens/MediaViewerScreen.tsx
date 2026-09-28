@@ -42,6 +42,7 @@ import { MediaItemData } from '../components/MediaCard';
 import { NativeBackgroundService } from '../services/backup/nativeBackgroundService';
 import { videoPrefetchService } from '../services/videoPrefetchService';
 import { StreamingStrategyRouter, VideoStreamSource } from '../services/streaming';
+import { PremiumMembershipScreen } from './PremiumMembershipScreen';
 
 interface MediaViewerSlideProps {
   item: MediaItemData;
@@ -241,11 +242,13 @@ const MediaViewerSlide = React.memo(
 interface MediaViewerScreenProps {
   item: MediaItemData | null;
   items: MediaItemData[];
+  user?: any;
+  onUserUpdated?: (user: any) => void;
   onClose: () => void;
   onToggleFavorite?: (id: string) => void;
 }
 
-export function MediaViewerScreen({ item, items, onClose, onToggleFavorite }: MediaViewerScreenProps) {
+export function MediaViewerScreen({ item, items, user, onUserUpdated, onClose, onToggleFavorite }: MediaViewerScreenProps) {
   const insets = useSafeAreaInsets();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const isLandscape = windowWidth > windowHeight;
@@ -262,6 +265,10 @@ export function MediaViewerScreen({ item, items, onClose, onToggleFavorite }: Me
   const [playbackRate, setPlaybackRate] = useState(1.0);
   const [showControls, setShowControls] = useState(true);
   const [skipFeedback, setSkipFeedback] = useState<'+10s' | '-10s' | null>(null);
+  const [showProModal, setShowProModal] = useState(false);
+  const [isGeneratingShare, setIsGeneratingShare] = useState(false);
+
+  const isPro = (user?.tier === 'premium' || user?.tier === 'admin') && !user?.isTierHeld;
 
   const flatListRef = useRef<FlatList<MediaItemData>>(null);
   const videoRef = useRef<VideoRef | null>(null);
@@ -506,7 +513,8 @@ export function MediaViewerScreen({ item, items, onClose, onToggleFavorite }: Me
   };
 
   const handleSharePublicLink = useCallback(async () => {
-    if (!activeItem) return;
+    if (!activeItem || isGeneratingShare) return;
+    setIsGeneratingShare(true);
     try {
       const res = await createMediaShare(activeItem.id);
       if (res.success && res.share_url) {
@@ -514,13 +522,30 @@ export function MediaViewerScreen({ item, items, onClose, onToggleFavorite }: Me
           message: `Watch this video on Aetheroll:\n${res.share_url}`,
           url: res.share_url,
         });
+      } else if (res.requiresUpgrade) {
+        Alert.alert(
+          'Pro Feature',
+          'Public link sharing is exclusively available for Pro members.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Activate Pro', onPress: () => setShowProModal(true) },
+          ]
+        );
       } else {
-        Alert.alert('Sharing Notice', res.error || 'Unable to generate public share link');
+        Alert.alert(
+          'Sharing Unavailable',
+          res.error || 'Unable to generate public share link right now. Please try again later.'
+        );
       }
-    } catch (err: any) {
-      Alert.alert('Sharing Notice', err?.message || 'Failed to open share dialog');
+    } catch {
+      Alert.alert(
+        'Sharing Unavailable',
+        'Unable to open the share dialog. Please check your connection and try again.'
+      );
+    } finally {
+      setIsGeneratingShare(false);
     }
-  }, [activeItem]);
+  }, [activeItem, isGeneratingShare]);
 
   const handleMomentumScrollEnd = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const offsetX = e.nativeEvent.contentOffset.x;
@@ -742,13 +767,20 @@ export function MediaViewerScreen({ item, items, onClose, onToggleFavorite }: Me
               </TouchableOpacity>
             )}
 
-            <TouchableOpacity
-              style={styles.frostedIconButton}
-              activeOpacity={0.7}
-              onPress={handleSharePublicLink}
-            >
-              <Share2 size={18} color="#FFFFFF" strokeWidth={2.2} />
-            </TouchableOpacity>
+            {isPro && (
+              <TouchableOpacity
+                style={[styles.frostedIconButton, isGeneratingShare && { opacity: 0.85 }]}
+                activeOpacity={0.7}
+                onPress={handleSharePublicLink}
+                disabled={isGeneratingShare}
+              >
+                {isGeneratingShare ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Share2 size={18} color="#FFFFFF" strokeWidth={2.2} />
+                )}
+              </TouchableOpacity>
+            )}
 
             {isVideo && (
               <TouchableOpacity
@@ -900,6 +932,28 @@ export function MediaViewerScreen({ item, items, onClose, onToggleFavorite }: Me
             </View>
           </Animated.View>
         )}
+
+        {/* Pro Membership Modal */}
+        <Modal
+          visible={showProModal}
+          animationType="slide"
+          statusBarTranslucent={true}
+          onRequestClose={() => setShowProModal(false)}
+        >
+          <PremiumMembershipScreen
+            userTier={user?.tier || 'free'}
+            isTierHeld={user?.isTierHeld}
+            tierHoldReason={user?.tierHoldReason}
+            onBack={() => setShowProModal(false)}
+            onRedeemSuccess={(newTier) => {
+              setShowProModal(false);
+              if (onUserUpdated) {
+                const updatedUser = user ? { ...user, tier: newTier, isTierHeld: false, tierHoldReason: null } : { tier: newTier, isTierHeld: false, tierHoldReason: null };
+                onUserUpdated(updatedUser);
+              }
+            }}
+          />
+        </Modal>
       </View>
     </Modal>
   );

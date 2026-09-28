@@ -16,8 +16,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   ChevronRight,
   FolderHeart,
-  Images,
-  Cloud,
   RefreshCw,
   Smartphone,
   Sparkles,
@@ -30,12 +28,14 @@ import {
   SlidersHorizontal,
   ArrowLeft,
   HardDrive,
+  Lock,
 } from 'lucide-react-native';
 import { ChannelItem } from '../components/ChannelPickerSheet';
 import { AppVersionInfo, AndroidRelease, subscribeToUpdateProgress } from '../services/appUpdateService';
 import { getApiBaseUrl, setApiBaseUrl } from '../services/api';
 import { UploadStrategyRouter, UploadEngineMode } from '../services/backup';
 import { StreamingStrategyRouter, StreamingEngineMode, NativeStreamServer } from '../services/streaming';
+import { PremiumMembershipScreen } from './PremiumMembershipScreen';
 
 export interface SettingsScreenProps {
   user: {
@@ -43,6 +43,10 @@ export interface SettingsScreenProps {
     displayName?: string;
     username?: string;
     phone?: string;
+    tier?: 'free' | 'premium' | 'admin';
+    tierExpiresAt?: string | null;
+    isTierHeld?: boolean;
+    tierHoldReason?: string | null;
   } | null;
   activeChannel: ChannelItem | null;
   mediaCount: number;
@@ -57,6 +61,7 @@ export interface SettingsScreenProps {
   onCheckForUpdates: () => void;
   onDownloadUpdate: (release: AndroidRelease) => void;
   onLogout: () => void;
+  onUserUpdated?: (user: any) => void;
 }
 
 function formatBytes(bytes: number): string {
@@ -83,6 +88,7 @@ export function SettingsScreen({
   onCheckForUpdates,
   onDownloadUpdate,
   onLogout,
+  onUserUpdated,
 }: SettingsScreenProps) {
   const insets = useSafeAreaInsets();
   const [showAdvancedModal, setShowAdvancedModal] = useState(false);
@@ -92,10 +98,14 @@ export function SettingsScreen({
   const [liveStatusText, setLiveStatusText] = useState<string | null>(null);
   const [uploadEngineMode, setUploadEngineMode] = useState<UploadEngineMode>(UploadStrategyRouter.getEngineMode());
   const [showEngineModal, setShowEngineModal] = useState(false);
+  const [showProModal, setShowProModal] = useState(false);
   const [streamingEngineMode, setStreamingEngineMode] = useState<StreamingEngineMode>(StreamingStrategyRouter.getEngineMode());
   const [showStreamingModal, setShowStreamingModal] = useState(false);
   const [streamCacheSize, setStreamCacheSize] = useState<number>(0);
   const [isClearingCache, setIsClearingCache] = useState(false);
+
+  const isHeld = !!user?.isTierHeld;
+  const isPro = (user?.tier === 'premium' || user?.tier === 'admin') && !isHeld;
 
   const refreshStreamCacheSize = useCallback(async () => {
     try {
@@ -108,9 +118,22 @@ export function SettingsScreen({
 
   useEffect(() => {
     UploadStrategyRouter.init().then(setUploadEngineMode);
-    StreamingStrategyRouter.init().then(setStreamingEngineMode);
+    StreamingStrategyRouter.init().then((mode) => {
+      setStreamingEngineMode(mode);
+    });
     refreshStreamCacheSize();
   }, [refreshStreamCacheSize]);
+
+  useEffect(() => {
+    if (!isPro) {
+      if (streamingEngineMode !== 'direct') {
+        StreamingStrategyRouter.setEngineMode('direct').then(() => setStreamingEngineMode('direct'));
+      }
+      if (uploadEngineMode !== 'direct') {
+        UploadStrategyRouter.setEngineMode('direct').then(() => setUploadEngineMode('direct'));
+      }
+    }
+  }, [isPro, streamingEngineMode, uploadEngineMode]);
 
   useEffect(() => {
     if (showAdvancedModal) {
@@ -225,6 +248,56 @@ export function SettingsScreen({
         </View>
       </View>
 
+      {/* Pro Membership Banner */}
+      <TouchableOpacity
+        style={[styles.proBannerCard, isHeld && { borderColor: '#FDE68A', backgroundColor: '#FFFDF5' }]}
+        activeOpacity={0.8}
+        onPress={() => setShowProModal(true)}
+      >
+        <View style={styles.proBannerLeft}>
+          <View
+            style={[
+              styles.proIconCircle,
+              isHeld ? { backgroundColor: '#F59E0B' } : isPro ? { backgroundColor: '#7C3AED' } : {},
+            ]}
+          >
+            <Sparkles size={18} color="#FFFFFF" />
+          </View>
+          <View style={styles.proBannerTextCol}>
+            <View style={styles.proTagRow}>
+              <Text style={styles.proBannerTitle}>
+                {isHeld ? 'Pro Access On Hold' : isPro ? 'Pro Membership Active' : 'Aetheroll Pro'}
+              </Text>
+              <View
+                style={[
+                  styles.proBadge,
+                  isHeld && { backgroundColor: '#FFFBEB', borderColor: '#FDE68A' },
+                  !isHeld && isPro && { backgroundColor: '#ECFDF5', borderColor: '#A7F3D0' },
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.proBadgeText,
+                    isHeld && { color: '#D97706' },
+                    !isHeld && isPro && { color: '#059669' },
+                  ]}
+                >
+                  {isHeld ? '⏸ ON HOLD' : isPro ? '✓ ACTIVE' : '⚡ PRO'}
+                </Text>
+              </View>
+            </View>
+            <Text style={styles.proBannerSubtitle}>
+              {isHeld
+                ? (user?.tierHoldReason ? `Hold: ${user.tierHoldReason}` : 'Pro access paused. Tap for details.')
+                : isPro
+                ? 'All Pro features unlocked'
+                : 'Tap to redeem code or upgrade'}
+            </Text>
+          </View>
+        </View>
+        <ChevronRight size={18} color={isHeld ? '#D97706' : '#9333EA'} />
+      </TouchableOpacity>
+
       {/* Section 1: Cloud Storage & Sync */}
       <View style={styles.section}>
         <Text style={styles.sectionHeader}>Cloud Storage & Sync</Text>
@@ -244,40 +317,13 @@ export function SettingsScreen({
                 {activeChannel?.name || 'Saved Messages (Private Cloud)'}
               </Text>
             </View>
-            <ChevronRight size={18} color="#94A3B8" />
+            <View style={styles.albumRightRow}>
+              <View style={styles.badgePill}>
+                <Text style={styles.badgeText}>{mediaCount} items</Text>
+              </View>
+              <ChevronRight size={18} color="#94A3B8" />
+            </View>
           </TouchableOpacity>
-
-          <View style={styles.divider} />
-
-          {/* Indexed Media Count */}
-          <View style={styles.rowItem}>
-            <View style={[styles.iconBox, { backgroundColor: '#FAF5FF' }]}>
-              <Images size={18} color="#9333EA" />
-            </View>
-            <View style={styles.rowTextCol}>
-              <Text style={styles.rowLabel}>Indexed Media</Text>
-              <Text style={styles.rowSubtitle}>Photos & videos cached locally</Text>
-            </View>
-            <View style={styles.badgePill}>
-              <Text style={styles.badgeText}>{mediaCount} items</Text>
-            </View>
-          </View>
-
-          <View style={styles.divider} />
-
-          {/* Storage Capacity */}
-          <View style={styles.rowItem}>
-            <View style={[styles.iconBox, { backgroundColor: '#F0F9FF' }]}>
-              <Cloud size={18} color="#0284C7" />
-            </View>
-            <View style={styles.rowTextCol}>
-              <Text style={styles.rowLabel}>Cloud Storage</Text>
-              <Text style={styles.rowSubtitle}>Telegram personal cloud</Text>
-            </View>
-            <View style={[styles.badgePill, { backgroundColor: '#ECFDF5', borderColor: '#A7F3D0' }]}>
-              <Text style={[styles.badgeText, { color: '#059669' }]}>Unlimited</Text>
-            </View>
-          </View>
 
           <View style={styles.divider} />
 
@@ -556,40 +602,74 @@ export function SettingsScreen({
                 mode: 'direct' as UploadEngineMode,
                 title: 'Direct Telegram MTProto (Default)',
                 desc: 'Uploads 512KB parts directly to Telegram Data Centers for maximum throughput and zero server overhead.',
+                isProOnly: false,
               },
               {
                 mode: 'auto' as UploadEngineMode,
-                title: 'Auto (Direct + Fallback)',
+                title: 'Auto (Direct + Fallback) (Pro ⚡)',
                 desc: 'Direct MTProto upload with automatic seamless fallback to Cloudflare proxy if blocked.',
+                isProOnly: true,
               },
               {
                 mode: 'cloudflare' as UploadEngineMode,
-                title: 'Cloudflare Proxy',
-                desc: 'Routes chunked uploads through Cloudflare Durable Objects intermediate proxy.',
+                title: 'Cloudflare Proxy (Pro ⚡)',
+                desc: 'Routes chunked uploads through Cloudflare edge proxy for maximum speed and stability.',
+                isProOnly: true,
               },
             ]).map((opt) => {
               const isSelected = uploadEngineMode === opt.mode;
+              const isDisabled = opt.isProOnly && !isPro;
               return (
                 <TouchableOpacity
                   key={opt.mode}
                   style={[
                     styles.engineOptionCard,
                     isSelected && styles.engineOptionCardSelected,
+                    isDisabled && styles.engineOptionCardDisabled,
                   ]}
-                  activeOpacity={0.7}
+                  activeOpacity={isDisabled ? 0.9 : 0.7}
                   onPress={async () => {
+                    if (isDisabled) {
+                      Alert.alert(
+                        isHeld ? 'Pro Subscription On Hold' : 'Pro Feature',
+                        isHeld
+                          ? 'Your Pro subscription is currently paused. Please contact support to reactivate your access.'
+                          : `${opt.title} is exclusively available for Pro members.`,
+                        [
+                          { text: 'OK', style: 'cancel' },
+                          !isHeld
+                            ? {
+                                text: 'Activate Pro',
+                                onPress: () => {
+                                  setShowEngineModal(false);
+                                  setShowProModal(true);
+                                },
+                              }
+                            : null,
+                        ].filter(Boolean) as any
+                      );
+                      return;
+                    }
                     await UploadStrategyRouter.setEngineMode(opt.mode);
                     setUploadEngineMode(opt.mode);
                     setShowEngineModal(false);
                   }}
                 >
                   <View style={styles.engineOptionHeader}>
-                    <Text style={[styles.engineOptionTitle, isSelected && { color: '#2563EB' }]}>
-                      {opt.title}
-                    </Text>
+                    <View style={styles.engineOptionTitleRow}>
+                      <Text style={[styles.engineOptionTitle, isSelected && { color: '#2563EB' }, isDisabled && { color: '#94A3B8' }]}>
+                        {opt.title}
+                      </Text>
+                      {isDisabled && (
+                        <View style={styles.proLockBadge}>
+                          <Lock size={11} color="#94A3B8" />
+                          <Text style={styles.proLockBadgeText}>PRO</Text>
+                        </View>
+                      )}
+                    </View>
                     {isSelected && <CheckCircle2 size={18} color="#2563EB" />}
                   </View>
-                  <Text style={styles.engineOptionDesc}>{opt.desc}</Text>
+                  <Text style={[styles.engineOptionDesc, isDisabled && { color: '#94A3B8' }]}>{opt.desc}</Text>
                 </TouchableOpacity>
               );
             })}
@@ -631,40 +711,74 @@ export function SettingsScreen({
                 mode: 'direct' as StreamingEngineMode,
                 title: 'Direct Telegram MTProto (Default)',
                 desc: 'Streams parts directly from Telegram Data Centers over client session leases (Zero server egress).',
-              },
-              {
-                mode: 'cloudflare' as StreamingEngineMode,
-                title: 'Cloudflare Turbo Edge',
-                desc: 'Streams via Cloudflare global edge network with HTTP byte-range seeking, HLS caching, and instant startup.',
+                isProOnly: false,
               },
               {
                 mode: 'auto' as StreamingEngineMode,
-                title: 'Auto Hybrid',
+                title: 'Auto Hybrid (Pro ⚡)',
                 desc: 'Attempts Direct Telegram MTProto first, falling back to Cloudflare Turbo Edge if unreachable.',
+                isProOnly: true,
+              },
+              {
+                mode: 'cloudflare' as StreamingEngineMode,
+                title: 'Cloudflare Turbo Edge (Pro ⚡)',
+                desc: 'Streams via Cloudflare global edge network with HTTP byte-range seeking, HLS caching, and instant startup.',
+                isProOnly: true,
               },
             ]).map((opt) => {
               const isSelected = streamingEngineMode === opt.mode;
+              const isDisabled = opt.isProOnly && !isPro;
               return (
                 <TouchableOpacity
                   key={opt.mode}
                   style={[
                     styles.engineOptionCard,
                     isSelected && styles.engineOptionCardSelected,
+                    isDisabled && styles.engineOptionCardDisabled,
                   ]}
-                  activeOpacity={0.7}
+                  activeOpacity={isDisabled ? 0.9 : 0.7}
                   onPress={async () => {
+                    if (isDisabled) {
+                      Alert.alert(
+                        isHeld ? 'Pro Subscription On Hold' : 'Pro Feature',
+                        isHeld
+                          ? 'Your Pro subscription is currently paused. Please contact support to reactivate your access.'
+                          : `${opt.title} is exclusively available for Pro members.`,
+                        [
+                          { text: 'OK', style: 'cancel' },
+                          !isHeld
+                            ? {
+                                text: 'Activate Pro',
+                                onPress: () => {
+                                  setShowStreamingModal(false);
+                                  setShowProModal(true);
+                                },
+                              }
+                            : null,
+                        ].filter(Boolean) as any
+                      );
+                      return;
+                    }
                     await StreamingStrategyRouter.setEngineMode(opt.mode);
                     setStreamingEngineMode(opt.mode);
                     setShowStreamingModal(false);
                   }}
                 >
                   <View style={styles.engineOptionHeader}>
-                    <Text style={[styles.engineOptionTitle, isSelected && { color: '#4F46E5' }]}>
-                      {opt.title}
-                    </Text>
+                    <View style={styles.engineOptionTitleRow}>
+                      <Text style={[styles.engineOptionTitle, isSelected && { color: '#4F46E5' }, isDisabled && { color: '#94A3B8' }]}>
+                        {opt.title}
+                      </Text>
+                      {isDisabled && (
+                        <View style={styles.proLockBadge}>
+                          <Lock size={11} color="#94A3B8" />
+                          <Text style={styles.proLockBadgeText}>PRO</Text>
+                        </View>
+                      )}
+                    </View>
                     {isSelected && <CheckCircle2 size={18} color="#4F46E5" />}
                   </View>
-                  <Text style={styles.engineOptionDesc}>{opt.desc}</Text>
+                  <Text style={[styles.engineOptionDesc, isDisabled && { color: '#94A3B8' }]}>{opt.desc}</Text>
                 </TouchableOpacity>
               );
             })}
@@ -680,7 +794,7 @@ export function SettingsScreen({
         onRequestClose={() => setShowAdvancedModal(false)}
       >
         <View style={[styles.advancedModalContainer, { paddingTop: insets.top }]}>
-          <StatusBar barStyle="dark-content" translucent={true} />
+          <StatusBar barStyle="dark-content" />
           {/* Header */}
           <View style={styles.advancedHeader}>
             <TouchableOpacity
@@ -829,6 +943,33 @@ export function SettingsScreen({
           </ScrollView>
         </View>
       </Modal>
+
+      {/* Pro Membership Full-Screen Modal */}
+      <Modal
+        visible={showProModal}
+        animationType="slide"
+        statusBarTranslucent={true}
+        onRequestClose={() => setShowProModal(false)}
+      >
+        <PremiumMembershipScreen
+          userTier={user?.tier || 'free'}
+          isTierHeld={user?.isTierHeld}
+          tierHoldReason={user?.tierHoldReason}
+          onBack={() => setShowProModal(false)}
+          onRedeemSuccess={async (newTier) => {
+            setShowProModal(false);
+            // Default Pro setup: Cloudflare Turbo for streaming + Direct for uploads
+            await StreamingStrategyRouter.setEngineMode('cloudflare');
+            await UploadStrategyRouter.setEngineMode('direct');
+            setStreamingEngineMode('cloudflare');
+            setUploadEngineMode('direct');
+            if (onUserUpdated) {
+              const updatedUser = user ? { ...user, tier: newTier, isTierHeld: false, tierHoldReason: null } : { tier: newTier, isTierHeld: false, tierHoldReason: null };
+              onUserUpdated(updatedUser);
+            }
+          }}
+        />
+      </Modal>
     </ScrollView>
   );
 }
@@ -872,6 +1013,67 @@ const styles = StyleSheet.create({
     shadowRadius: 6,
     elevation: 2,
     marginBottom: 4,
+  },
+  proBannerCard: {
+    backgroundColor: '#FAF5FF',
+    borderRadius: 18,
+    padding: 14,
+    borderWidth: 1.5,
+    borderColor: '#E9D5FF',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 10,
+    marginBottom: 4,
+    shadowColor: '#7C3AED',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  proBannerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    gap: 12,
+  },
+  proIconCircle: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    backgroundColor: '#7C3AED',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  proBannerTextCol: {
+    flex: 1,
+    gap: 2,
+  },
+  proTagRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  proBannerTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#581C87',
+  },
+  proBadge: {
+    backgroundColor: '#7E22CE',
+    paddingHorizontal: 6,
+    paddingVertical: 1.5,
+    borderRadius: 5,
+  },
+  proBadgeText: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#FFFFFF',
+  },
+  proBannerSubtitle: {
+    fontSize: 11,
+    color: '#6B21A8',
+    lineHeight: 15,
   },
   avatarCircle: {
     width: 52,
@@ -968,6 +1170,11 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#64748B',
     marginTop: 2,
+  },
+  albumRightRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   divider: {
     height: 1,
@@ -1185,11 +1392,38 @@ const styles = StyleSheet.create({
     backgroundColor: '#EFF6FF',
     borderColor: '#3B82F6',
   },
+  engineOptionCardDisabled: {
+    backgroundColor: '#F8FAFC',
+    borderColor: '#E2E8F0',
+    opacity: 0.6,
+  },
   engineOptionHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     marginBottom: 4,
+  },
+  engineOptionTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flexShrink: 1,
+  },
+  proLockBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: '#F1F5F9',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  proLockBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#64748B',
   },
   engineOptionTitle: {
     fontSize: 14,

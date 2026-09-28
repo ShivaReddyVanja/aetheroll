@@ -8,12 +8,19 @@ import { SlidingWindowRatePacer } from "../common/ratePacer";
 import { TelemetryLogger } from "../telemetry/telemetryLogger";
 import { generateCompositeSessionToken } from "../../lib/auth";
 
-function createMockD1(result: any = null) {
+function createMockD1(result: any = null, userRow: any = { tier: "premium", is_tier_held: 0, tier_expires_at: null }) {
   return {
     prepare: (sql: string) => ({
       bind: (...params: any[]) => ({
-        first: async () => result,
-        all: async () => ({ results: result ? [result] : [] }),
+        first: async () => {
+          if (sql.includes("FROM users")) {
+            return userRow;
+          }
+          return result;
+        },
+        all: async () => ({
+          results: sql.includes("FROM users") ? (userRow ? [userRow] : []) : result ? [result] : [],
+        }),
         run: async () => ({ meta: { changes: 1 } }),
       }),
     }),
@@ -146,5 +153,32 @@ describe("⚡ DO Stream Engine Suite", () => {
     const res = await handler.handleStream(req, { DB: mockDb }, clientManager, locationResolver, segmentFetcher, pacer, logger);
     assert.equal(res.status, 416);
     assert.equal(res.headers.get("Content-Range"), "bytes */1000");
+  });
+
+  it("7. StreamHandler should reject with 403 when user tier is on hold", async () => {
+    const handler = new StreamHandler();
+    const clientManager = new ClientSessionManager();
+    const locationResolver = new MediaLocationResolver();
+    const segmentFetcher = new ParallelSegmentFetcher();
+    const pacer = new SlidingWindowRatePacer();
+    const logger = new TelemetryLogger(null, {});
+
+    const { sessionToken } = generateCompositeSessionToken();
+    clientManager.userClients.set(sessionToken, {
+      client: { connected: true, __userId: "user_1" },
+      lastUsed: Date.now(),
+    });
+
+    const mockDb = createMockD1(null, { tier: "premium", is_tier_held: 1, tier_expires_at: null });
+
+    const req = new Request("https://example.com/stream?media_id=item_123", {
+      headers: { "x-tg-session": sessionToken },
+    });
+
+    const res = await handler.handleStream(req, { DB: mockDb }, clientManager, locationResolver, segmentFetcher, pacer, logger);
+    assert.equal(res.status, 403);
+    const body: any = await res.json();
+    assert.equal(body.error, "UPGRADE_REQUIRED");
+    assert.match(body.message, /on hold/i);
   });
 });

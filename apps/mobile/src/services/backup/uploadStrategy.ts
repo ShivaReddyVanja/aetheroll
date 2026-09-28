@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { getUserData } from '../api';
 import { BackupItem } from './types';
 import { UploadResult, FloodWaitError, XhrUploader } from './xhrUploader';
 import { ChunkedUploader } from './chunkedUploader';
@@ -68,7 +69,11 @@ export class UploadStrategyRouter {
     onProgress?: (uploadedBytes: number, totalBytes: number, percent: number) => void
   ): Promise<UploadResult> {
     await this.ensureInitialized();
-    const mode = currentEngineMode;
+
+    const user = await getUserData().catch(() => null);
+    const isPro = (user?.tier === 'premium' || user?.tier === 'admin') && !user?.isTierHeld;
+    const mode = isPro ? currentEngineMode : 'direct';
+
     console.log(`[UploadStrategy] 🔀 Dispatching "${item.fileName}" using engine mode: [${mode.toUpperCase()}]`);
 
     if (mode === 'cloudflare') {

@@ -41,6 +41,24 @@ export class ShareHandler {
 
       const db = getDb(effectiveEnv?.DB);
 
+      // Check tier entitlement: only Pro/Admin users can create public shares
+      const userRow = await db.get(`SELECT tier, tier_expires_at, is_tier_held FROM users WHERE id = ?`, [userId]);
+      const isPro = userRow && (userRow.tier === "premium" || userRow.tier === "admin");
+      const isExpired = userRow?.tier_expires_at && new Date(userRow.tier_expires_at).getTime() < Date.now();
+      const isHeld = userRow?.is_tier_held === 1;
+
+      if (!isPro || isExpired || isHeld) {
+        return new Response(
+          JSON.stringify({
+            error: "UPGRADE_REQUIRED",
+            message: isHeld
+              ? "Pro access is currently on hold. Please contact support."
+              : "Public link sharing is exclusively available to Pro members.",
+          }),
+          { status: 403, headers: { "Content-Type": "application/json" } }
+        );
+      }
+
       // 1. Fetch media item — verify ownership via gallery_channels
       const item = await db.get(
         `SELECT m.*, c.telegram_channel_id
@@ -62,7 +80,8 @@ export class ShareHandler {
 
       // 2. Return existing active share if one already exists
       const existingShare = await db.get(
-        `SELECT * FROM media_shares
+        `SELECT id, media_id, title, mime_type, file_size_bytes, duration_seconds, expires_at, created_at
+         FROM media_shares
          WHERE user_id = ? AND media_id = ? AND is_revoked = 0
            AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
          ORDER BY created_at DESC LIMIT 1`,
@@ -73,7 +92,16 @@ export class ShareHandler {
         return new Response(
           JSON.stringify({
             success: true,
-            share: existingShare,
+            share: {
+              id: existingShare.id,
+              media_id: existingShare.media_id,
+              title: existingShare.title,
+              mime_type: existingShare.mime_type,
+              file_size_bytes: existingShare.file_size_bytes,
+              duration_seconds: existingShare.duration_seconds,
+              expires_at: existingShare.expires_at,
+              created_at: existingShare.created_at,
+            },
             share_url: `${webAppUrl}/v/${existingShare.id}`,
           }),
           { status: 200, headers: { "Content-Type": "application/json" } }
@@ -197,20 +225,12 @@ export class ShareHandler {
 
       const shareRecord = {
         id: shareId,
-        user_id: userId,
         media_id: item.id,
-        public_channel_id: publicChannelId,
-        public_message_id: publicMessageId,
-        document_id: docId,
-        access_hash: accessHash,
-        file_reference_hex: fileRefHex,
+        title: title ?? item.caption ?? null,
         mime_type: toSafeString(item.mime_type),
         file_size_bytes: toSafeNumber(item.file_size_bytes),
         duration_seconds: item.duration_seconds ?? null,
-        title: title ?? item.caption ?? null,
-        is_revoked: 0,
         expires_at: expiresAt,
-        view_count: 0,
         created_at: now,
       };
 
@@ -221,7 +241,7 @@ export class ShareHandler {
     } catch (err: any) {
       console.error("[DO:Share Error]:", err);
       return new Response(
-        JSON.stringify({ error: err.message || "Failed to create share link" }),
+        JSON.stringify({ error: "Failed to generate share link. Please try again." }),
         { status: 500, headers: { "Content-Type": "application/json" } }
       );
     }

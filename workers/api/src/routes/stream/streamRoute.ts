@@ -16,6 +16,23 @@ streamRoute.get("/", async (c) => {
   const mediaId = c.req.query("media_id");
   if (!mediaId) return c.text("media_id required", 400);
 
+  const auth = await resolveUserAuth(c);
+  if (!auth.authenticated || !auth.userId) {
+    return c.text("Unauthorized", 401);
+  }
+
+  if (!auth.isPro || auth.isTierHeld) {
+    return c.json(
+      {
+        error: "UPGRADE_REQUIRED",
+        message: auth.isTierHeld
+          ? "Pro access is currently on hold. Please contact support."
+          : "Cloudflare Edge Streaming is exclusively available for Pro members.",
+      },
+      403
+    );
+  }
+
   const candidates = extractAllSessionTokens(c);
   const token = candidates[0]?.fullToken || candidates[0]?.sessionId || getCookie(c, "tg_session") || c.req.query("session_token") || "default";
   const rangeHeader = c.req.header("range") || "full";

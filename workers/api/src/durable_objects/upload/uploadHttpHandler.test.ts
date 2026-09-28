@@ -4,12 +4,19 @@ import { UploadHttpHandler } from "./uploadHttpHandler";
 import { ClientSessionManager } from "../auth/clientSessionManager";
 import { generateCompositeSessionToken } from "../../lib/auth";
 
-function createMockD1(result: any = null) {
+function createMockD1(result: any = null, userRow: any = { tier: "premium", is_tier_held: 0, tier_expires_at: null }) {
   return {
     prepare: (sql: string) => ({
       bind: (...params: any[]) => ({
-        first: async () => result,
-        all: async () => ({ results: result ? [result] : [] }),
+        first: async () => {
+          if (sql.includes("FROM users")) {
+            return userRow;
+          }
+          return result;
+        },
+        all: async () => ({
+          results: sql.includes("FROM users") ? (userRow ? [userRow] : []) : result ? [result] : [],
+        }),
         run: async () => ({ meta: { changes: 1 } }),
       }),
     }),

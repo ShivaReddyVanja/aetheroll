@@ -67,6 +67,11 @@ sessionRoutes.get("/me", async (c) => {
       id: auth.userId,
       telegramUserId: auth.telegramUserId,
       displayName: auth.displayName,
+      tier: auth.tier || "free",
+      tierExpiresAt: auth.tierExpiresAt || null,
+      isTierHeld: auth.isTierHeld || false,
+      tierHoldReason: auth.tierHoldReason || null,
+      isAdmin: auth.isAdmin || false,
     },
   });
 });

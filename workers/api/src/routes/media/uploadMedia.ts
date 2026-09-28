@@ -12,7 +12,24 @@ import { MAX_TELEGRAM_FILE_SIZE } from "./types";
 
 export const uploadMediaRoute = new Hono();
 
-function forwardToUploadDO(c: any) {
+async function forwardToUploadDO(c: any) {
+  const auth = await resolveUserAuth(c);
+  if (!auth.authenticated || !auth.userId) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  if (!auth.isPro || auth.isTierHeld) {
+    return c.json(
+      {
+        error: "UPGRADE_REQUIRED",
+        message: auth.isTierHeld
+          ? "Pro access is currently on hold. Please contact support."
+          : "Cloudflare Turbo Uploads is exclusively available for Pro members.",
+      },
+      403
+    );
+  }
+
   const authDo = (c.env as any)?.AUTH_DO;
   if (authDo && typeof authDo.idFromName === "function") {
     const token = getCookie(c, "tg_session") || c.req.header("x-tg-session") || "default";
@@ -56,6 +73,23 @@ uploadMediaRoute.post("/upload/abort", async (c) => {
  * Directly uploads photo/video file to Telegram channel via MTProto
  */
 uploadMediaRoute.post("/upload", async (c) => {
+  const auth = await resolveUserAuth(c);
+  if (!auth.authenticated || !auth.userId) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  if (!auth.isPro || auth.isTierHeld) {
+    return c.json(
+      {
+        error: "UPGRADE_REQUIRED",
+        message: auth.isTierHeld
+          ? "Pro access is currently on hold. Please contact support."
+          : "Cloudflare Turbo Uploads is exclusively available for Pro members.",
+      },
+      403
+    );
+  }
+
   const authDo = (c.env as any)?.AUTH_DO;
   if (authDo && typeof authDo.idFromName === "function") {
     return forwardToUploadDO(c);

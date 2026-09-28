@@ -20,6 +20,10 @@ export interface AuthContext {
   sessionString?: string;
   telegramConfig?: TelegramConfig;
   isAdmin?: boolean;
+  tier?: "free" | "premium" | "admin";
+  tierExpiresAt?: string | null;
+  isTierHeld?: boolean;
+  tierHoldReason?: string | null;
   error?: string;
 }
 
@@ -155,7 +159,7 @@ export async function resolveUserAuth(c: Context): Promise<AuthContext> {
   for (const parsed of candidates) {
     try {
       const session = await db.get(
-        `SELECT u.id as user_id, u.telegram_user_id, u.display_name, u.session_string, s.expires_at
+        `SELECT u.id as user_id, u.telegram_user_id, u.display_name, u.session_string, u.tier, u.tier_expires_at, u.is_tier_held, u.tier_hold_reason, s.expires_at
          FROM user_sessions s
          JOIN users u ON u.id = s.user_id
          WHERE s.id = ? AND s.expires_at > CURRENT_TIMESTAMP`,
@@ -185,6 +189,18 @@ export async function resolveUserAuth(c: Context): Promise<AuthContext> {
           adminIds.includes(String(session.user_id));
       }
 
+      const isTierHeld = session.is_tier_held === 1;
+
+      // Check tier validity: if on hold or expired, treat as 'free'
+      let effectiveTier: "free" | "premium" | "admin" = "free";
+      if (isAdmin) {
+        effectiveTier = "admin";
+      } else if (!isTierHeld && (session.tier === "premium" || session.tier === "admin")) {
+        if (!session.tier_expires_at || new Date(session.tier_expires_at).getTime() > Date.now()) {
+          effectiveTier = session.tier;
+        }
+      }
+
       return {
         authenticated: true,
         sessionId: parsed.sessionId,
@@ -194,6 +210,11 @@ export async function resolveUserAuth(c: Context): Promise<AuthContext> {
         sessionString: decryptedSession,
         telegramConfig: config,
         isAdmin,
+        tier: effectiveTier,
+        tierExpiresAt: session.tier_expires_at || null,
+        isTierHeld,
+        tierHoldReason: session.tier_hold_reason || null,
+        isPro: effectiveTier === "premium" || effectiveTier === "admin",
       };
     } catch (err: any) {
       lastError = err?.message || "Authentication failed";
