@@ -12,6 +12,9 @@ import { tripsRouter } from "./routes/trips";
 import { billingRouter } from "./routes/billing";
 import { releasesRouter } from "./routes/releases";
 import { sharesRouter } from "./routes/shares";
+import { tierRouter } from "./routes/tier";
+import { botRouter } from "./routes/bot/botRouter";
+import { adminRouter } from "./routes/admin/adminRouter";
 
 export const app = new Hono().basePath("/api");
 
@@ -77,6 +80,9 @@ app.route("/logs", logsRouter);
 app.route("/billing", billingRouter);
 app.route("/releases", releasesRouter);
 app.route("/shares", sharesRouter);
+app.route("/tier", tierRouter);
+app.route("/bot", botRouter);
+app.route("/admin", adminRouter);
 
 import { PINWHEEL_FAVICON_SVG } from "@aetheroll/types";
 import { viewSharePageRoute } from "./routes/shares/viewSharePage";

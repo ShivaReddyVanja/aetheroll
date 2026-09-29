@@ -87,6 +87,19 @@ createShareRoute.post("/create", async (c) => {
       return c.json({ error: "Unauthorized" }, 401);
     }
 
+    // Check tier entitlement: only Pro/Admin users can create public shares
+    if (auth.tier !== "premium" && auth.tier !== "admin" && !auth.isAdmin) {
+      return c.json(
+        {
+          error: "UPGRADE_REQUIRED",
+          message: auth.isTierHeld
+            ? "Pro access is currently on hold. Please contact support."
+            : "Public link sharing is exclusively available to Pro members.",
+        },
+        403
+      );
+    }
+
     const body = await c.req.json().catch(() => ({}));
     const { media_id, title, expires_in_seconds } = body;
     if (!media_id) {
@@ -113,7 +126,8 @@ createShareRoute.post("/create", async (c) => {
 
     // 2. Return existing active share if one already exists
     const existingShare = await db.get(
-      `SELECT * FROM media_shares
+      `SELECT id, media_id, title, mime_type, file_size_bytes, duration_seconds, expires_at, created_at
+       FROM media_shares
        WHERE user_id = ? AND media_id = ? AND is_revoked = 0
          AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
        ORDER BY created_at DESC LIMIT 1`,
@@ -123,7 +137,16 @@ createShareRoute.post("/create", async (c) => {
     if (existingShare) {
       return c.json({
         success: true,
-        share: existingShare,
+        share: {
+          id: existingShare.id,
+          media_id: existingShare.media_id,
+          title: existingShare.title,
+          mime_type: existingShare.mime_type,
+          file_size_bytes: existingShare.file_size_bytes,
+          duration_seconds: existingShare.duration_seconds,
+          expires_at: existingShare.expires_at,
+          created_at: existingShare.created_at,
+        },
         share_url: `${webAppUrl}/v/${existingShare.id}`,
       });
     }
@@ -233,26 +256,18 @@ createShareRoute.post("/create", async (c) => {
 
     const shareRecord = {
       id: shareId,
-      user_id: auth.userId,
       media_id: item.id,
-      public_channel_id: publicChannelId,
-      public_message_id: publicMessageId,
-      document_id: docId,
-      access_hash: accessHash,
-      file_reference_hex: fileRefHex,
+      title: title ?? item.caption ?? null,
       mime_type: toSafeString(item.mime_type),
       file_size_bytes: toSafeNumber(item.file_size_bytes),
       duration_seconds: item.duration_seconds ?? null,
-      title: title ?? item.caption ?? null,
-      is_revoked: 0,
       expires_at: expiresAt,
-      view_count: 0,
       created_at: now,
     };
 
     return c.json({ success: true, share: shareRecord, share_url: `${webAppUrl}/v/${shareId}` });
   } catch (err: any) {
     console.error("[Share:Create Error]:", err);
-    return c.json({ error: err.message || "Failed to create share link" }, 500);
+    return c.json({ error: "Failed to generate share link. Please try again." }, 500);
   }
 });

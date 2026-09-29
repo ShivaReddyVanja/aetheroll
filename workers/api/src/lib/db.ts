@@ -131,7 +131,7 @@ export function getDb(cloudflareD1?: any): DatabaseInterface {
         const cleanParams = params.map(sanitizeD1Param);
         const stmt = cloudflareD1.prepare(sql).bind(...cleanParams);
         const res = await stmt.run();
-        const changes = res.meta?.changes ?? 0;
+        const changes = res.meta?.changes ?? res.changes ?? (res.success ? 1 : 0);
         if (options?.collector && !options?.skipBilling) {
           const readRows = res.meta?.rows_read ?? 0;
           const writeRows = res.meta?.rows_written ?? changes;

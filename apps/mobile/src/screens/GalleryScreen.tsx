@@ -536,6 +536,7 @@ export function GalleryScreen() {
           onCheckForUpdates={handleCheckForUpdates}
           onDownloadUpdate={handleDownloadUpdate}
           onLogout={handleLogout}
+          onUserUpdated={setUser}
         />
       ) : (
         <View style={styles.mainContent}>
@@ -647,6 +648,8 @@ export function GalleryScreen() {
         <MediaViewerScreen
           item={selectedMedia}
           items={displayedItems}
+          user={user}
+          onUserUpdated={setUser}
           onClose={() => setSelectedMedia(null)}
           onToggleFavorite={handleToggleFavorite}
         />

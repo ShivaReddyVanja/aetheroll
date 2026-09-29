@@ -8,6 +8,7 @@ import {
   saveStoredApiBaseUrl,
   getStoredApiBaseUrl,
 } from './secureStorage';
+export { getUserData, saveUserData };
 import { DEFAULT_API_URL } from '../config';
 
 let sessionToken: string | null = null;
@@ -196,7 +197,11 @@ export function getAuthImageHeaders(): Record<string, string> | undefined {
   };
 }
 
-export async function createMediaShare(mediaId: string, title?: string, expiresInSeconds?: number): Promise<{ success: boolean; share?: any; share_url?: string; error?: string }> {
+export async function createMediaShare(
+  mediaId: string,
+  title?: string,
+  expiresInSeconds?: number
+): Promise<{ success: boolean; share?: any; share_url?: string; error?: string; requiresUpgrade?: boolean }> {
   try {
     const res = await apiFetch('/api/shares/create', {
       method: 'POST',
@@ -206,9 +211,23 @@ export async function createMediaShare(mediaId: string, title?: string, expiresI
         expires_in_seconds: expiresInSeconds,
       }),
     });
-    return await res.json();
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 403 || data?.error === 'UPGRADE_REQUIRED') {
+      return {
+        success: false,
+        requiresUpgrade: true,
+        error: data?.message || 'Public link sharing is exclusively available to Pro members.',
+      };
+    }
+    if (!res.ok || !data?.success) {
+      return {
+        success: false,
+        error: data?.error || data?.message || 'Unable to generate public share link right now.',
+      };
+    }
+    return data;
   } catch (err: any) {
-    return { success: false, error: err.message || 'Failed to create share link' };
+    return { success: false, error: 'Network error while generating share link.' };
   }
 }
 
@@ -231,4 +250,47 @@ export async function revokeMediaShare(shareId: string): Promise<{ success: bool
     return { success: false, error: err.message || 'Failed to revoke share link' };
   }
 }
+
+export async function redeemActivationCode(code: string): Promise<{ success: boolean; tier?: string; tierExpiresAt?: string | null; error?: string }> {
+  try {
+    const res = await apiFetch('/api/tier/redeem', {
+      method: 'POST',
+      body: JSON.stringify({ code }),
+    });
+    const data = await res.json();
+    if (res.ok && data.success) {
+      const currentUser = await getUserData();
+      if (currentUser) {
+        currentUser.tier = data.tier;
+        currentUser.tierExpiresAt = data.tierExpiresAt;
+        await saveUserData(currentUser);
+      }
+      return data;
+    }
+    return { success: false, error: data.error || 'Failed to redeem code' };
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Network error while redeeming code' };
+  }
+}
+
+export async function getTierStatus(): Promise<{
+  authenticated: boolean;
+  tier?: string;
+  tierExpiresAt?: string | null;
+  isTierHeld?: boolean;
+  tierHoldReason?: string | null;
+  isPro?: boolean;
+  error?: string;
+}> {
+  try {
+    const res = await apiFetch('/api/tier/status');
+    if (res.ok) {
+      return await res.json();
+    }
+    return { authenticated: false };
+  } catch (err: any) {
+    return { authenticated: false, error: err.message };
+  }
+}
+
 

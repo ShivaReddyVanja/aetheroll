@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { getMediaStreamUrl, getSessionToken } from '../api';
+import { getMediaStreamUrl, getSessionToken, getUserData } from '../api';
 import { DirectTelegramStreamer } from './directTelegramStreamer';
 
 export type StreamingEngineMode = 'cloudflare' | 'direct' | 'auto';
@@ -111,6 +111,11 @@ export class StreamingStrategyRouter {
       return { uri: item.localUri, isDirect: true };
     }
 
+    // Determine user tier entitlements
+    const user = await getUserData().catch(() => null);
+    const isPro = (user?.tier === 'premium' || user?.tier === 'admin') && !user?.isTierHeld;
+    const effectiveMode: StreamingEngineMode = isPro ? currentStreamingMode : 'direct';
+
     // Normalize telegramMessageId / channelId / sizeBytes from item or local database
     let telegramMessageId: number | undefined = item.telegramMessageId ?? item.telegram_message_id;
     let channelId: string | undefined = item.channelId ?? item.channel_id;
@@ -140,7 +145,7 @@ export class StreamingStrategyRouter {
     };
 
     // 2. Direct Telegram MTProto in-flight streaming
-    if (currentStreamingMode === 'direct') {
+    if (effectiveMode === 'direct') {
       if (!telegramMessageId) {
         console.warn(`[StreamingEngine] ⚠️ [DIRECT MODE] Media #${item.id} has no Telegram message ID — falling back to Cloudflare Edge`);
         return this.getCloudflareStreamSource(item.id);
@@ -160,7 +165,7 @@ export class StreamingStrategyRouter {
     }
 
     // 3. Auto Hybrid mode (Try direct MTProto in-flight stream with Cloudflare fallback)
-    if (currentStreamingMode === 'auto' && telegramMessageId) {
+    if (effectiveMode === 'auto' && telegramMessageId) {
       try {
         console.log(`[StreamingEngine] 🔀 [AUTO MODE] Attempting Direct Telegram MTProto stream for media #${item.id} (msg #${telegramMessageId})...`);
         const directInfo = await DirectTelegramStreamer.prepareDirectStream(normalizedItem);
@@ -177,7 +182,7 @@ export class StreamingStrategyRouter {
       }
     }
 
-    // 4. Cloudflare Turbo Edge mode (Default)
+    // 4. Cloudflare Turbo Edge mode (Default for Pro)
     console.log(`[StreamingEngine] ⚡ [CLOUDFLARE MODE] Streaming media #${item.id} via Cloudflare Turbo Edge`);
     const cfSource = this.getCloudflareStreamSource(item.id);
     console.log(`[StreamingEngine] ⚡ [CLOUDFLARE MODE] Stream URL: ${cfSource.uri}`);
