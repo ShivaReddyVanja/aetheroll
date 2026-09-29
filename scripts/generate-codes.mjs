@@ -75,6 +75,24 @@ function generateReadableCode(prefix) {
 
 function main() {
   const opts = parseArgs();
+
+  // Validate prefix
+  const cleanPrefix = (opts.prefix || 'PRO').trim().toUpperCase();
+  if (!/^[A-Z0-9\-_]{1,32}$/.test(cleanPrefix)) {
+    console.error('❌ Error: --prefix must contain only alphanumeric characters, dashes, and underscores (max 32 chars).');
+    process.exit(1);
+  }
+  opts.prefix = cleanPrefix;
+
+  // Validate tier
+  const allowedTiers = ['premium', 'free'];
+  const cleanTier = (opts.tier || 'premium').toLowerCase().trim();
+  if (!allowedTiers.includes(cleanTier)) {
+    console.error(`❌ Error: --tier must be one of: ${allowedTiers.join(', ')}`);
+    process.exit(1);
+  }
+  opts.tier = cleanTier;
+
   const codes = [];
 
   for (let i = 0; i < opts.count; i++) {

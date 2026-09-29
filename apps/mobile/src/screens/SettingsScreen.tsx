@@ -125,7 +125,8 @@ export function SettingsScreen({
   }, [refreshStreamCacheSize]);
 
   useEffect(() => {
-    if (!isPro) {
+    // Only enforce fallback to direct mode once user profile and tier data has loaded
+    if (user?.tier !== undefined && !isPro) {
       if (streamingEngineMode !== 'direct') {
         StreamingStrategyRouter.setEngineMode('direct').then(() => setStreamingEngineMode('direct'));
       }
@@ -133,7 +134,7 @@ export function SettingsScreen({
         UploadStrategyRouter.setEngineMode('direct').then(() => setUploadEngineMode('direct'));
       }
     }
-  }, [isPro, streamingEngineMode, uploadEngineMode]);
+  }, [isPro, user?.tier, streamingEngineMode, uploadEngineMode]);
 
   useEffect(() => {
     if (showAdvancedModal) {

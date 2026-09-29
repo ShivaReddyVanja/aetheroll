@@ -27,12 +27,12 @@
 ## Actionable Fix Plan (For Future Reference)
 
 ### Step 1: DC-Aware MTProto Chunk Fetching
-* Update `mediaLocationResolver.ts` to return both `location` and `dcId` (extracted from `doc.dcId` / `photo.dcId`).
+* Update `mediaLocationResolver.ts` to obtain the DC ID on both full-message and database fast-paths (where only document ID, access hash, and file reference are available), and ensure the resolver returns and caches `dcId` alongside `location`.
 * In `parallelSegmentFetcher.ts`:
   * Initialize an MTProto sender via `client.getSender(dcId)`.
   * Dispatch requests using `client.invokeWithSender(req, sender)`.
   * Catch `FileMigrateError` / `FILE_MIGRATE_<dcId>`, update sender via `client.getSender(newDc)`, and retry.
-  * Guard all invoke calls (including retries) with a strict timeout (e.g. 5000ms `Promise.race`).
+  * Guard invoke calls with a strict caller wait timeout (e.g. 5000ms `Promise.race`), noting that the timeout limits caller wait duration; ensure timed-out requests abort their local listeners or cancel in-flight socket requests before retrying.
 
 ### Step 2: Request-Scoped Abort Isolation
 * Replace `this.streamAbortController` in `streamHandler.ts` with a per-request `AbortController`.

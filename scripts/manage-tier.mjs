@@ -67,7 +67,7 @@ function buildUserWhereClause(identifier) {
     return `(telegram_user_id = ${clean} OR id = '${clean}')`;
   }
   const escaped = clean.replace(/'/g, "''");
-  return `(id = '${escaped}' OR display_name LIKE '%${escaped}%')`;
+  return `(id = '${escaped}' OR display_name = '${escaped}')`;
 }
 
 function main() {
