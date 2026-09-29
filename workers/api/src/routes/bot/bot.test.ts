@@ -233,6 +233,7 @@ describe("🤖 Telegram Bot & Admin Tier Management Suite", () => {
           }),
         },
         TELEGRAM_BOT_TOKEN: "mock_test_bot_token",
+        TELEGRAM_TEST_MODE: "true",
         ADMIN_TELEGRAM_IDS: "1139540899",
       };
 

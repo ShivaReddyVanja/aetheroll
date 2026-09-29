@@ -439,9 +439,20 @@ export class UploadWebSocketHandler {
             }
 
             // Strict server-side tier gate: only active, un-held Pro/Admin users can upload through Cloudflare Turbo WS
-            const userRow = await db.get(`SELECT tier, tier_expires_at, is_tier_held FROM users WHERE id = ?`, [session.user_id]);
-            const isPro = userRow && (userRow.tier === "premium" || userRow.tier === "admin");
-            const isExpired = userRow?.tier_expires_at && new Date(userRow.tier_expires_at).getTime() < Date.now();
+            const userRow = await db.get(`SELECT telegram_user_id, tier, tier_expires_at, is_tier_held FROM users WHERE id = ?`, [session.user_id]);
+            const adminIdsStr =
+              envObj?.ADMIN_TELEGRAM_USER_IDS ||
+              envObj?.ADMIN_TELEGRAM_IDS ||
+              process.env?.ADMIN_TELEGRAM_USER_IDS ||
+              process.env?.ADMIN_TELEGRAM_IDS ||
+              "";
+            const adminIds = adminIdsStr ? adminIdsStr.split(",").map((s: string) => s.trim()).filter(Boolean) : [];
+            const isAdmin =
+              adminIds.includes(String(session.user_id)) ||
+              (userRow?.telegram_user_id !== undefined && adminIds.includes(String(userRow.telegram_user_id)));
+
+            const isPro = isAdmin || (userRow && (userRow.tier === "premium" || userRow.tier === "admin"));
+            const isExpired = !isAdmin && userRow?.tier_expires_at && new Date(userRow.tier_expires_at).getTime() < Date.now();
             const isHeld = userRow?.is_tier_held === 1;
 
             if (!isPro || isExpired || isHeld) {

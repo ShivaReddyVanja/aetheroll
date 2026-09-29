@@ -96,41 +96,61 @@ tierRouter.post("/redeem", async (c) => {
       newExpiresAt = new Date(now + durationMs).toISOString();
     }
 
-    const targetTier = codeRecord.tier || "premium";
+    const targetTier = "premium"; // Codes can exclusively activate 'premium' tier, never 'admin'
     const redemptionId = `red_${crypto.randomUUID()}`;
 
-    // Check if user account is on hold
-    if (auth.isTierHeld) {
-      return c.json({ error: "Your account Pro access is currently on hold. Please contact support." }, 403);
+    // 4. Attempt to insert redemption log first (enforces UNIQUE(code, user_id) at DB level)
+    let redemptionInserted = false;
+    try {
+      await db.run(
+        `INSERT INTO code_redemptions (id, code, user_id)
+         VALUES (?, ?, ?)`,
+        [redemptionId, codeRecord.code, auth.userId]
+      );
+      redemptionInserted = true;
+    } catch (insertErr: any) {
+      if (insertErr?.message?.includes("UNIQUE") || insertErr?.message?.includes("constraint")) {
+        return c.json({ error: "You have already redeemed this activation code" }, 400);
+      }
+      throw insertErr;
     }
 
-    // 4. Atomic increment on code usage (prevents race condition)
+    // 5. Atomic increment on code usage (prevents race condition & over-redemption)
     const updateCodeRes = await db.run(
       `UPDATE activation_codes 
-       SET times_used = times_used + 1
+       SET times_used = times_used + 1,
+           is_active = CASE WHEN times_used + 1 >= max_uses THEN 0 ELSE is_active END
        WHERE code = ? AND times_used < max_uses AND is_active = 1`,
       [codeRecord.code]
     );
 
-    // If changes === 0, another concurrent request claimed the last use
+    // If changes === 0, max redemptions was reached by a concurrent request
     if (updateCodeRes && (updateCodeRes as any).changes === 0) {
+      if (redemptionInserted) {
+        await db.run(`DELETE FROM code_redemptions WHERE id = ?`, [redemptionId]).catch(() => {});
+      }
       return c.json({ error: "This activation code was just redeemed to its maximum limit" }, 400);
     }
 
-    // 5. Update user record
-    await db.run(
-      `UPDATE users 
-       SET tier = ?, tier_expires_at = ?, tier_granted_by = ?, is_tier_held = 0, tier_hold_reason = NULL
-       WHERE id = ?`,
-      [targetTier, newExpiresAt, codeRecord.code, auth.userId]
-    );
-
-    // 6. Record redemption audit log
-    await db.run(
-      `INSERT INTO code_redemptions (id, code, user_id)
-       VALUES (?, ?, ?)`,
-      [redemptionId, codeRecord.code, auth.userId]
-    );
+    // 6. Update user record
+    try {
+      await db.run(
+        `UPDATE users 
+         SET tier = ?, tier_expires_at = ?, tier_granted_by = ?, is_tier_held = 0, tier_hold_reason = NULL
+         WHERE id = ?`,
+        [targetTier, newExpiresAt, codeRecord.code, auth.userId]
+      );
+    } catch (userUpdateErr) {
+      // Rollback code use and redemption log on user update failure
+      await db.run(
+        `UPDATE activation_codes SET times_used = times_used - 1, is_active = 1 WHERE code = ?`,
+        [codeRecord.code]
+      ).catch(() => {});
+      if (redemptionInserted) {
+        await db.run(`DELETE FROM code_redemptions WHERE id = ?`, [redemptionId]).catch(() => {});
+      }
+      throw userUpdateErr;
+    }
 
     return c.json({
       success: true,

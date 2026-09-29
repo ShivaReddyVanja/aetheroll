@@ -180,11 +180,15 @@ export async function resolveUserAuth(c: Context): Promise<AuthContext> {
       const config = getDefaultTelegramConfig(c.env);
 
       const adminIdsStr =
-        (c.env as any)?.ADMIN_TELEGRAM_USER_IDS || process.env.ADMIN_TELEGRAM_USER_IDS || "";
+        (c.env as any)?.ADMIN_TELEGRAM_USER_IDS ||
+        (c.env as any)?.ADMIN_TELEGRAM_IDS ||
+        process.env.ADMIN_TELEGRAM_USER_IDS ||
+        process.env.ADMIN_TELEGRAM_IDS ||
+        "";
 
       let isAdmin = false;
       if (adminIdsStr && adminIdsStr.trim() !== "") {
-        const adminIds = adminIdsStr.split(",").map((s: string) => s.trim());
+        const adminIds = adminIdsStr.split(",").map((s: string) => s.trim()).filter(Boolean);
         isAdmin =
           adminIds.includes(String(session.telegram_user_id)) ||
           adminIds.includes(String(session.user_id));
@@ -215,7 +219,7 @@ export async function resolveUserAuth(c: Context): Promise<AuthContext> {
         tierExpiresAt: session.tier_expires_at || null,
         isTierHeld,
         tierHoldReason: session.tier_hold_reason || null,
-        isPro: effectiveTier === "premium" || effectiveTier === "admin",
+        isPro: (isAdmin || effectiveTier === "premium" || effectiveTier === "admin") && !isTierHeld,
       };
     } catch (err: any) {
       lastError = err?.message || "Authentication failed";

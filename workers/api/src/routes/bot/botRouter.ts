@@ -59,7 +59,8 @@ async function ensureAdminCommandMenu(botToken: string, chatId: number | string)
 }
 
 /**
- * Checks whether a given Telegram User ID has administrator privileges
+ * Checks whether a given Telegram User ID has administrator privileges.
+ * Admin privileges are strictly governed by ADMIN_TELEGRAM_USER_IDS / ADMIN_TELEGRAM_IDS.
  */
 async function isTelegramAdmin(
   db: any,
@@ -69,7 +70,6 @@ async function isTelegramAdmin(
   const numId = Number(telegramUserId);
   if (!numId) return false;
 
-  // 1. Check environment variable list of admin IDs (e.g. "1139540899,987654321")
   const adminIdsStr =
     env?.ADMIN_TELEGRAM_USER_IDS ||
     env?.ADMIN_TELEGRAM_IDS ||
@@ -81,22 +81,7 @@ async function isTelegramAdmin(
     .map((s: string) => s.trim())
     .filter(Boolean);
 
-  if (adminIds.includes(String(numId))) {
-    return true;
-  }
-
-  // 2. Check D1 users table for tier = 'admin'
-  try {
-    const user = await db.get(
-      `SELECT tier FROM users WHERE telegram_user_id = ? LIMIT 1`,
-      [numId]
-    );
-    if (user && user.tier === "admin") {
-      return true;
-    }
-  } catch {}
-
-  return false;
+  return adminIds.includes(String(numId));
 }
 
 function escapeHtml(str: string): string {
@@ -127,17 +112,17 @@ botRouter.post("/webhook", async (c) => {
     return c.text("Bot token missing", 500);
   }
 
-  // Secret Token verification
+  // Secret Token verification - mandatory in production
   const secretHeader = c.req.header("x-telegram-bot-api-secret-token");
   const expectedSecret = envObj.TELEGRAM_WEBHOOK_SECRET || process.env.TELEGRAM_WEBHOOK_SECRET;
   const isTestMode = envObj.TELEGRAM_TEST_MODE === "true" || process.env.TELEGRAM_TEST_MODE === "true";
 
-  if (expectedSecret) {
-    if (secretHeader !== expectedSecret) {
+  if (!isTestMode) {
+    if (!expectedSecret || secretHeader !== expectedSecret) {
       return c.text("Unauthorized secret token", 403);
     }
-  } else if (!isTestMode) {
-    console.warn("[Bot Webhook Security Warning]: TELEGRAM_WEBHOOK_SECRET is not configured. Webhook calls are unauthenticated.");
+  } else if (expectedSecret && secretHeader !== expectedSecret) {
+    return c.text("Unauthorized secret token", 403);
   }
 
   const update = await c.req.json().catch(() => null);

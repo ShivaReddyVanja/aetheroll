@@ -26,7 +26,7 @@ export interface ActivationCodeSummary {
   expiresAt: string | null;
 }
 
-export const ALLOWED_TIERS = ["free", "premium", "admin"] as const;
+export const ALLOWED_TIERS = ["free", "premium"] as const;
 export type UserTier = (typeof ALLOWED_TIERS)[number];
 
 export function validateTier(tier?: string, fallback: UserTier = "premium"): UserTier {
