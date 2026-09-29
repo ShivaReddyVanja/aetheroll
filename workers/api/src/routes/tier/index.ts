@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { getDb } from "../../lib/db";
 import { resolveUserAuth } from "../../lib/auth";
+import { AdminService } from "../../services/adminService";
 import crypto from "crypto";
 
 export const tierRouter = new Hono();
@@ -193,24 +194,25 @@ tierRouter.post("/admin/hold", async (c) => {
   }
 
   const body = await c.req.json().catch(() => ({}));
-  const { user_id, telegram_user_id, reason } = body;
-  if (!user_id && !telegram_user_id) {
+  const targetUser = body.user_id || body.telegram_user_id;
+  if (!targetUser) {
     return c.json({ error: "user_id or telegram_user_id is required" }, 400);
   }
 
-  const db = getDb((c.env as any)?.DB);
-  const targetQuery = user_id ? "id = ?" : "telegram_user_id = ?";
-  const targetParam = user_id || telegram_user_id;
-
-  await db.run(
-    `UPDATE users SET is_tier_held = 1, tier_hold_reason = ? WHERE ${targetQuery}`,
-    [reason || "Excessive usage / Account review", targetParam]
-  );
-
-  return c.json({
-    success: true,
-    message: `User ${targetParam} Pro access placed on hold.`,
-  });
+  try {
+    const db = getDb((c.env as any)?.DB);
+    const result = await AdminService.holdUserTier(db, {
+      targetUser,
+      reason: body.reason || "Excessive usage / Account review",
+    });
+    return c.json({
+      success: true,
+      message: `User ${targetUser} Pro access placed on hold.`,
+      user: result.user,
+    });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 400);
+  }
 });
 
 /**
@@ -224,22 +226,20 @@ tierRouter.post("/admin/resume", async (c) => {
   }
 
   const body = await c.req.json().catch(() => ({}));
-  const { user_id, telegram_user_id } = body;
-  if (!user_id && !telegram_user_id) {
+  const targetUser = body.user_id || body.telegram_user_id;
+  if (!targetUser) {
     return c.json({ error: "user_id or telegram_user_id is required" }, 400);
   }
 
-  const db = getDb((c.env as any)?.DB);
-  const targetQuery = user_id ? "id = ?" : "telegram_user_id = ?";
-  const targetParam = user_id || telegram_user_id;
-
-  await db.run(
-    `UPDATE users SET is_tier_held = 0, tier_hold_reason = NULL WHERE ${targetQuery}`,
-    [targetParam]
-  );
-
-  return c.json({
-    success: true,
-    message: `User ${targetParam} Pro access resumed.`,
-  });
+  try {
+    const db = getDb((c.env as any)?.DB);
+    const result = await AdminService.resumeUserTier(db, targetUser);
+    return c.json({
+      success: true,
+      message: `User ${targetUser} Pro access resumed.`,
+      user: result.user,
+    });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 400);
+  }
 });

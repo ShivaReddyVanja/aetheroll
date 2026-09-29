@@ -20,6 +20,7 @@ export interface AuthContext {
   sessionString?: string;
   telegramConfig?: TelegramConfig;
   isAdmin?: boolean;
+  isPro?: boolean;
   tier?: "free" | "premium" | "admin";
   tierExpiresAt?: string | null;
   isTierHeld?: boolean;
