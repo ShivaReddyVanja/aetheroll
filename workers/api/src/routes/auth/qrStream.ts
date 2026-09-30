@@ -4,6 +4,7 @@ import QRCode from "qrcode";
 import crypto from "crypto";
 import { getDb } from "../../lib/db";
 import { encryptSession } from "../../lib/crypto";
+import { upsertUserOnLogin } from "../../lib/auth";
 import { startQrLogin, checkQrLoginStatus, getDefaultTelegramConfig } from "../../lib/telegram";
 
 export const qrStreamRoute = new Hono();
@@ -72,20 +73,11 @@ qrStreamRoute.get("/qr-stream", async (c) => {
               (c.env as any)?.SESSION_ENCRYPTION_KEY
             );
 
-            let user = await db.get("SELECT * FROM users WHERE telegram_user_id = ?", [telegramUserId]);
-            const userId = user?.id || crypto.randomUUID();
-
-            if (!user) {
-              await db.run(
-                "INSERT INTO users (id, telegram_user_id, display_name, session_string) VALUES (?, ?, ?, ?)",
-                [userId, telegramUserId, displayName, encryptedSession]
-              );
-            } else {
-              await db.run(
-                "UPDATE users SET display_name = ?, session_string = ? WHERE id = ?",
-                [displayName, encryptedSession, userId]
-              );
-            }
+            const { userId } = await upsertUserOnLogin(db, {
+              telegramUserId,
+              displayName,
+              encryptedSession,
+            });
 
             const sessionToken = crypto.randomBytes(32).toString("hex");
             const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();

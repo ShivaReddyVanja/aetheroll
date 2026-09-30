@@ -228,3 +228,120 @@ export async function resolveUserAuth(c: Context): Promise<AuthContext> {
 
   return { authenticated: false, error: lastError };
 }
+
+/**
+ * Computes the initial tier for newly registered users via dynamic Campaign Engine.
+ * Evaluates active campaigns (e.g. First 100 users, Next 50 users) and atomically claims quota.
+ */
+export async function getInitialTierForNewUser(db: any): Promise<{
+  tier: "free" | "premium";
+  tierExpiresAt: string | null;
+  tierGrantedBy: string | null;
+  campaignId?: string | null;
+}> {
+  try {
+    const { CampaignService } = await import("../services/campaignService");
+    const reward = await CampaignService.claimSignupReward(db);
+    return {
+      tier: reward.tier,
+      tierExpiresAt: reward.tierExpiresAt,
+      tierGrantedBy: reward.tierGrantedBy,
+      campaignId: reward.campaignId,
+    };
+  } catch (err) {
+    console.error("Failed to claim campaign signup reward, falling back:", err);
+    return {
+      tier: "free",
+      tierExpiresAt: null,
+      tierGrantedBy: null,
+      campaignId: null,
+    };
+  }
+}
+
+export interface UpsertUserParams {
+  telegramUserId: string;
+  displayName: string;
+  encryptedSession: string;
+}
+
+export interface UpsertUserResult {
+  userId: string;
+  isNewUser: boolean;
+  tier: string;
+}
+
+/**
+ * Concurrency-safe single source of truth for user onboarding and session association.
+ * Automatically claims campaign rewards for new users and handles multi-device race conditions.
+ */
+export async function upsertUserOnLogin(
+  db: any,
+  params: UpsertUserParams
+): Promise<UpsertUserResult> {
+  const { telegramUserId, displayName, encryptedSession } = params;
+
+  let existingUser = await db.get("SELECT * FROM users WHERE telegram_user_id = ?", [telegramUserId]);
+
+  if (existingUser) {
+    await db.run(
+      "UPDATE users SET display_name = ?, session_string = ? WHERE id = ?",
+      [displayName, encryptedSession, existingUser.id]
+    );
+    return {
+      userId: existingUser.id,
+      isNewUser: false,
+      tier: existingUser.tier || "free",
+    };
+  }
+
+  // Brand-new user: claim initial campaign tier
+  const initialTier = await getInitialTierForNewUser(db);
+  const newUserId = crypto.randomUUID();
+
+  try {
+    await db.run(
+      `INSERT INTO users (id, telegram_user_id, display_name, session_string, tier, tier_expires_at, tier_granted_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        newUserId,
+        telegramUserId,
+        displayName,
+        encryptedSession,
+        initialTier.tier,
+        initialTier.tierExpiresAt,
+        initialTier.tierGrantedBy,
+      ]
+    );
+    return {
+      userId: newUserId,
+      isNewUser: true,
+      tier: initialTier.tier,
+    };
+  } catch (insertErr: any) {
+    // If insertion failed, rollback campaign claim to prevent quota leaks
+    if (initialTier.campaignId) {
+      const { CampaignService } = await import("../services/campaignService");
+      await CampaignService.rollbackClaim(db, initialTier.campaignId);
+    }
+
+    // Handle race condition where another device created the user in parallel
+    const racedUser = await db.get("SELECT * FROM users WHERE telegram_user_id = ?", [telegramUserId]);
+    if (racedUser) {
+      await db.run(
+        "UPDATE users SET display_name = ?, session_string = ? WHERE id = ?",
+        [displayName, encryptedSession, racedUser.id]
+      );
+      return {
+        userId: racedUser.id,
+        isNewUser: false,
+        tier: racedUser.tier || "free",
+      };
+    }
+
+    throw insertErr;
+  }
+}
+
+
+

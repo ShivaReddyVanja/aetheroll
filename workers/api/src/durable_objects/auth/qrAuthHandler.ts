@@ -2,7 +2,7 @@ import QRCode from "qrcode";
 import crypto from "crypto";
 import { getDb } from "../../lib/db";
 import { encryptSession } from "../../lib/crypto";
-import { generateCompositeSessionToken } from "../../lib/auth";
+import { generateCompositeSessionToken, upsertUserOnLogin } from "../../lib/auth";
 import {
   createTelegramClient,
   getDefaultTelegramConfig,
@@ -119,20 +119,11 @@ export class QrAuthHandler {
           clientSecret
         );
 
-        let dbUser = await db.get("SELECT * FROM users WHERE telegram_user_id = ?", [telegramUserId]);
-        const userId = dbUser?.id || crypto.randomUUID();
-
-        if (!dbUser) {
-          await db.run(
-            "INSERT INTO users (id, telegram_user_id, display_name, session_string) VALUES (?, ?, ?, ?)",
-            [userId, telegramUserId, displayName, encryptedSession]
-          );
-        } else {
-          await db.run(
-            "UPDATE users SET display_name = ?, session_string = ? WHERE id = ?",
-            [displayName, encryptedSession, userId]
-          );
-        }
+        const { userId } = await upsertUserOnLogin(db, {
+          telegramUserId,
+          displayName,
+          encryptedSession,
+        });
 
         const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
 
@@ -279,20 +270,11 @@ export class QrAuthHandler {
           clientSecret
         );
 
-        let dbUser = await db.get("SELECT * FROM users WHERE telegram_user_id = ?", [telegramUserId]);
-        const userId = dbUser?.id || crypto.randomUUID();
-
-        if (!dbUser) {
-          await db.run(
-            "INSERT INTO users (id, telegram_user_id, display_name, session_string) VALUES (?, ?, ?, ?)",
-            [userId, telegramUserId, displayName, encryptedSession]
-          );
-        } else {
-          await db.run(
-            "UPDATE users SET display_name = ?, session_string = ? WHERE id = ?",
-            [displayName, encryptedSession, userId]
-          );
-        }
+        const { userId } = await upsertUserOnLogin(db, {
+          telegramUserId,
+          displayName,
+          encryptedSession,
+        });
 
         const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
 

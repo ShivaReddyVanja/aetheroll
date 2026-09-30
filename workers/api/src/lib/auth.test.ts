@@ -124,5 +124,122 @@ describe("🔍 Unified Abstracted Auth Token Extraction Suite", () => {
     assert.equal(isUser1Admin, true);
     assert.equal(isUser2Admin, false);
   });
+
+  it("11. should grant 30-day premium for active campaign", async () => {
+    const { getInitialTierForNewUser } = await import("./auth");
+    const mockDbCampaign = {
+      all: async () => [
+        {
+          id: "welcome_first_100",
+          name: "First 100 Users",
+          target_tier: "premium",
+          duration_days: 30,
+          max_claims: 100,
+          claimed_count: 42,
+          is_active: 1,
+          priority: 10,
+        },
+      ],
+      run: async () => ({ changes: 1 }),
+    };
+    const result = await getInitialTierForNewUser(mockDbCampaign);
+    assert.equal(result.tier, "premium");
+    assert.equal(result.tierGrantedBy, "campaign:welcome_first_100");
+    assert.ok(result.tierExpiresAt);
+    
+    // Check expiration is ~30 days in the future
+    const expTime = new Date(result.tierExpiresAt!).getTime();
+    const diffDays = Math.round((expTime - Date.now()) / (24 * 60 * 60 * 1000));
+    assert.equal(diffDays, 30);
+  });
+
+  it("12. should assign free tier once campaign limit is reached or no campaign active", async () => {
+    const { getInitialTierForNewUser } = await import("./auth");
+    const mockDbNoCampaign = {
+      all: async () => [],
+      run: async () => ({ changes: 0 }),
+    };
+    const result = await getInitialTierForNewUser(mockDbNoCampaign);
+    assert.equal(result.tier, "free");
+    assert.equal(result.tierExpiresAt, null);
+    assert.equal(result.tierGrantedBy, null);
+  });
+
+  it("13. should handle new user onboarding via upsertUserOnLogin", async () => {
+    const { upsertUserOnLogin } = await import("./auth");
+    let inserted = false;
+    const mockDb = {
+      get: async (sql: string) => {
+        if (sql.includes("SELECT * FROM users WHERE telegram_user_id = ?")) {
+          return null; // New user
+        }
+        return null;
+      },
+      all: async () => [
+        {
+          id: "welcome_first_100",
+          name: "First 100 Users",
+          target_tier: "premium",
+          duration_days: 30,
+          max_claims: 100,
+          claimed_count: 0,
+          is_active: 1,
+          priority: 10,
+        },
+      ],
+      run: async (sql: string) => {
+        if (sql.includes("INSERT INTO users")) {
+          inserted = true;
+          return { changes: 1 };
+        }
+        if (sql.includes("UPDATE signup_campaigns")) {
+          return { changes: 1 };
+        }
+        return { changes: 1 };
+      },
+    };
+
+    const res = await upsertUserOnLogin(mockDb, {
+      telegramUserId: "12345678",
+      displayName: "Alice",
+      encryptedSession: "enc-session-str",
+    });
+
+    assert.equal(res.isNewUser, true);
+    assert.equal(res.tier, "premium");
+    assert.equal(inserted, true);
+  });
+
+  it("14. should preserve existing user tier on re-login via upsertUserOnLogin", async () => {
+    const { upsertUserOnLogin } = await import("./auth");
+    let updated = false;
+    const mockDb = {
+      get: async () => ({
+        id: "user-existing-id",
+        telegram_user_id: "12345678",
+        tier: "premium",
+      }),
+      run: async (sql: string) => {
+        if (sql.includes("UPDATE users SET display_name")) {
+          updated = true;
+          return { changes: 1 };
+        }
+        return { changes: 1 };
+      },
+    };
+
+    const res = await upsertUserOnLogin(mockDb, {
+      telegramUserId: "12345678",
+      displayName: "Alice Updated",
+      encryptedSession: "enc-session-str-2",
+    });
+
+    assert.equal(res.isNewUser, false);
+    assert.equal(res.userId, "user-existing-id");
+    assert.equal(res.tier, "premium");
+    assert.equal(updated, true);
+  });
 });
+
+
 
