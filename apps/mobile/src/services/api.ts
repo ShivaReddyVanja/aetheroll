@@ -285,7 +285,19 @@ export async function getTierStatus(): Promise<{
   try {
     const res = await apiFetch('/api/tier/status');
     if (res.ok) {
-      return await res.json();
+      const data = await res.json();
+      if (data.authenticated && data.tier !== undefined) {
+        const currentUser = await getUserData();
+        if (currentUser) {
+          currentUser.tier = data.tier;
+          currentUser.tierExpiresAt = data.tierExpiresAt || null;
+          currentUser.isTierHeld = !!data.isTierHeld;
+          currentUser.tierHoldReason = data.tierHoldReason || null;
+          currentUser.isPro = !!data.isPro;
+          await saveUserData(currentUser);
+        }
+      }
+      return data;
     }
     return { authenticated: false };
   } catch (err: any) {

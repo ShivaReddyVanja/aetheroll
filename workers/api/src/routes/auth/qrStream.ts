@@ -73,10 +73,11 @@ qrStreamRoute.get("/qr-stream", async (c) => {
               (c.env as any)?.SESSION_ENCRYPTION_KEY
             );
 
-            const { userId } = await upsertUserOnLogin(db, {
+            const userProfile = await upsertUserOnLogin(db, {
               telegramUserId,
               displayName,
               encryptedSession,
+              env: c.env,
             });
 
             const sessionToken = crypto.randomBytes(32).toString("hex");
@@ -84,7 +85,7 @@ qrStreamRoute.get("/qr-stream", async (c) => {
 
             await db.run(
               "INSERT INTO user_sessions (id, user_id, expires_at) VALUES (?, ?, ?)",
-              [sessionToken, userId, expiresAt]
+              [sessionToken, userProfile.userId, expiresAt]
             );
 
             await stream.writeSSE({
@@ -93,9 +94,15 @@ qrStreamRoute.get("/qr-stream", async (c) => {
                 success: true,
                 sessionToken,
                 user: {
-                  id: userId,
-                  telegramUserId,
-                  displayName,
+                  id: userProfile.userId,
+                  telegramUserId: userProfile.telegramUserId,
+                  displayName: userProfile.displayName,
+                  tier: userProfile.tier,
+                  tierExpiresAt: userProfile.tierExpiresAt,
+                  isTierHeld: userProfile.isTierHeld,
+                  tierHoldReason: userProfile.tierHoldReason,
+                  isAdmin: userProfile.isAdmin,
+                  isPro: userProfile.isPro,
                 },
               }),
             });

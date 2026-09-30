@@ -119,26 +119,39 @@ export class QrAuthHandler {
           clientSecret
         );
 
-        const { userId } = await upsertUserOnLogin(db, {
+        const userProfile = await upsertUserOnLogin(db, {
           telegramUserId,
           displayName,
           encryptedSession,
+          env: targetEnv || this.env,
         });
 
         const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
 
         await db.run(
           "INSERT INTO user_sessions (id, user_id, expires_at) VALUES (?, ?, ?)",
-          [sessionId, userId, expiresAt]
+          [sessionId, userProfile.userId, expiresAt]
         );
 
-        flushAuthBilling(userId);
+        flushAuthBilling(userProfile.userId);
+
+        const fullUserObj = {
+          id: userProfile.userId,
+          telegramUserId: userProfile.telegramUserId,
+          displayName: userProfile.displayName,
+          tier: userProfile.tier,
+          tierExpiresAt: userProfile.tierExpiresAt,
+          isTierHeld: userProfile.isTierHeld,
+          tierHoldReason: userProfile.tierHoldReason,
+          isAdmin: userProfile.isAdmin,
+          isPro: userProfile.isPro,
+        };
 
         // Create a one-time claim token for the frontend to exchange for a cookie
         const qrClaimId = crypto.randomUUID();
         this.pendingClaims.set(qrClaimId, {
           sessionToken,
-          user: { id: userId, telegramUserId, displayName },
+          user: fullUserObj,
           expires: Date.now() + 2 * 60 * 1000, // 2 minutes TTL
         });
 
@@ -147,7 +160,7 @@ export class QrAuthHandler {
             JSON.stringify({
               type: "authenticated",
               qrClaimId, // send claim ID, NOT sessionToken
-              user: { id: userId, telegramUserId, displayName },
+              user: fullUserObj,
             })
           );
         } catch {}
@@ -270,17 +283,18 @@ export class QrAuthHandler {
           clientSecret
         );
 
-        const { userId } = await upsertUserOnLogin(db, {
+        const userProfile = await upsertUserOnLogin(db, {
           telegramUserId,
           displayName,
           encryptedSession,
+          env: targetEnv || this.env,
         });
 
         const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
 
         await db.run(
           "INSERT INTO user_sessions (id, user_id, expires_at) VALUES (?, ?, ?)",
-          [sessionId, userId, expiresAt]
+          [sessionId, userProfile.userId, expiresAt]
         );
 
         const headers = new Headers({
@@ -294,9 +308,15 @@ export class QrAuthHandler {
           JSON.stringify({
             success: true,
             user: {
-              id: userId,
-              telegramUserId,
-              displayName,
+              id: userProfile.userId,
+              telegramUserId: userProfile.telegramUserId,
+              displayName: userProfile.displayName,
+              tier: userProfile.tier,
+              tierExpiresAt: userProfile.tierExpiresAt,
+              isTierHeld: userProfile.isTierHeld,
+              tierHoldReason: userProfile.tierHoldReason,
+              isAdmin: userProfile.isAdmin,
+              isPro: userProfile.isPro,
             },
           }),
           { headers }

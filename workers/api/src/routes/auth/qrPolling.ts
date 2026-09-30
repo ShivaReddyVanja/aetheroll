@@ -96,10 +96,11 @@ qrPollingRoute.post("/qr/check", async (c) => {
       );
 
       // Check or insert user
-      const { userId } = await upsertUserOnLogin(db, {
+      const userProfile = await upsertUserOnLogin(db, {
         telegramUserId,
         displayName,
         encryptedSession,
+        env: c.env,
       });
 
       // Create Web Session Record (Stores sessionId only - clientSecret is NEVER stored!)
@@ -107,7 +108,7 @@ qrPollingRoute.post("/qr/check", async (c) => {
 
       await db.run(
         "INSERT INTO user_sessions (id, user_id, expires_at) VALUES (?, ?, ?)",
-        [sessionId, userId, expiresAt]
+        [sessionId, userProfile.userId, expiresAt]
       );
 
       // Set HttpOnly single clean session cookie
@@ -121,10 +122,17 @@ qrPollingRoute.post("/qr/check", async (c) => {
 
       return c.json({
         success: true,
+        sessionToken,
         user: {
-          id: userId,
-          telegramUserId,
-          displayName,
+          id: userProfile.userId,
+          telegramUserId: userProfile.telegramUserId,
+          displayName: userProfile.displayName,
+          tier: userProfile.tier,
+          tierExpiresAt: userProfile.tierExpiresAt,
+          isTierHeld: userProfile.isTierHeld,
+          tierHoldReason: userProfile.tierHoldReason,
+          isAdmin: userProfile.isAdmin,
+          isPro: userProfile.isPro,
         },
       });
     }
