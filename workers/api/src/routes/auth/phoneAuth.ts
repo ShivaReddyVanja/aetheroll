@@ -3,7 +3,7 @@ import { setCookie } from "hono/cookie";
 import crypto from "crypto";
 import { getDb } from "../../lib/db";
 import { encryptSession, decryptSession } from "../../lib/crypto";
-import { generateCompositeSessionToken } from "../../lib/auth";
+import { generateCompositeSessionToken, upsertUserOnLogin } from "../../lib/auth";
 import { sendPhoneCode, verifyPhoneCode } from "../../lib/telegram";
 import { getAuthCookieOptions, getApexDomain, forwardToAuthDO, appendCleanSingleAuthCookieHeaders } from "./utils";
 
@@ -150,25 +150,17 @@ phoneAuthRoute.post("/phone/verify", async (c) => {
       clientSecret
     );
 
-    let user = await db.get("SELECT * FROM users WHERE telegram_user_id = ?", [telegramUserId]);
-    const userId = user?.id || crypto.randomUUID();
-
-    if (!user) {
-      await db.run(
-        "INSERT INTO users (id, telegram_user_id, display_name, session_string) VALUES (?, ?, ?, ?)",
-        [userId, telegramUserId, displayName, encryptedSession]
-      );
-    } else {
-      await db.run(
-        "UPDATE users SET display_name = ?, session_string = ? WHERE id = ?",
-        [displayName, encryptedSession, userId]
-      );
-    }
+    const userProfile = await upsertUserOnLogin(db, {
+      telegramUserId,
+      displayName,
+      encryptedSession,
+      env: c.env,
+    });
 
     const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
     await db.run(
       "INSERT INTO user_sessions (id, user_id, expires_at) VALUES (?, ?, ?)",
-      [sessionId, userId, expiresAt]
+      [sessionId, userProfile.userId, expiresAt]
     );
 
     // Set HttpOnly single clean session cookie
@@ -181,9 +173,15 @@ phoneAuthRoute.post("/phone/verify", async (c) => {
       success: true,
       sessionToken,
       user: {
-        id: userId,
-        telegramUserId,
-        displayName,
+        id: userProfile.userId,
+        telegramUserId: userProfile.telegramUserId,
+        displayName: userProfile.displayName,
+        tier: userProfile.tier,
+        tierExpiresAt: userProfile.tierExpiresAt,
+        isTierHeld: userProfile.isTierHeld,
+        tierHoldReason: userProfile.tierHoldReason,
+        isAdmin: userProfile.isAdmin,
+        isPro: userProfile.isPro,
       },
     });
   } catch (err: any) {

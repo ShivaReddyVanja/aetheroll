@@ -32,7 +32,7 @@ import {
 } from 'lucide-react-native';
 import { ChannelItem } from '../components/ChannelPickerSheet';
 import { AppVersionInfo, AndroidRelease, subscribeToUpdateProgress } from '../services/appUpdateService';
-import { getApiBaseUrl, setApiBaseUrl } from '../services/api';
+import { getApiBaseUrl, setApiBaseUrl, getTierStatus } from '../services/api';
 import { UploadStrategyRouter, UploadEngineMode } from '../services/backup';
 import { StreamingStrategyRouter, StreamingEngineMode, NativeStreamServer } from '../services/streaming';
 import { PremiumMembershipScreen } from './PremiumMembershipScreen';
@@ -122,6 +122,29 @@ export function SettingsScreen({
       setStreamingEngineMode(mode);
     });
     refreshStreamCacheSize();
+
+    // Refresh live tier status from backend on open
+    getTierStatus()
+      .then((status) => {
+        if (status.authenticated && status.tier !== undefined && onUserUpdated) {
+          const updated = user
+            ? {
+                ...user,
+                tier: status.tier,
+                tierExpiresAt: status.tierExpiresAt,
+                isTierHeld: status.isTierHeld,
+                tierHoldReason: status.tierHoldReason,
+              }
+            : {
+                tier: status.tier,
+                tierExpiresAt: status.tierExpiresAt,
+                isTierHeld: status.isTierHeld,
+                tierHoldReason: status.tierHoldReason,
+              };
+          onUserUpdated(updated);
+        }
+      })
+      .catch(() => {});
   }, [refreshStreamCacheSize]);
 
   useEffect(() => {

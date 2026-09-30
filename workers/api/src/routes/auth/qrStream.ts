@@ -4,6 +4,7 @@ import QRCode from "qrcode";
 import crypto from "crypto";
 import { getDb } from "../../lib/db";
 import { encryptSession } from "../../lib/crypto";
+import { upsertUserOnLogin } from "../../lib/auth";
 import { startQrLogin, checkQrLoginStatus, getDefaultTelegramConfig } from "../../lib/telegram";
 
 export const qrStreamRoute = new Hono();
@@ -72,27 +73,19 @@ qrStreamRoute.get("/qr-stream", async (c) => {
               (c.env as any)?.SESSION_ENCRYPTION_KEY
             );
 
-            let user = await db.get("SELECT * FROM users WHERE telegram_user_id = ?", [telegramUserId]);
-            const userId = user?.id || crypto.randomUUID();
-
-            if (!user) {
-              await db.run(
-                "INSERT INTO users (id, telegram_user_id, display_name, session_string) VALUES (?, ?, ?, ?)",
-                [userId, telegramUserId, displayName, encryptedSession]
-              );
-            } else {
-              await db.run(
-                "UPDATE users SET display_name = ?, session_string = ? WHERE id = ?",
-                [displayName, encryptedSession, userId]
-              );
-            }
+            const userProfile = await upsertUserOnLogin(db, {
+              telegramUserId,
+              displayName,
+              encryptedSession,
+              env: c.env,
+            });
 
             const sessionToken = crypto.randomBytes(32).toString("hex");
             const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
 
             await db.run(
               "INSERT INTO user_sessions (id, user_id, expires_at) VALUES (?, ?, ?)",
-              [sessionToken, userId, expiresAt]
+              [sessionToken, userProfile.userId, expiresAt]
             );
 
             await stream.writeSSE({
@@ -101,9 +94,15 @@ qrStreamRoute.get("/qr-stream", async (c) => {
                 success: true,
                 sessionToken,
                 user: {
-                  id: userId,
-                  telegramUserId,
-                  displayName,
+                  id: userProfile.userId,
+                  telegramUserId: userProfile.telegramUserId,
+                  displayName: userProfile.displayName,
+                  tier: userProfile.tier,
+                  tierExpiresAt: userProfile.tierExpiresAt,
+                  isTierHeld: userProfile.isTierHeld,
+                  tierHoldReason: userProfile.tierHoldReason,
+                  isAdmin: userProfile.isAdmin,
+                  isPro: userProfile.isPro,
                 },
               }),
             });

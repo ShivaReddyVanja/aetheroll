@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { getDb } from "../../lib/db";
 import { resolveUserAuth } from "../../lib/auth";
 import { AdminService } from "../../services/adminService";
+import { CampaignService } from "../../services/campaignService";
 
 export const adminRouter = new Hono();
 
@@ -172,3 +173,79 @@ adminRouter.post("/tier/revoke", async (c) => {
     return c.json({ error: err.message }, 400);
   }
 });
+
+/**
+ * GET /api/admin/campaigns
+ * List all signup/onboarding campaigns
+ */
+adminRouter.get("/campaigns", async (c) => {
+  const db = getDb((c.env as any)?.DB);
+  const campaigns = await CampaignService.listCampaigns(db);
+  return c.json({ campaigns });
+});
+
+/**
+ * POST /api/admin/campaigns
+ * Create a new signup campaign (e.g. First 100 users, Next 50 users)
+ */
+adminRouter.post("/campaigns", async (c) => {
+  const db = getDb((c.env as any)?.DB);
+  const body = await c.req.json().catch(() => ({}));
+
+  try {
+    const campaign = await CampaignService.createCampaign(db, body);
+    return c.json({ success: true, campaign }, 201);
+  } catch (err: any) {
+    return c.json({ error: err.message }, 400);
+  }
+});
+
+/**
+ * GET /api/admin/campaigns/:id
+ * Get single campaign details
+ */
+adminRouter.get("/campaigns/:id", async (c) => {
+  const db = getDb((c.env as any)?.DB);
+  const id = c.req.param("id");
+  const campaign = await CampaignService.getCampaign(db, id);
+
+  if (!campaign) {
+    return c.json({ error: "Campaign not found" }, 404);
+  }
+
+  return c.json(campaign);
+});
+
+/**
+ * PATCH /api/admin/campaigns/:id
+ * Update campaign properties (pause/resume, adjust max quota, dates, priority)
+ */
+adminRouter.patch("/campaigns/:id", async (c) => {
+  const db = getDb((c.env as any)?.DB);
+  const id = c.req.param("id");
+  const body = await c.req.json().catch(() => ({}));
+
+  try {
+    const campaign = await CampaignService.updateCampaign(db, id, body);
+    return c.json({ success: true, campaign });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 400);
+  }
+});
+
+/**
+ * DELETE /api/admin/campaigns/:id
+ * Delete/archive a campaign
+ */
+adminRouter.delete("/campaigns/:id", async (c) => {
+  const db = getDb((c.env as any)?.DB);
+  const id = c.req.param("id");
+
+  const deleted = await CampaignService.deleteCampaign(db, id);
+  if (!deleted) {
+    return c.json({ error: "Campaign not found" }, 404);
+  }
+
+  return c.json({ success: true, message: `Campaign '${id}' deleted` });
+});
+
