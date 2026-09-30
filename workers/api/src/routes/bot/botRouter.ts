@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { getDb } from "../../lib/db";
 import { resolveUserAuth } from "../../lib/auth";
 import { AdminService } from "../../services/adminService";
+import { CampaignService } from "../../services/campaignService";
 
 export const botRouter = new Hono();
 
@@ -45,6 +46,13 @@ async function ensureAdminCommandMenu(botToken: string, chatId: number | string)
       { command: "hold", description: "Put user subscription on hold (Admin)" },
       { command: "resume", description: "Resume paused subscription (Admin)" },
       { command: "revoke", description: "Revoke subscription to Free (Admin)" },
+      { command: "campaigns", description: "List signup reward campaigns (Admin)" },
+      { command: "create_campaign", description: "Create a new signup campaign (Admin)" },
+      { command: "campaign", description: "Inspect campaign details (Admin)" },
+      { command: "pause_campaign", description: "Pause a signup campaign (Admin)" },
+      { command: "resume_campaign", description: "Resume a paused campaign (Admin)" },
+      { command: "extend_campaign", description: "Adjust campaign quota (Admin)" },
+      { command: "delete_campaign", description: "Delete a signup campaign (Admin)" },
       { command: "help", description: "Show admin command guide" },
     ];
     await fetch(`https://api.telegram.org/bot${botToken}/setMyCommands`, {
@@ -97,6 +105,21 @@ function formatUserBadge(tier: string, isHeld: boolean): string {
   if (tier === "admin") return "👑 <b>ADMIN</b>";
   if (tier === "premium") return "⚡ <b>PRO</b>";
   return "🆓 <b>FREE</b>";
+}
+
+function formatCampaignBadge(c: {
+  isActive: boolean;
+  claimedCount: number;
+  maxClaims: number;
+  startsAt?: string | null;
+  endsAt?: string | null;
+}): string {
+  if (!c.isActive) return "⏸️ <b>PAUSED</b>";
+  if (c.claimedCount >= c.maxClaims) return "🏁 <b>COMPLETED</b>";
+  const now = Date.now();
+  if (c.endsAt && new Date(c.endsAt).getTime() < now) return "⌛ <b>EXPIRED</b>";
+  if (c.startsAt && new Date(c.startsAt).getTime() > now) return "⏳ <b>SCHEDULED</b>";
+  return "🟢 <b>ACTIVE</b>";
 }
 
 /**
@@ -172,6 +195,20 @@ botRouter.post("/webhook", async (c) => {
         `<i>Resume an on-hold Pro subscription.</i>\n\n` +
         `🗑️ <b>/revoke</b> &lt;telegram_id&gt;\n` +
         `<i>Reset user back to the Free tier.</i>\n\n` +
+        `🎯 <b>/campaigns</b>\n` +
+        `<i>List all signup reward campaigns & claims.</i>\n\n` +
+        `➕ <b>/create_campaign</b> &lt;claims&gt; [days] &lt;name&gt;\n` +
+        `<i>Create new signup campaign (e.g. <code>/create_campaign 100 30 Early Access</code>).</i>\n\n` +
+        `🔍 <b>/campaign</b> &lt;campaign_id&gt;\n` +
+        `<i>Inspect single campaign details.</i>\n\n` +
+        `⏸️ <b>/pause_campaign</b> &lt;campaign_id&gt;\n` +
+        `<i>Pause an active signup campaign.</i>\n\n` +
+        `▶️ <b>/resume_campaign</b> &lt;campaign_id&gt;\n` +
+        `<i>Resume a paused signup campaign.</i>\n\n` +
+        `📈 <b>/extend_campaign</b> &lt;campaign_id&gt; &lt;new_max&gt;\n` +
+        `<i>Adjust or increase max claims quota.</i>\n\n` +
+        `🗑️ <b>/delete_campaign</b> &lt;campaign_id&gt;\n` +
+        `<i>Delete a signup campaign.</i>\n\n` +
         `ℹ️ <b>/status</b>\n` +
         `<i>Check your own account status.</i>`;
 
@@ -531,6 +568,332 @@ botRouter.post("/webhook", async (c) => {
         botToken,
         chatId,
         `❌ <b>Revocation Failed:</b> ${escapeHtml(safeMsg)}`
+      );
+    }
+    return c.json({ ok: true });
+  }
+
+  // --- COMMAND: /campaigns ---
+  if (command === "/campaigns" || command === "/list_campaigns") {
+    const campaigns = await CampaignService.listCampaigns(db);
+
+    if (campaigns.length === 0) {
+      await sendTelegramMessage(
+        botToken,
+        chatId,
+        `🎯 <b>Signup Reward Campaigns</b>\n\nNo campaigns found.\n\n` +
+        `<i>Create one with:</i>\n<code>/create_campaign 100 30 Early Access Promo</code>`
+      );
+      return c.json({ ok: true });
+    }
+
+    let response = `🎯 <b>Signup Reward Campaigns</b> (Total: ${campaigns.length})\n\n`;
+
+    campaigns.forEach((camp, idx) => {
+      const num = idx + 1;
+      const badge = formatCampaignBadge(camp);
+      const tierStr = camp.targetTier === "premium"
+        ? `⚡ Pro (${camp.durationDays ? `${camp.durationDays}d` : "Lifetime"})`
+        : "🆓 Free";
+      const pct = camp.maxClaims > 0 ? Math.round((camp.claimedCount / camp.maxClaims) * 100) : 0;
+
+      response += `${num}. <b>${escapeHtml(camp.name)}</b> [<code>${camp.id}</code>]\n` +
+        `   • Status: ${badge}\n` +
+        `   • Reward: ${tierStr}\n` +
+        `   • Quota: <b>${camp.claimedCount}</b> / <b>${camp.maxClaims}</b> (${pct}%)\n` +
+        (camp.priority ? `   • Priority: <code>${camp.priority}</code>\n` : "") +
+        `\n`;
+    });
+
+    response += `<i>Use <code>/campaign &lt;id&gt;</code> to inspect or manage.</i>`;
+
+    await sendTelegramMessage(botToken, chatId, response);
+    return c.json({ ok: true });
+  }
+
+  // --- COMMAND: /campaign <campaign_id> ---
+  if (command === "/campaign" || command === "/inspect_campaign") {
+    if (args.length === 0) {
+      await sendTelegramMessage(
+        botToken,
+        chatId,
+        `⚠️ <b>Usage:</b> <code>/campaign &lt;campaign_id&gt;</code>\n\n<i>Example:</i> <code>/campaign welcome_first_100</code>`
+      );
+      return c.json({ ok: true });
+    }
+
+    const targetId = args[0].trim();
+    const camp = await CampaignService.getCampaign(db, targetId);
+
+    if (!camp) {
+      await sendTelegramMessage(
+        botToken,
+        chatId,
+        `❌ Campaign <code>${escapeHtml(targetId)}</code> not found in database.`
+      );
+      return c.json({ ok: true });
+    }
+
+    const badge = formatCampaignBadge(camp);
+    const tierStr = camp.targetTier === "premium"
+      ? `⚡ <b>PRO</b> (${camp.durationDays ? `${camp.durationDays} days` : "Lifetime"})`
+      : "🆓 <b>FREE</b>";
+    const remaining = Math.max(0, camp.maxClaims - camp.claimedCount);
+    const pct = camp.maxClaims > 0 ? Math.round((camp.claimedCount / camp.maxClaims) * 100) : 0;
+
+    const detailMsg = `🎯 <b>Campaign Inspection</b>\n\n` +
+      `• <b>Name:</b> ${escapeHtml(camp.name)}\n` +
+      `• <b>ID:</b> <code>${camp.id}</code>\n` +
+      `• <b>Status:</b> ${badge}\n` +
+      `• <b>Reward:</b> ${tierStr}\n` +
+      `• <b>Claimed:</b> <b>${camp.claimedCount}</b> / <b>${camp.maxClaims}</b> (${pct}%)\n` +
+      `• <b>Remaining Slots:</b> <b>${remaining}</b>\n` +
+      `• <b>Priority:</b> <code>${camp.priority}</code>\n` +
+      (camp.startsAt ? `• <b>Starts At:</b> <code>${camp.startsAt}</code>\n` : "") +
+      (camp.endsAt ? `• <b>Ends At:</b> <code>${camp.endsAt}</code>\n` : "") +
+      `• <b>Created:</b> <code>${camp.createdAt}</code>\n\n` +
+      `💡 <i>Quick Actions:</i>\n` +
+      `• <code>/pause_campaign ${camp.id}</code>\n` +
+      `• <code>/resume_campaign ${camp.id}</code>\n` +
+      `• <code>/extend_campaign ${camp.id} &lt;new_max&gt;</code>\n` +
+      `• <code>/delete_campaign ${camp.id}</code>`;
+
+    await sendTelegramMessage(botToken, chatId, detailMsg);
+    return c.json({ ok: true });
+  }
+
+  // --- COMMAND: /create_campaign <claims> [days] <name> ---
+  if (
+    command === "/create_campaign" ||
+    command === "/new_campaign" ||
+    command === "/add_campaign"
+  ) {
+    if (args.length < 2) {
+      const helpMsg = `⚠️ <b>Usage:</b> <code>/create_campaign &lt;max_claims&gt; [duration_days] &lt;name&gt;</code>\n\n` +
+        `<b>Examples:</b>\n` +
+        `• <code>/create_campaign 100 30 Launch Promo</code> (100 claims, 30-day Pro)\n` +
+        `• <code>/create_campaign 50 0 VIP Lifetime</code> (50 claims, Lifetime Pro)\n` +
+        `• <code>/create_campaign 200 Beta Access</code> (200 claims, default 30 days)`;
+      await sendTelegramMessage(botToken, chatId, helpMsg);
+      return c.json({ ok: true });
+    }
+
+    const maxClaims = parseInt(args[0], 10);
+    if (isNaN(maxClaims) || maxClaims <= 0) {
+      await sendTelegramMessage(
+        botToken,
+        chatId,
+        `❌ <b>Invalid Quota:</b> <code>max_claims</code> must be a positive number.`
+      );
+      return c.json({ ok: true });
+    }
+
+    let durationDays: number | null = 30;
+    let name = "";
+
+    if (args.length >= 3 && /^\d+$/.test(args[1])) {
+      const parsedDays = parseInt(args[1], 10);
+      durationDays = parsedDays === 0 ? null : parsedDays;
+      name = args.slice(2).join(" ").trim();
+    } else {
+      durationDays = 30;
+      name = args.slice(1).join(" ").trim();
+    }
+
+    if (!name) {
+      await sendTelegramMessage(
+        botToken,
+        chatId,
+        `❌ <b>Missing Name:</b> Campaign name is required.`
+      );
+      return c.json({ ok: true });
+    }
+
+    try {
+      const camp = await CampaignService.createCampaign(db, {
+        name,
+        maxClaims,
+        durationDays,
+        targetTier: "premium",
+      });
+
+      const tierStr = camp.targetTier === "premium"
+        ? `⚡ <b>PRO (${camp.durationDays ? `${camp.durationDays} days` : "Lifetime"})</b>`
+        : "🆓 <b>FREE</b>";
+
+      const createMsg = `✅ <b>Signup Campaign Created!</b>\n\n` +
+        `• <b>Name:</b> ${escapeHtml(camp.name)}\n` +
+        `• <b>ID:</b> <code>${camp.id}</code>\n` +
+        `• <b>Reward:</b> ${tierStr}\n` +
+        `• <b>Quota:</b> <b>${camp.maxClaims}</b> claims\n` +
+        `• <b>Status:</b> 🟢 <b>ACTIVE</b>\n\n` +
+        `<i>New users signing up will automatically receive this reward until quota is exhausted.</i>`;
+
+      await sendTelegramMessage(botToken, chatId, createMsg);
+    } catch (err: any) {
+      console.error("[Bot /create_campaign Error]:", err);
+      const safeMsg = err.message && !err.message.includes("SQLITE") ? err.message : "Failed to create campaign.";
+      await sendTelegramMessage(
+        botToken,
+        chatId,
+        `❌ <b>Creation Failed:</b> ${escapeHtml(safeMsg)}`
+      );
+    }
+    return c.json({ ok: true });
+  }
+
+  // --- COMMAND: /pause_campaign <campaign_id> ---
+  if (command === "/pause_campaign" || command === "/hold_campaign") {
+    if (args.length === 0) {
+      await sendTelegramMessage(
+        botToken,
+        chatId,
+        `⚠️ <b>Usage:</b> <code>/pause_campaign &lt;campaign_id&gt;</code>`
+      );
+      return c.json({ ok: true });
+    }
+
+    const targetId = args[0].trim();
+
+    try {
+      const camp = await CampaignService.updateCampaign(db, targetId, { isActive: false });
+
+      const pauseMsg = `⏸️ <b>Campaign Paused</b>\n\n` +
+        `• <b>Campaign:</b> ${escapeHtml(camp.name)} (<code>${camp.id}</code>)\n` +
+        `• <b>Status:</b> ⏸️ <b>PAUSED</b>\n\n` +
+        `<i>Reward claims for this campaign are now disabled.</i>`;
+
+      await sendTelegramMessage(botToken, chatId, pauseMsg);
+    } catch (err: any) {
+      console.error("[Bot /pause_campaign Error]:", err);
+      const safeMsg = err.message && !err.message.includes("SQLITE") ? err.message : "Failed to pause campaign.";
+      await sendTelegramMessage(
+        botToken,
+        chatId,
+        `❌ <b>Pause Failed:</b> ${escapeHtml(safeMsg)}`
+      );
+    }
+    return c.json({ ok: true });
+  }
+
+  // --- COMMAND: /resume_campaign <campaign_id> ---
+  if (command === "/resume_campaign" || command === "/unpause_campaign") {
+    if (args.length === 0) {
+      await sendTelegramMessage(
+        botToken,
+        chatId,
+        `⚠️ <b>Usage:</b> <code>/resume_campaign &lt;campaign_id&gt;</code>`
+      );
+      return c.json({ ok: true });
+    }
+
+    const targetId = args[0].trim();
+
+    try {
+      const camp = await CampaignService.updateCampaign(db, targetId, { isActive: true });
+
+      const resumeMsg = `▶️ <b>Campaign Resumed</b>\n\n` +
+        `• <b>Campaign:</b> ${escapeHtml(camp.name)} (<code>${camp.id}</code>)\n` +
+        `• <b>Status:</b> 🟢 <b>ACTIVE</b>\n\n` +
+        `<i>Eligible new signups will now receive rewards from this campaign.</i>`;
+
+      await sendTelegramMessage(botToken, chatId, resumeMsg);
+    } catch (err: any) {
+      console.error("[Bot /resume_campaign Error]:", err);
+      const safeMsg = err.message && !err.message.includes("SQLITE") ? err.message : "Failed to resume campaign.";
+      await sendTelegramMessage(
+        botToken,
+        chatId,
+        `❌ <b>Resume Failed:</b> ${escapeHtml(safeMsg)}`
+      );
+    }
+    return c.json({ ok: true });
+  }
+
+  // --- COMMAND: /extend_campaign <campaign_id> <new_max_claims> ---
+  if (command === "/extend_campaign" || command === "/update_campaign_quota") {
+    if (args.length < 2) {
+      await sendTelegramMessage(
+        botToken,
+        chatId,
+        `⚠️ <b>Usage:</b> <code>/extend_campaign &lt;campaign_id&gt; &lt;new_max_claims&gt;</code>\n\n` +
+        `<i>Example:</i> <code>/extend_campaign welcome_first_100 200</code>`
+      );
+      return c.json({ ok: true });
+    }
+
+    const targetId = args[0].trim();
+    const newMax = parseInt(args[1], 10);
+
+    if (isNaN(newMax) || newMax <= 0) {
+      await sendTelegramMessage(
+        botToken,
+        chatId,
+        `❌ <code>new_max_claims</code> must be a positive integer.`
+      );
+      return c.json({ ok: true });
+    }
+
+    try {
+      const camp = await CampaignService.updateCampaign(db, targetId, { maxClaims: newMax });
+      const remaining = Math.max(0, camp.maxClaims - camp.claimedCount);
+
+      const extendMsg = `📈 <b>Campaign Quota Updated</b>\n\n` +
+        `• <b>Campaign:</b> ${escapeHtml(camp.name)} (<code>${camp.id}</code>)\n` +
+        `• <b>New Quota:</b> <b>${camp.claimedCount}</b> / <b>${camp.maxClaims}</b> claims (${remaining} remaining slots)`;
+
+      await sendTelegramMessage(botToken, chatId, extendMsg);
+    } catch (err: any) {
+      console.error("[Bot /extend_campaign Error]:", err);
+      const safeMsg = err.message && !err.message.includes("SQLITE") ? err.message : "Failed to extend campaign.";
+      await sendTelegramMessage(
+        botToken,
+        chatId,
+        `❌ <b>Update Failed:</b> ${escapeHtml(safeMsg)}`
+      );
+    }
+    return c.json({ ok: true });
+  }
+
+  // --- COMMAND: /delete_campaign <campaign_id> ---
+  if (
+    command === "/delete_campaign" ||
+    command === "/del_campaign" ||
+    command === "/remove_campaign"
+  ) {
+    if (args.length === 0) {
+      await sendTelegramMessage(
+        botToken,
+        chatId,
+        `⚠️ <b>Usage:</b> <code>/delete_campaign &lt;campaign_id&gt;</code>`
+      );
+      return c.json({ ok: true });
+    }
+
+    const targetId = args[0].trim();
+
+    try {
+      const deleted = await CampaignService.deleteCampaign(db, targetId);
+      if (!deleted) {
+        await sendTelegramMessage(
+          botToken,
+          chatId,
+          `❌ Campaign <code>${escapeHtml(targetId)}</code> not found in database.`
+        );
+        return c.json({ ok: true });
+      }
+
+      const delMsg = `🗑️ <b>Campaign Deleted</b>\n\n` +
+        `Campaign <code>${escapeHtml(targetId)}</code> has been permanently removed.`;
+
+      await sendTelegramMessage(botToken, chatId, delMsg);
+    } catch (err: any) {
+      console.error("[Bot /delete_campaign Error]:", err);
+      const safeMsg = err.message && !err.message.includes("SQLITE") ? err.message : "Failed to delete campaign.";
+      await sendTelegramMessage(
+        botToken,
+        chatId,
+        `❌ <b>Delete Failed:</b> ${escapeHtml(safeMsg)}`
       );
     }
     return c.json({ ok: true });

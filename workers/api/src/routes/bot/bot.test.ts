@@ -11,37 +11,94 @@ describe("🤖 Telegram Bot & Admin Tier Management Suite", () => {
   app.route("/admin", adminRouter);
 
   // In-memory mock database
-  const createMockDb = (initialUsers: any[] = [], initialCodes: any[] = []) => {
-    const users = [...initialUsers];
-    const codes = [...initialCodes];
+  const createMockDb = (
+    initialUsers: any[] = [],
+    initialCodes: any[] = [],
+    initialCampaigns: any[] = []
+  ) => {
+    const users = initialUsers;
+    const codes = initialCodes;
+    const campaigns = initialCampaigns;
 
     return {
       get: async (query: string, params: any[] = []) => {
-        if (query.includes("COUNT(*) as count FROM users")) {
+        const normalized = query.replace(/\s+/g, " ").trim();
+        if (normalized.includes("COUNT(*) as count FROM users")) {
           return { count: users.length };
         }
-        if (query.includes("SELECT id, telegram_user_id") || query.includes("FROM users WHERE")) {
+        if (normalized.includes("SELECT id, telegram_user_id") || normalized.includes("FROM users WHERE")) {
           const p = params[0];
           return users.find((u) => u.id === p || u.telegram_user_id === p) || null;
         }
-        if (query.includes("COUNT(*) as count FROM media_items")) {
+        if (normalized.includes("COUNT(*) as count FROM media_items")) {
           return { count: 42 };
         }
-        if (query.includes("SELECT tier FROM users WHERE telegram_user_id")) {
+        if (normalized.includes("SELECT tier FROM users WHERE telegram_user_id")) {
           const p = params[0];
           const found = users.find((u) => u.telegram_user_id === p);
           return found ? { tier: found.tier } : null;
         }
+        if (normalized.includes("FROM signup_campaigns WHERE id = ?")) {
+          const id = params[0];
+          return campaigns.find((c) => c.id === id) || null;
+        }
         return null;
       },
       all: async (query: string, params: any[] = []) => {
-        if (query.includes("FROM users")) {
+        const normalized = query.replace(/\s+/g, " ").trim();
+        if (normalized.includes("FROM users")) {
           return users;
+        }
+        if (normalized.includes("FROM signup_campaigns")) {
+          return campaigns;
         }
         return [];
       },
       run: async (query: string, params: any[] = []) => {
         const normalizedQuery = query.replace(/\s+/g, " ").trim();
+        if (normalizedQuery.includes("INSERT INTO signup_campaigns")) {
+          const [id, name, target_tier, duration_days, max_claims, is_active, priority, starts_at, ends_at] = params;
+          campaigns.push({
+            id,
+            name,
+            target_tier,
+            duration_days,
+            max_claims,
+            claimed_count: 0,
+            is_active: is_active ?? 1,
+            priority: priority ?? 0,
+            starts_at: starts_at || null,
+            ends_at: ends_at || null,
+            created_at: new Date().toISOString(),
+          });
+          return { success: true, changes: 1 };
+        }
+        if (normalizedQuery.includes("UPDATE signup_campaigns SET")) {
+          const id = params[params.length - 1];
+          const c = campaigns.find((item) => item.id === id);
+          if (c) {
+            if (normalizedQuery.includes("is_active = ?")) {
+              c.is_active = params[0];
+            }
+            if (normalizedQuery.includes("max_claims = ?")) {
+              c.max_claims = params[0];
+            }
+            if (normalizedQuery.includes("name = ?")) {
+              c.name = params[0];
+            }
+            return { success: true, changes: 1 };
+          }
+          return { success: true, changes: 0 };
+        }
+        if (normalizedQuery.includes("DELETE FROM signup_campaigns WHERE id = ?")) {
+          const id = params[0];
+          const idx = campaigns.findIndex((item) => item.id === id);
+          if (idx !== -1) {
+            campaigns.splice(idx, 1);
+            return { success: true, changes: 1 };
+          }
+          return { success: true, changes: 0 };
+        }
         if (normalizedQuery.includes("INSERT INTO activation_codes")) {
           codes.push({
             code: params[0],
@@ -208,7 +265,7 @@ describe("🤖 Telegram Bot & Admin Tier Management Suite", () => {
       mockEnv
     );
     assert.equal(res.status, 200);
-    const data = await res.json();
+    const data: any = await res.json();
     assert.equal(data.total, 2);
   });
 
@@ -328,4 +385,179 @@ describe("🤖 Telegram Bot & Admin Tier Management Suite", () => {
       /between 3 and 64 characters/i
     );
   });
+
+  it("10. Bot Webhook: /create_campaign, /campaigns, /campaign, /pause_campaign, /resume_campaign, /extend_campaign, /delete_campaign flow cleanly", async () => {
+    const sentMessages: Array<{ chatId: any; text: string }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url: any, opts: any) => {
+      if (url.includes("/sendMessage")) {
+        const body = JSON.parse(opts.body);
+        sentMessages.push({ chatId: body.chat_id, text: body.text });
+      }
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 123 } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+
+    try {
+      const mockCampaigns: any[] = [];
+      const mockDb: any = createMockDb(initialTestUsers, [], mockCampaigns);
+      const mockEnv = {
+        DB: {
+          prepare: (query: string) => ({
+            bind: (...params: any[]) => ({
+              first: async () => mockDb.get(query, params),
+              all: async () => ({ results: await mockDb.all(query, params) }),
+              run: async () => mockDb.run(query, params),
+            }),
+          }),
+        },
+        TELEGRAM_BOT_TOKEN: "mock_test_bot_token",
+        TELEGRAM_TEST_MODE: "true",
+        ADMIN_TELEGRAM_IDS: "1139540899",
+      };
+
+      const sendBotCommand = async (text: string) => {
+        return await app.request(
+          "/bot/webhook",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              update_id: 200,
+              message: {
+                message_id: 2,
+                from: { id: 1139540899, first_name: "Shiva" },
+                chat: { id: 1139540899, type: "private" },
+                text,
+              },
+            }),
+          },
+          mockEnv
+        );
+      };
+
+      // 1. Create campaign via bot
+      const resCreate = await sendBotCommand("/create_campaign 100 30 Early Adopter Reward");
+      assert.equal(resCreate.status, 200);
+      assert.equal(mockCampaigns.length, 1);
+      assert.equal(mockCampaigns[0].name, "Early Adopter Reward");
+      assert.equal(mockCampaigns[0].max_claims, 100);
+      assert.equal(mockCampaigns[0].duration_days, 30);
+      const createdId = mockCampaigns[0].id;
+      assert.ok(sentMessages.some((m) => m.text.includes("Signup Campaign Created!")));
+
+      // 2. List campaigns via /campaigns
+      sentMessages.length = 0;
+      const resList = await sendBotCommand("/campaigns");
+      assert.equal(resList.status, 200);
+      assert.ok(sentMessages.some((m) => m.text.includes("Early Adopter Reward") && m.text.includes("ACTIVE")));
+
+      // 3. Inspect campaign via /campaign <id>
+      sentMessages.length = 0;
+      const resInspect = await sendBotCommand(`/campaign ${createdId}`);
+      assert.equal(resInspect.status, 200);
+      assert.ok(sentMessages.some((m) => m.text.includes("Campaign Inspection") && m.text.includes(createdId)));
+
+      // 4. Pause campaign via /pause_campaign <id>
+      sentMessages.length = 0;
+      const resPause = await sendBotCommand(`/pause_campaign ${createdId}`);
+      assert.equal(resPause.status, 200);
+      assert.equal(mockCampaigns[0].is_active, 0);
+      assert.ok(sentMessages.some((m) => m.text.includes("Campaign Paused")));
+
+      // 5. Resume campaign via /resume_campaign <id>
+      sentMessages.length = 0;
+      const resResume = await sendBotCommand(`/resume_campaign ${createdId}`);
+      assert.equal(resResume.status, 200);
+      assert.equal(mockCampaigns[0].is_active, 1);
+      assert.ok(sentMessages.some((m) => m.text.includes("Campaign Resumed")));
+
+      // 6. Extend campaign quota via /extend_campaign <id> <new_max>
+      sentMessages.length = 0;
+      const resExtend = await sendBotCommand(`/extend_campaign ${createdId} 250`);
+      assert.equal(resExtend.status, 200);
+      assert.equal(mockCampaigns[0].max_claims, 250);
+      assert.ok(sentMessages.some((m) => m.text.includes("Campaign Quota Updated") && m.text.includes("250")));
+
+      // 7. Delete campaign via /delete_campaign <id>
+      sentMessages.length = 0;
+      const resDel = await sendBotCommand(`/delete_campaign ${createdId}`);
+      assert.equal(resDel.status, 200);
+      assert.equal(mockCampaigns.length, 0);
+      assert.ok(sentMessages.some((m) => m.text.includes("Campaign Deleted")));
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("11. Bot Webhook: /create_campaign handles lifetime duration (0) and default duration", async () => {
+    const sentMessages: Array<{ chatId: any; text: string }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url: any, opts: any) => {
+      if (url.includes("/sendMessage")) {
+        const body = JSON.parse(opts.body);
+        sentMessages.push({ chatId: body.chat_id, text: body.text });
+      }
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 123 } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+
+    try {
+      const mockCampaigns: any[] = [];
+      const mockDb: any = createMockDb(initialTestUsers, [], mockCampaigns);
+      const mockEnv = {
+        DB: {
+          prepare: (query: string) => ({
+            bind: (...params: any[]) => ({
+              first: async () => mockDb.get(query, params),
+              all: async () => ({ results: await mockDb.all(query, params) }),
+              run: async () => mockDb.run(query, params),
+            }),
+          }),
+        },
+        TELEGRAM_BOT_TOKEN: "mock_test_bot_token",
+        TELEGRAM_TEST_MODE: "true",
+        ADMIN_TELEGRAM_IDS: "1139540899",
+      };
+
+      const sendBotCommand = async (text: string) => {
+        return await app.request(
+          "/bot/webhook",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              update_id: 201,
+              message: {
+                message_id: 3,
+                from: { id: 1139540899, first_name: "Shiva" },
+                chat: { id: 1139540899, type: "private" },
+                text,
+              },
+            }),
+          },
+          mockEnv
+        );
+      };
+
+      // Create lifetime campaign
+      await sendBotCommand("/create_campaign 50 0 Lifetime VIP Promo");
+      assert.equal(mockCampaigns.length, 1);
+      assert.equal(mockCampaigns[0].name, "Lifetime VIP Promo");
+      assert.equal(mockCampaigns[0].duration_days, null);
+
+      // Create default duration campaign
+      await sendBotCommand("/create_campaign 200 Default Promo");
+      assert.equal(mockCampaigns.length, 2);
+      assert.equal(mockCampaigns[1].name, "Default Promo");
+      assert.equal(mockCampaigns[1].duration_days, 30);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });
+
