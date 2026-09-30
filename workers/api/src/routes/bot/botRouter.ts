@@ -35,35 +35,61 @@ async function sendTelegramMessage(
   }
 }
 
-async function ensureAdminCommandMenu(botToken: string, chatId: number | string) {
+async function syncTelegramBotCommands(botToken: string, chatId?: number | string) {
   try {
-    const adminCommands = [
+    const allCommands = [
       { command: "status", description: "Check your account & subscription status" },
-      { command: "users", description: "List registered users & tiers (Admin)" },
-      { command: "user", description: "Inspect single user details (Admin)" },
-      { command: "gen", description: "Generate a Pro activation code (Admin)" },
-      { command: "assign", description: "Grant Pro membership to user (Admin)" },
-      { command: "hold", description: "Put user subscription on hold (Admin)" },
-      { command: "resume", description: "Resume paused subscription (Admin)" },
-      { command: "revoke", description: "Revoke subscription to Free (Admin)" },
-      { command: "campaigns", description: "List signup reward campaigns (Admin)" },
-      { command: "create_campaign", description: "Create a new signup campaign (Admin)" },
-      { command: "campaign", description: "Inspect campaign details (Admin)" },
-      { command: "pause_campaign", description: "Pause a signup campaign (Admin)" },
-      { command: "resume_campaign", description: "Resume a paused campaign (Admin)" },
-      { command: "extend_campaign", description: "Adjust campaign quota (Admin)" },
-      { command: "delete_campaign", description: "Delete a signup campaign (Admin)" },
+      { command: "campaigns", description: "List signup reward campaigns" },
+      { command: "create_campaign", description: "Create a new signup campaign" },
+      { command: "campaign", description: "Inspect campaign details" },
+      { command: "pause_campaign", description: "Pause a signup campaign" },
+      { command: "resume_campaign", description: "Resume a paused campaign" },
+      { command: "extend_campaign", description: "Adjust campaign quota" },
+      { command: "delete_campaign", description: "Delete a signup campaign" },
+      { command: "users", description: "List registered users & tiers" },
+      { command: "user", description: "Inspect single user details" },
+      { command: "gen", description: "Generate a Pro activation code" },
+      { command: "assign", description: "Grant Pro membership to user" },
+      { command: "hold", description: "Put user subscription on hold" },
+      { command: "resume", description: "Resume paused subscription" },
+      { command: "revoke", description: "Revoke subscription to Free" },
       { command: "help", description: "Show admin command guide" },
     ];
+
+    // 1. Set global default scope (for global typing autocomplete)
     await fetch(`https://api.telegram.org/bot${botToken}/setMyCommands`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        commands: adminCommands,
-        scope: { type: "chat", chat_id: chatId },
+        commands: allCommands,
+        scope: { type: "default" },
       }),
     });
-  } catch {}
+
+    // 2. Set all private chats scope (for direct messages typing autocomplete)
+    await fetch(`https://api.telegram.org/bot${botToken}/setMyCommands`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        commands: allCommands,
+        scope: { type: "all_private_chats" },
+      }),
+    });
+
+    // 3. Set chat-specific scope if chatId is provided
+    if (chatId) {
+      await fetch(`https://api.telegram.org/bot${botToken}/setMyCommands`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          commands: allCommands,
+          scope: { type: "chat", chat_id: chatId },
+        }),
+      });
+    }
+  } catch (err) {
+    console.error("[Bot API Error]: Failed to sync commands with Telegram:", err);
+  }
 }
 
 /**
@@ -213,7 +239,7 @@ botRouter.post("/webhook", async (c) => {
         `<i>Check your own account status.</i>`;
 
       await sendTelegramMessage(botToken, chatId, adminHelp);
-      ensureAdminCommandMenu(botToken, chatId);
+      syncTelegramBotCommands(botToken, chatId);
       return c.json({ ok: true });
     } else {
       const userHelp = `🌌 <b>Welcome to Aetheroll!</b>\n\n` +
@@ -899,6 +925,17 @@ botRouter.post("/webhook", async (c) => {
     return c.json({ ok: true });
   }
 
+  // --- COMMAND: /sync_commands ---
+  if (command === "/sync_commands" || command === "/set_commands") {
+    await syncTelegramBotCommands(botToken, chatId);
+    await sendTelegramMessage(
+      botToken,
+      chatId,
+      `✅ <b>Commands Synced with Telegram</b>\n\nAll admin, user, and campaign commands have been registered for global and chat autocomplete suggestions.`
+    );
+    return c.json({ ok: true });
+  }
+
   return c.json({ ok: true });
 });
 
@@ -917,6 +954,26 @@ async function verifyAdminHttpCaller(c: any): Promise<boolean> {
   const auth = await resolveUserAuth(c);
   return !!(auth.authenticated && auth.isAdmin);
 }
+
+/**
+ * POST /api/bot/sync-commands
+ * Push command suggestions to Telegram servers (default + private chats) (Admin Protected)
+ */
+botRouter.post("/sync-commands", async (c) => {
+  const isAdmin = await verifyAdminHttpCaller(c);
+  if (!isAdmin) {
+    return c.json({ error: "Unauthorized: Admin privileges required." }, 403);
+  }
+
+  const envObj = (c.env as any) || {};
+  const botToken = envObj.TELEGRAM_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN;
+  if (!botToken) {
+    return c.json({ error: "TELEGRAM_BOT_TOKEN is missing" }, 500);
+  }
+
+  await syncTelegramBotCommands(botToken);
+  return c.json({ success: true, message: "Commands synced successfully to Telegram servers" });
+});
 
 /**
  * POST /api/bot/setup-webhook
@@ -966,9 +1023,14 @@ botRouter.post("/setup-webhook", async (c) => {
   });
 
   const tgData = await res.json();
+
+  // Also sync commands to Telegram server scopes
+  await syncTelegramBotCommands(botToken);
+
   return c.json({
     configuredUrl: fullWebhookUrl,
     telegramResponse: tgData,
+    commandsSynced: true,
   });
 });
 
