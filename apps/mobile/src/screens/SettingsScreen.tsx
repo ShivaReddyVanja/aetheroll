@@ -447,7 +447,7 @@ export function SettingsScreen({
                 </Text>
               </View>
               {availableUpdate.releaseNotes && availableUpdate.releaseNotes.length > 0 && (
-                <Text style={styles.updateCardNotes} numberOfLines={3}>
+                <Text style={styles.updateCardNotes} numberOfLines={6}>
                   {availableUpdate.releaseNotes.join('\n')}
                 </Text>
               )}

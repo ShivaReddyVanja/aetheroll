@@ -32,6 +32,72 @@ function formatSemVer({ major, minor, patch }) {
   return `${major}.${minor}.${patch}`;
 }
 
+export function readReleaseNotesFromFile() {
+  const possiblePaths = [
+    path.join(rootDir, "RELEASE_NOTES.md"),
+    path.join(rootDir, "apps", "mobile", "RELEASE_NOTES.md"),
+    path.join(rootDir, "RELEASE_NOTES.txt"),
+  ];
+
+  for (const filePath of possiblePaths) {
+    if (fs.existsSync(filePath)) {
+      const raw = fs.readFileSync(filePath, "utf8");
+      const lines = raw
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0 && !l.startsWith("#") && !l.startsWith("<!--") && !l.startsWith("//"))
+        .map((l) => l.replace(/^[-*•\s]+/, "").trim())
+        .filter(Boolean);
+
+      if (lines.length > 0) {
+        return lines;
+      }
+    }
+  }
+  return null;
+}
+
+export function fallbackFormatCommits(commits) {
+  const notes = [];
+  const seen = new Set();
+
+  for (const raw of commits) {
+    const cleaned = raw
+      .replace(/^[-*•\s]+/, "")
+      .replace(/\s*\([a-f0-9]{7,}\)$/i, "")
+      .trim();
+
+    if (!cleaned) continue;
+    if (/^(merge|chore|ci|test|bump|style|refactor\(internal\))/i.test(cleaned)) continue;
+
+    let formatted = "";
+    if (/^feat(\(.*\))?:\s*/i.test(cleaned)) {
+      const desc = cleaned.replace(/^feat(\(.*\))?:\s*/i, "").trim();
+      formatted = `${desc.charAt(0).toUpperCase() + desc.slice(1)}`;
+    } else if (/^fix(\(.*\))?:\s*/i.test(cleaned)) {
+      const desc = cleaned.replace(/^fix(\(.*\))?:\s*/i, "").trim();
+      formatted = `${desc.charAt(0).toUpperCase() + desc.slice(1)}`;
+    } else if (/^(perf|fast)(\(.*\))?:\s*/i.test(cleaned)) {
+      const desc = cleaned.replace(/^(perf|fast)(\(.*\))?:\s*/i, "").trim();
+      formatted = `${desc.charAt(0).toUpperCase() + desc.slice(1)}`;
+    } else if (/^refactor(\(.*\))?:\s*/i.test(cleaned)) {
+      const desc = cleaned.replace(/^refactor(\(.*\))?:\s*/i, "").trim();
+      formatted = `${desc.charAt(0).toUpperCase() + desc.slice(1)}`;
+    } else {
+      formatted = `${cleaned.charAt(0).toUpperCase() + cleaned.slice(1)}`;
+    }
+
+    if (!seen.has(formatted.toLowerCase())) {
+      seen.add(formatted.toLowerCase());
+      notes.push(formatted);
+    }
+
+    if (notes.length >= 4) break;
+  }
+
+  return notes.length > 0 ? notes : ["General performance improvements and bug fixes"];
+}
+
 export function determineNextVersion(options = {}) {
   const { customVersion, bumpType, runNumber } = options;
 
@@ -94,7 +160,6 @@ export function determineNextVersion(options = {}) {
     }
 
     if (tags.length === 0) {
-      // If no tag ever existed, start at 1.0.0
       nextVersion = { major: 1, minor: 0, patch: 0 };
     } else if (isMajor) {
       nextVersion.major += 1;
@@ -120,17 +185,28 @@ export function determineNextVersion(options = {}) {
     versionCode = Math.max(1, commitCount);
   }
 
-  // Generate release notes
-  const logRange = latestTag ? `${latestTag}..HEAD` : "-n 10";
-  const commitList = runGit(`log ${logRange} --pretty=format:"- %s (%h)"`);
-  const releaseNotes = commitList || "- General improvements and bug fixes";
+  // Release notes: Read directly from curated RELEASE_NOTES.md, with fallback to commits
+  const fileNotes = readReleaseNotesFromFile();
+  let releaseNotesArray = [];
+
+  if (fileNotes && fileNotes.length > 0) {
+    releaseNotesArray = fileNotes;
+  } else {
+    const logRange = latestTag ? `${latestTag}..HEAD` : "-n 15";
+    const rawCommits = runGit(`log ${logRange} --pretty=format:"%s"`);
+    const commitLines = rawCommits ? rawCommits.split("\n").map((c) => c.trim()).filter(Boolean) : [];
+    releaseNotesArray = fallbackFormatCommits(commitLines);
+  }
+
+  const releaseNotesMarkdown = releaseNotesArray.map((line) => `- ${line.replace(/^[-*•\s]+/, "")}`).join("\n");
 
   return {
     previousTag: latestTag || "none",
     version: versionString,
     tag: tagName,
     versionCode,
-    releaseNotes,
+    releaseNotes: releaseNotesMarkdown,
+    releaseNotesArray,
   };
 }
 
@@ -178,6 +254,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       `version_code=${result.versionCode}`,
       `previous_tag=${result.previousTag}`,
       `release_notes<<${delimiter}\n${result.releaseNotes}\n${delimiter}`,
+      `release_notes_json=${JSON.stringify(result.releaseNotesArray)}`,
     ].join("\n");
     fs.appendFileSync(process.env.GITHUB_OUTPUT, outputContent + "\n");
   }

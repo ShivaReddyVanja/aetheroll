@@ -7,6 +7,7 @@ on:
     paths:
       - 'apps/mobile/**'
       - 'packages/types/**'
+      - 'RELEASE_NOTES.md'
       - '.github/workflows/mobile-release.yml'
       - 'scripts/bump-mobile-version.mjs'
   workflow_dispatch:
@@ -38,6 +39,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       version_code: ${{ steps.version.outputs.version_code }}
       release_notes: ${{ steps.version.outputs.release_notes }}
+      release_notes_json: ${{ steps.version.outputs.release_notes_json }}
       apk_path: ${{ steps.artifacts.outputs.apk_path }}
       sha_path: ${{ steps.artifacts.outputs.sha_path }}
 
@@ -68,6 +70,9 @@ jobs:
         id: version
         env:
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          LIVE_API_URL: ${{ secrets.MOBILE_API_URL || vars.MOBILE_API_URL || 'https://aetheroll-api.builtbyshiva.com' }}
         run: |
           BUMP_ARGS="--github-output --sync-package"
           if [ -n "${{ github.event.inputs.custom_version }}" ]; then
@@ -245,6 +250,7 @@ jobs:
           RELEASE_VERSION_CODE: ${{ needs.build-and-release.outputs.version_code }}
           RELEASE_TAG: ${{ needs.build-and-release.outputs.tag }}
           RELEASE_NOTES: ${{ needs.build-and-release.outputs.release_notes }}
+          RELEASE_NOTES_JSON: ${{ needs.build-and-release.outputs.release_notes_json }}
           APK_PATH: ${{ needs.build-and-release.outputs.apk_path }}
           SHA_PATH: ${{ needs.build-and-release.outputs.sha_path }}
         shell: bash
@@ -264,7 +270,15 @@ jobs:
           export APK_KEY APK_SIZE APK_SHA256 FULL_MANIFEST_PATH
           node -e '
             const fs = require("fs");
-            const notes = (process.env.RELEASE_NOTES || "").split("\\n").filter(Boolean);
+            let notes = [];
+            try {
+              if (process.env.RELEASE_NOTES_JSON) {
+                notes = JSON.parse(process.env.RELEASE_NOTES_JSON);
+              }
+            } catch {}
+            if (!Array.isArray(notes) || notes.length === 0) {
+              notes = (process.env.RELEASE_NOTES || "").split("\\n").map(s => s.replace(/^[-*•\s]+/, "").trim()).filter(Boolean);
+            }
             const manifest = {
               version: process.env.RELEASE_VERSION,
               versionCode: Number(process.env.RELEASE_VERSION_CODE || process.env.GITHUB_RUN_NUMBER),

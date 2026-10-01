@@ -1,0 +1,4 @@
+- Dynamic signup promo campaigns and automatic premium tier onboarding
+- Real-time tier status syncing and instant entitlement refresh
+- Telegram bot command suggestions and interactive admin controls
+- Polished in-app update prompt with clean release changelogs
