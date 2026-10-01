@@ -1,4 +1,6 @@
-- Dynamic signup promo campaigns and automatic premium tier onboarding
-- Real-time tier status syncing and instant entitlement refresh
-- Telegram bot command suggestions and interactive admin controls
-- Polished in-app update prompt with clean release changelogs
+- Streamlined settings preferences with unified hero profile card and remaining Pro subscription days indicator
+- Configured automatic Edge Streaming default for Pro members with clear benefit descriptions
+- Updated top navigation bar with live media item count display and streamlined layout
+- Relocated and simplified background upload access and battery optimization controls
+- Added collapsible app update banner with clean release notes and dismiss options
+- Polished backup screen header hierarchy and queue state synchronization

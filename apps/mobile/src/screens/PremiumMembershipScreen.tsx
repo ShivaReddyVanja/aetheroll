@@ -35,19 +35,35 @@ import { redeemActivationCode } from '../services/api';
 export interface PremiumMembershipScreenProps {
   onBack?: () => void;
   userTier?: 'free' | 'premium' | 'admin';
+  tierExpiresAt?: string | null;
   isTierHeld?: boolean;
   tierHoldReason?: string | null;
   onRedeemSuccess?: (tier: string) => void;
 }
 
+function getRemainingDays(tierExpiresAt?: string | null): number | null {
+  if (!tierExpiresAt) return null;
+  try {
+    const expires = new Date(tierExpiresAt).getTime();
+    const now = Date.now();
+    const diffMs = expires - now;
+    if (diffMs <= 0) return 0;
+    return Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+  } catch {
+    return null;
+  }
+}
+
 export function PremiumMembershipScreen({
   onBack,
   userTier = 'free',
+  tierExpiresAt = null,
   isTierHeld = false,
   tierHoldReason = null,
   onRedeemSuccess,
 }: PremiumMembershipScreenProps) {
   const insets = useSafeAreaInsets();
+  const remainingDays = getRemainingDays(tierExpiresAt);
   const [code, setCode] = useState('');
   const [isRedeeming, setIsRedeeming] = useState(false);
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -197,7 +213,9 @@ export function PremiumMembershipScreen({
                 <View style={{ flex: 1 }}>
                   <Text style={styles.rowLabel}>Pro Active</Text>
                   <Text style={styles.rowSubtitle}>
-                    All Pro features are active on this account.
+                    {remainingDays !== null
+                      ? `${remainingDays} ${remainingDays === 1 ? 'day' : 'days'} remaining on your Pro subscription.`
+                      : 'All Pro features are active on this account.'}
                   </Text>
                 </View>
               </View>

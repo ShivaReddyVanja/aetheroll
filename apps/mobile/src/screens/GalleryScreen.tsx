@@ -504,12 +504,11 @@ export function GalleryScreen() {
       {/* Top App Header */}
       <Header
         channelName={activeChannel?.name || 'Private Channel'}
-        userName={user?.displayName || user?.username || 'User'}
+        itemCount={items.length}
         onSelectChannel={() => {
           setShowChannelPicker(true);
           fetchChannels();
         }}
-        onOpenProfile={() => setShowProfileModal(true)}
         onSync={handleRefresh}
         isSyncing={refreshing}
       />

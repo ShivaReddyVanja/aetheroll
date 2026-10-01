@@ -11,6 +11,7 @@ import {
   Pressable,
   TextInput,
   StatusBar,
+  Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
@@ -29,11 +30,13 @@ import {
   ArrowLeft,
   HardDrive,
   Lock,
+  Battery,
+  X,
 } from 'lucide-react-native';
 import { ChannelItem } from '../components/ChannelPickerSheet';
 import { AppVersionInfo, AndroidRelease, subscribeToUpdateProgress } from '../services/appUpdateService';
 import { getApiBaseUrl, setApiBaseUrl, getTierStatus } from '../services/api';
-import { UploadStrategyRouter, UploadEngineMode } from '../services/backup';
+import { UploadStrategyRouter, UploadEngineMode, NativeBackgroundService } from '../services/backup';
 import { StreamingStrategyRouter, StreamingEngineMode, NativeStreamServer } from '../services/streaming';
 import { PremiumMembershipScreen } from './PremiumMembershipScreen';
 
@@ -73,6 +76,19 @@ function formatBytes(bytes: number): string {
   return `${val} ${sizes[i]}`;
 }
 
+function getRemainingDays(tierExpiresAt?: string | null): number | null {
+  if (!tierExpiresAt) return null;
+  try {
+    const expires = new Date(tierExpiresAt).getTime();
+    const now = Date.now();
+    const diffMs = expires - now;
+    if (diffMs <= 0) return 0;
+    return Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+  } catch {
+    return null;
+  }
+}
+
 export function SettingsScreen({
   user,
   activeChannel,
@@ -103,9 +119,61 @@ export function SettingsScreen({
   const [showStreamingModal, setShowStreamingModal] = useState(false);
   const [streamCacheSize, setStreamCacheSize] = useState<number>(0);
   const [isClearingCache, setIsClearingCache] = useState(false);
+  const [isBatteryUnrestricted, setIsBatteryUnrestricted] = useState(true);
+  const [isUpdateDismissed, setIsUpdateDismissed] = useState(false);
+
+  const checkBatteryStatus = useCallback(async () => {
+    if (Platform.OS === 'android') {
+      try {
+        const isIgnored = await NativeBackgroundService.isBatteryOptimizationIgnored();
+        setIsBatteryUnrestricted(isIgnored);
+      } catch {
+        setIsBatteryUnrestricted(true);
+      }
+    }
+  }, []);
+
+  const handleToggleBatteryOptimization = async () => {
+    if (Platform.OS !== 'android') return;
+
+    if (isBatteryUnrestricted) {
+      Alert.alert(
+        'Background Sync Active',
+        'Uploads run smoothly in the background even when your phone screen is locked.',
+        [
+          { text: 'OK', style: 'cancel' },
+          {
+            text: 'Manage in Settings',
+            onPress: async () => {
+              await NativeBackgroundService.requestIgnoreBatteryOptimization();
+            },
+          },
+        ]
+      );
+    } else {
+      Alert.alert(
+        'Keep Uploads Running',
+        'Allow Aetheroll to back up your photos and videos smoothly even when your phone screen turns off.',
+        [
+          { text: 'Not Now', style: 'cancel' },
+          {
+            text: 'Turn On',
+            onPress: async () => {
+              await NativeBackgroundService.requestIgnoreBatteryOptimization();
+              setTimeout(async () => {
+                const isIgnored = await NativeBackgroundService.isBatteryOptimizationIgnored();
+                setIsBatteryUnrestricted(isIgnored);
+              }, 1200);
+            },
+          },
+        ]
+      );
+    }
+  };
 
   const isHeld = !!user?.isTierHeld;
   const isPro = (user?.tier === 'premium' || user?.tier === 'admin') && !isHeld;
+  const remainingDays = getRemainingDays(user?.tierExpiresAt);
 
   const refreshStreamCacheSize = useCallback(async () => {
     try {
@@ -122,6 +190,7 @@ export function SettingsScreen({
       setStreamingEngineMode(mode);
     });
     refreshStreamCacheSize();
+    checkBatteryStatus();
 
     // Refresh live tier status from backend on open
     getTierStatus()
@@ -247,84 +316,68 @@ export function SettingsScreen({
       contentContainerStyle={styles.scrollContainer}
       showsVerticalScrollIndicator={false}
     >
-      {/* Screen Title */}
-      <View style={styles.titleContainer}>
-        <Text style={styles.screenTitle}>Settings</Text>
-        <Text style={styles.screenSubtitle}>Preferences & Cloud Account</Text>
-      </View>
 
-      {/* Hero Profile Banner */}
-      <View style={styles.profileCard}>
+      {/* Unified Hero Profile & Pro Membership Card */}
+      <TouchableOpacity
+        style={[
+          styles.profileCard,
+          isHeld
+            ? { borderColor: '#FDE68A', backgroundColor: '#FFFDF5' }
+            : isPro
+            ? { borderColor: '#E9D5FF', backgroundColor: '#FAF5FF' }
+            : {},
+        ]}
+        activeOpacity={0.85}
+        onPress={() => setShowProModal(true)}
+      >
         <View style={styles.avatarCircle}>
           <Text style={styles.avatarText}>{avatarInitial}</Text>
         </View>
+
         <View style={styles.profileInfo}>
-          <Text style={styles.profileName} numberOfLines={1}>
-            {user?.displayName || 'Telegram User'}
-          </Text>
+          <View style={styles.profileNameRow}>
+            <Text style={styles.profileName} numberOfLines={1}>
+              {user?.displayName || 'Telegram User'}
+            </Text>
+            <View
+              style={[
+                styles.proBadge,
+                isHeld && { backgroundColor: '#FFFBEB', borderColor: '#FDE68A' },
+                !isHeld && isPro && { backgroundColor: '#ECFDF5', borderColor: '#A7F3D0' },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.proBadgeText,
+                  isHeld && { color: '#D97706' },
+                  !isHeld && isPro && { color: '#059669' },
+                ]}
+              >
+                {isHeld ? 'ON HOLD' : isPro ? 'PRO ACTIVE' : 'FREE TIER'}
+              </Text>
+            </View>
+          </View>
+
           <Text style={styles.profileSub} numberOfLines={1}>
             {user?.username ? `@${user.username}` : 'Telegram Cloud Account'}
           </Text>
-          <View style={styles.statusPill}>
-            <View style={styles.statusDot} />
-            <Text style={styles.statusText}>Connected via MTProto</Text>
-          </View>
-        </View>
-      </View>
 
-      {/* Pro Membership Banner */}
-      <TouchableOpacity
-        style={[styles.proBannerCard, isHeld && { borderColor: '#FDE68A', backgroundColor: '#FFFDF5' }]}
-        activeOpacity={0.8}
-        onPress={() => setShowProModal(true)}
-      >
-        <View style={styles.proBannerLeft}>
-          <View
-            style={[
-              styles.proIconCircle,
-              isHeld ? { backgroundColor: '#F59E0B' } : isPro ? { backgroundColor: '#7C3AED' } : {},
-            ]}
-          >
-            <Sparkles size={18} color="#FFFFFF" />
-          </View>
-          <View style={styles.proBannerTextCol}>
-            <View style={styles.proTagRow}>
-              <Text style={styles.proBannerTitle}>
-                {isHeld ? 'Pro Access On Hold' : isPro ? 'Pro Membership Active' : 'Aetheroll Pro'}
-              </Text>
-              <View
-                style={[
-                  styles.proBadge,
-                  isHeld && { backgroundColor: '#FFFBEB', borderColor: '#FDE68A' },
-                  !isHeld && isPro && { backgroundColor: '#ECFDF5', borderColor: '#A7F3D0' },
-                ]}
-              >
-                <Text
-                  style={[
-                    styles.proBadgeText,
-                    isHeld && { color: '#D97706' },
-                    !isHeld && isPro && { color: '#059669' },
-                  ]}
-                >
-                  {isHeld ? '⏸ ON HOLD' : isPro ? '✓ ACTIVE' : '⚡ PRO'}
-                </Text>
-              </View>
-            </View>
-            <Text style={styles.proBannerSubtitle}>
-              {isHeld
-                ? (user?.tierHoldReason ? `Hold: ${user.tierHoldReason}` : 'Pro access paused. Tap for details.')
-                : isPro
-                ? 'All Pro features unlocked'
-                : 'Tap to redeem code or upgrade'}
-            </Text>
-          </View>
+          <Text style={styles.proActionSubtitle} numberOfLines={1}>
+            {isHeld
+              ? (user?.tierHoldReason ? `Hold: ${user.tierHoldReason}` : 'Pro access paused. Tap for details.')
+              : isPro
+              ? (remainingDays !== null
+                  ? `${remainingDays} ${remainingDays === 1 ? 'day' : 'days'} remaining`
+                  : 'All Pro features unlocked')
+              : 'Tap to redeem code or upgrade to Pro'}
+          </Text>
         </View>
-        <ChevronRight size={18} color={isHeld ? '#D97706' : '#9333EA'} />
+
+        <ChevronRight size={18} color={isHeld ? '#D97706' : isPro ? '#9333EA' : '#94A3B8'} />
       </TouchableOpacity>
 
-      {/* Section 1: Cloud Storage & Sync */}
+      {/* Unified Settings Preferences Card */}
       <View style={styles.section}>
-        <Text style={styles.sectionHeader}>Cloud Storage & Sync</Text>
         <View style={styles.groupCard}>
           {/* Active Photo Album */}
           <TouchableOpacity
@@ -351,37 +404,64 @@ export function SettingsScreen({
 
           <View style={styles.divider} />
 
-          {/* Sync Now */}
+          {/* Background Uploads (Android) */}
+          {Platform.OS === 'android' && (
+            <>
+              <TouchableOpacity
+                style={styles.rowItem}
+                activeOpacity={0.7}
+                onPress={handleToggleBatteryOptimization}
+              >
+                <View style={[styles.iconBox, { backgroundColor: isBatteryUnrestricted ? '#ECFDF5' : '#FFFBEB' }]}>
+                  <Battery size={18} color={isBatteryUnrestricted ? '#059669' : '#D97706'} />
+                </View>
+                <View style={styles.rowTextCol}>
+                  <Text style={styles.rowLabel}>Background Uploads</Text>
+                  <Text
+                    style={[
+                      styles.rowSubtitle,
+                      { color: isBatteryUnrestricted ? '#059669' : '#D97706', fontWeight: '600' },
+                    ]}
+                  >
+                    {isBatteryUnrestricted ? 'Unrestricted Access' : 'Limited Access'}
+                  </Text>
+                </View>
+                <View style={[styles.badgePill, isBatteryUnrestricted ? { backgroundColor: '#ECFDF5', borderColor: '#A7F3D0' } : { backgroundColor: '#FEF3C7', borderColor: '#FDE68A' }]}>
+                  <Text style={[styles.badgeText, isBatteryUnrestricted ? { color: '#059669' } : { color: '#B45309' }]}>
+                    {isBatteryUnrestricted ? 'Unrestricted' : 'Limited'}
+                  </Text>
+                </View>
+                <ChevronRight size={18} color="#94A3B8" />
+              </TouchableOpacity>
+              <View style={styles.divider} />
+            </>
+          )}
+
+          {/* Streaming Engine */}
           <TouchableOpacity
             style={styles.rowItem}
             activeOpacity={0.7}
-            onPress={onSync}
-            disabled={isSyncing}
+            onPress={() => setShowStreamingModal(true)}
           >
-            <View style={[styles.iconBox, { backgroundColor: '#F0FDFA' }]}>
-              {isSyncing ? (
-                <ActivityIndicator size={16} color="#0D9488" />
-              ) : (
-                <RefreshCw size={18} color="#0D9488" />
-              )}
+            <View style={[styles.iconBox, { backgroundColor: '#EEF2FF' }]}>
+              <Film size={18} color="#4F46E5" />
             </View>
             <View style={styles.rowTextCol}>
-              <Text style={styles.rowLabel}>Cloud Sync</Text>
-              <Text style={styles.rowSubtitle}>
-                {isSyncing ? 'Syncing with Telegram...' : 'Fetch latest photos & updates'}
+              <Text style={styles.rowLabel}>Streaming Engine</Text>
+              <Text style={styles.rowSubtitle} numberOfLines={1}>
+                {streamingEngineMode === 'direct'
+                  ? 'Direct Telegram - Standard streaming'
+                  : streamingEngineMode === 'cloudflare'
+                  ? 'Edge Streaming - Ultra fast low latency'
+                  : 'Auto - Chooses automatically'}
               </Text>
             </View>
-            <Text style={styles.actionLinkText}>
-              {isSyncing ? 'Syncing' : 'Sync Now'}
-            </Text>
+            <ChevronRight size={18} color="#94A3B8" />
           </TouchableOpacity>
-        </View>
-      </View>
 
-      {/* Section 2: Preferences & Advanced */}
-      <View style={styles.section}>
-        <Text style={styles.sectionHeader}>Preferences & Advanced</Text>
-        <View style={styles.groupCard}>
+          <View style={styles.divider} />
+
+          {/* Advanced Settings */}
           <TouchableOpacity
             style={styles.rowItem}
             activeOpacity={0.7}
@@ -393,20 +473,26 @@ export function SettingsScreen({
             <View style={styles.rowTextCol}>
               <Text style={styles.rowLabel}>Advanced Settings</Text>
               <Text style={styles.rowSubtitle} numberOfLines={1}>
-                Upload pipelines, streaming engine & network
+                Upload pipelines & network configuration
               </Text>
             </View>
             <ChevronRight size={18} color="#94A3B8" />
           </TouchableOpacity>
-        </View>
-      </View>
 
-      {/* Section 3: Application & Updates */}
-      <View style={styles.section}>
-        <Text style={styles.sectionHeader}>Application & Updates</Text>
-        <View style={styles.groupCard}>
-          {/* Installed Version */}
-          <View style={styles.rowItem}>
+          <View style={styles.divider} />
+
+          {/* Installed Version & Updates */}
+          <TouchableOpacity
+            style={styles.rowItem}
+            activeOpacity={0.7}
+            onPress={() => {
+              if (availableUpdate) {
+                setIsUpdateDismissed(!isUpdateDismissed);
+              } else {
+                onCheckForUpdates();
+              }
+            }}
+          >
             <View style={[styles.iconBox, { backgroundColor: '#ECFDF5' }]}>
               <Smartphone size={18} color="#059669" />
             </View>
@@ -417,9 +503,14 @@ export function SettingsScreen({
               </Text>
             </View>
             {availableUpdate ? (
-              <View style={[styles.badgePill, { backgroundColor: '#FEF3C7', borderColor: '#FDE68A' }]}>
-                <Text style={[styles.badgeText, { color: '#B45309' }]}>Update</Text>
-              </View>
+              <TouchableOpacity
+                style={[styles.badgePill, { backgroundColor: '#FEF3C7', borderColor: '#FDE68A' }]}
+                onPress={() => setIsUpdateDismissed(!isUpdateDismissed)}
+              >
+                <Text style={[styles.badgeText, { color: '#B45309' }]}>
+                  {isUpdateDismissed ? `Update v${availableUpdate.version}` : 'Collapse'}
+                </Text>
+              </TouchableOpacity>
             ) : (
               <TouchableOpacity
                 style={styles.checkButton}
@@ -435,22 +526,34 @@ export function SettingsScreen({
                 <Text style={styles.checkButtonText}>Check</Text>
               </TouchableOpacity>
             )}
-          </View>
+          </TouchableOpacity>
 
-          {/* Update Banner or Status */}
-          {availableUpdate ? (
+          {/* Collapsible Update Banner */}
+          {availableUpdate && (!isUpdateDismissed || isDownloadingUpdate) ? (
             <View style={styles.updateCard}>
               <View style={styles.updateCardHeader}>
-                <Sparkles size={16} color="#047857" />
-                <Text style={styles.updateCardTitle}>
-                  New Release v{availableUpdate.version}
-                </Text>
+                <View style={styles.updateCardTitleRow}>
+                  <Sparkles size={16} color="#047857" />
+                  <Text style={styles.updateCardTitle}>
+                    New Release v{availableUpdate.version}
+                  </Text>
+                </View>
+
+                <TouchableOpacity
+                  style={styles.closeUpdateBtn}
+                  onPress={() => setIsUpdateDismissed(true)}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <X size={16} color="#047857" />
+                </TouchableOpacity>
               </View>
+
               {availableUpdate.releaseNotes && availableUpdate.releaseNotes.length > 0 && (
                 <Text style={styles.updateCardNotes} numberOfLines={6}>
                   {availableUpdate.releaseNotes.join('\n')}
                 </Text>
               )}
+
               {isDownloadingUpdate && (
                 <View style={styles.downloadProgressContainer}>
                   <View style={styles.downloadProgressBarBg}>
@@ -473,6 +576,7 @@ export function SettingsScreen({
                   </View>
                 </View>
               )}
+
               <TouchableOpacity
                 style={[
                   styles.downloadButton,
@@ -510,9 +614,8 @@ export function SettingsScreen({
         </View>
       </View>
 
-      {/* Section 4: Account & Session */}
+      {/* Standalone Log Out Card at Bottom */}
       <View style={styles.section}>
-        <Text style={styles.sectionHeader}>Account</Text>
         <View style={styles.groupCard}>
           <TouchableOpacity
             style={styles.rowItem}
@@ -608,7 +711,7 @@ export function SettingsScreen({
             onStartShouldSetResponder={() => true}
           >
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Upload Engine Pipeline</Text>
+              <Text style={styles.modalTitle}>Upload Engine</Text>
               <TouchableOpacity
                 style={styles.modalCloseBtn}
                 onPress={() => setShowEngineModal(false)}
@@ -618,26 +721,26 @@ export function SettingsScreen({
             </View>
 
             <Text style={styles.modalDesc}>
-              Select how photos and videos are streamed from this device to Telegram cloud storage.
+              Select your preferred upload route.
             </Text>
 
             {([
               {
                 mode: 'direct' as UploadEngineMode,
-                title: 'Direct Telegram MTProto (Default)',
-                desc: 'Uploads 512KB parts directly to Telegram Data Centers for maximum throughput and zero server overhead.',
+                title: 'Direct Telegram',
+                desc: 'Standard uploads directly to Telegram.',
                 isProOnly: false,
               },
               {
-                mode: 'auto' as UploadEngineMode,
-                title: 'Auto (Direct + Fallback) (Pro ⚡)',
-                desc: 'Direct MTProto upload with automatic seamless fallback to Cloudflare proxy if blocked.',
+                mode: 'cloudflare' as UploadEngineMode,
+                title: 'Cloudflare Proxy',
+                desc: 'Fast proxy uploads via Cloudflare edge.',
                 isProOnly: true,
               },
               {
-                mode: 'cloudflare' as UploadEngineMode,
-                title: 'Cloudflare Proxy (Pro ⚡)',
-                desc: 'Routes chunked uploads through Cloudflare edge proxy for maximum speed and stability.',
+                mode: 'auto' as UploadEngineMode,
+                title: 'Auto',
+                desc: 'Chooses the optimal route automatically.',
                 isProOnly: true,
               },
             ]).map((opt) => {
@@ -717,7 +820,7 @@ export function SettingsScreen({
             onStartShouldSetResponder={() => true}
           >
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Streaming Engine Pipeline</Text>
+              <Text style={styles.modalTitle}>Streaming Engine</Text>
               <TouchableOpacity
                 style={styles.modalCloseBtn}
                 onPress={() => setShowStreamingModal(false)}
@@ -727,26 +830,26 @@ export function SettingsScreen({
             </View>
 
             <Text style={styles.modalDesc}>
-              Select how videos and large media are decoded and streamed for playback.
+              Select your preferred video playback route.
             </Text>
 
             {([
               {
                 mode: 'direct' as StreamingEngineMode,
-                title: 'Direct Telegram MTProto (Default)',
-                desc: 'Streams parts directly from Telegram Data Centers over client session leases (Zero server egress).',
+                title: 'Direct Telegram',
+                desc: 'Standard video streaming directly from Telegram.',
                 isProOnly: false,
               },
               {
-                mode: 'auto' as StreamingEngineMode,
-                title: 'Auto Hybrid (Pro ⚡)',
-                desc: 'Attempts Direct Telegram MTProto first, falling back to Cloudflare Turbo Edge if unreachable.',
+                mode: 'cloudflare' as StreamingEngineMode,
+                title: 'Edge Streaming',
+                desc: 'Ultra fast low latency video playback.',
                 isProOnly: true,
               },
               {
-                mode: 'cloudflare' as StreamingEngineMode,
-                title: 'Cloudflare Turbo Edge (Pro ⚡)',
-                desc: 'Streams via Cloudflare global edge network with HTTP byte-range seeking, HLS caching, and instant startup.',
+                mode: 'auto' as StreamingEngineMode,
+                title: 'Auto',
+                desc: 'Chooses the optimal route automatically.',
                 isProOnly: true,
               },
             ]).map((opt) => {
@@ -844,11 +947,11 @@ export function SettingsScreen({
             ]}
             showsVerticalScrollIndicator={false}
           >
-            {/* Section 1: Transfer & Streaming Engines */}
+            {/* Section 1: Transfer Engines */}
             <View style={styles.section}>
-              <Text style={styles.sectionHeader}>Transfer & Streaming Engines</Text>
+              <Text style={styles.sectionHeader}>Transfer Engines</Text>
               <View style={styles.groupCard}>
-                {/* Upload Engine Pipeline */}
+                {/* Upload Engine */}
                 <TouchableOpacity
                   style={styles.rowItem}
                   activeOpacity={0.7}
@@ -858,50 +961,16 @@ export function SettingsScreen({
                     <Zap size={18} color="#EA580C" />
                   </View>
                   <View style={styles.rowTextCol}>
-                    <Text style={styles.rowLabel}>Upload Pipeline</Text>
+                    <Text style={styles.rowLabel}>Upload Engine</Text>
                     <Text style={styles.rowSubtitle} numberOfLines={1}>
                       {uploadEngineMode === 'direct'
-                        ? 'Direct Telegram (Default)'
-                        : uploadEngineMode === 'auto'
-                        ? 'Auto (Direct MTProto + Fallback)'
-                        : 'Cloudflare Proxy (Relay)'}
+                        ? 'Direct Telegram - Standard upload'
+                        : uploadEngineMode === 'cloudflare'
+                        ? 'Cloudflare Proxy - Fast edge proxy'
+                        : 'Auto - Chooses automatically'}
                     </Text>
                   </View>
-                  <View style={[styles.badgePill, { backgroundColor: '#FFEDD5', borderColor: '#FED7AA' }]}>
-                    <Text style={[styles.badgeText, { color: '#C2410C' }]}>
-                      {uploadEngineMode.toUpperCase()}
-                    </Text>
-                  </View>
-                  <ChevronRight size={16} color="#94A3B8" style={{ marginLeft: 6 }} />
-                </TouchableOpacity>
-
-                <View style={styles.divider} />
-
-                {/* Streaming Pipeline */}
-                <TouchableOpacity
-                  style={styles.rowItem}
-                  activeOpacity={0.7}
-                  onPress={() => setShowStreamingModal(true)}
-                >
-                  <View style={[styles.iconBox, { backgroundColor: '#EEF2FF' }]}>
-                    <Film size={18} color="#4F46E5" />
-                  </View>
-                  <View style={styles.rowTextCol}>
-                    <Text style={styles.rowLabel}>Streaming Engine</Text>
-                    <Text style={styles.rowSubtitle} numberOfLines={1}>
-                      {streamingEngineMode === 'direct'
-                        ? 'Direct Telegram MTProto (Default)'
-                        : streamingEngineMode === 'cloudflare'
-                        ? 'Cloudflare Turbo Edge'
-                        : 'Auto Hybrid'}
-                    </Text>
-                  </View>
-                  <View style={[styles.badgePill, { backgroundColor: '#E0E7FF', borderColor: '#C7D2FE' }]}>
-                    <Text style={[styles.badgeText, { color: '#4338CA' }]}>
-                      {streamingEngineMode.toUpperCase()}
-                    </Text>
-                  </View>
-                  <ChevronRight size={16} color="#94A3B8" style={{ marginLeft: 6 }} />
+                  <ChevronRight size={18} color="#94A3B8" />
                 </TouchableOpacity>
               </View>
             </View>
@@ -977,6 +1046,7 @@ export function SettingsScreen({
       >
         <PremiumMembershipScreen
           userTier={user?.tier || 'free'}
+          tierExpiresAt={user?.tierExpiresAt}
           isTierHeld={user?.isTierHeld}
           tierHoldReason={user?.tierHoldReason}
           onBack={() => setShowProModal(false)}
@@ -1008,21 +1078,6 @@ const styles = StyleSheet.create({
     paddingTop: 12,
     paddingBottom: 110,
   },
-  titleContainer: {
-    marginBottom: 16,
-    paddingHorizontal: 4,
-  },
-  screenTitle: {
-    fontSize: 28,
-    fontWeight: '800',
-    color: '#0F172A',
-    letterSpacing: -0.5,
-  },
-  screenSubtitle: {
-    fontSize: 13,
-    color: '#64748B',
-    marginTop: 2,
-  },
   profileCard: {
     backgroundColor: '#FFFFFF',
     borderRadius: 20,
@@ -1038,50 +1093,10 @@ const styles = StyleSheet.create({
     elevation: 2,
     marginBottom: 4,
   },
-  proBannerCard: {
-    backgroundColor: '#FAF5FF',
-    borderRadius: 18,
-    padding: 14,
-    borderWidth: 1.5,
-    borderColor: '#E9D5FF',
+  profileNameRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    marginTop: 10,
-    marginBottom: 4,
-    shadowColor: '#7C3AED',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-  proBannerLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-    gap: 12,
-  },
-  proIconCircle: {
-    width: 38,
-    height: 38,
-    borderRadius: 12,
-    backgroundColor: '#7C3AED',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  proBannerTextCol: {
-    flex: 1,
-    gap: 2,
-  },
-  proTagRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  proBannerTitle: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: '#581C87',
+    gap: 8,
   },
   proBadge: {
     backgroundColor: '#7E22CE',
@@ -1094,10 +1109,11 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#FFFFFF',
   },
-  proBannerSubtitle: {
-    fontSize: 11,
-    color: '#6B21A8',
-    lineHeight: 15,
+  proActionSubtitle: {
+    fontSize: 11.5,
+    color: '#7C3AED',
+    marginTop: 3,
+    fontWeight: '600',
   },
   avatarCircle: {
     width: 52,
@@ -1248,8 +1264,17 @@ const styles = StyleSheet.create({
   updateCardHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    justifyContent: 'space-between',
     marginBottom: 6,
+  },
+  updateCardTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flex: 1,
+  },
+  closeUpdateBtn: {
+    padding: 4,
   },
   updateCardTitle: {
     fontSize: 14,

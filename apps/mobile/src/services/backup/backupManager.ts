@@ -312,7 +312,8 @@ class BackupManagerClass {
       height?: number;
       duration?: number;
     }>,
-    channelId: string
+    channelId: string,
+    autoStart: boolean = true
   ): Promise<number> {
     if (!channelId) {
       throw new Error('Target channel ID is required for backup');
@@ -359,7 +360,9 @@ class BackupManagerClass {
       this.queue = await QueueStorage.addItems(newItems);
       this.notify();
 
-      if (this.isSyncing) {
+      if (autoStart) {
+        this.startSync();
+      } else if (this.isSyncing) {
         this.dispatcher.schedule();
       }
     }
@@ -373,6 +376,11 @@ class BackupManagerClass {
   }
 
   public startSync(): void {
+    if (this.isSyncing) {
+      this.dispatcher.schedule();
+      return;
+    }
+
     const pendingCount = this.queue.filter((i) => i.status === 'pending' || i.status === 'paused').length;
     console.log(`[BackupManager] 🎬 startSync requested | totalQueue=${this.queue.length} | pending=${pendingCount} | isSyncing=${this.isSyncing}`);
 

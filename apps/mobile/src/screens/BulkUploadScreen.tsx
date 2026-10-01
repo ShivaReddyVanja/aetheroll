@@ -26,9 +26,8 @@ import {
   Zap,
   Clock,
   Plus,
-  Layers,
-  Battery,
 } from 'lucide-react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   BackupManager,
   BackupItem,
@@ -60,8 +59,6 @@ export function BulkUploadScreen() {
   const [isSyncing, setIsSyncing] = useState(false);
   const [activeChannel, setActiveChannel] = useState<{ id: string; name: string } | null>(null);
   const [isPicking, setIsPicking] = useState(false);
-  const [isBatteryOptimized, setIsBatteryOptimized] = useState(false);
-  const [dismissBatteryBanner, setDismissBatteryBanner] = useState(false);
 
   // Modern non-blocking animated toast
   const [toast, setToast] = useState<{ message: string; type?: 'success' | 'info' | 'error' } | null>(null);
@@ -123,17 +120,6 @@ export function BulkUploadScreen() {
     }
     loadChannel();
   }, []);
-
-  // Check battery optimization status on Android
-  useEffect(() => {
-    async function checkBattery() {
-      if (Platform.OS === 'android') {
-        const isIgnored = await NativeBackgroundService.isBatteryOptimizationIgnored();
-        setIsBatteryOptimized(!isIgnored);
-      }
-    }
-    checkBattery();
-  }, [isSyncing]);
 
   // Subscribe to BackupManager real-time queue events
   useEffect(() => {
@@ -222,14 +208,31 @@ export function BulkUploadScreen() {
             height: a.height,
             duration: a.duration,
           })),
-          activeChannel.id
+          activeChannel.id,
+          true
         );
 
         const addedCount = validAssets.length - skipped;
         if (skipped > 0) {
-          showToast(`Added ${addedCount} new ${addedCount === 1 ? 'item' : 'items'} (${skipped} skipped)`, 'info');
+          showToast(`Uploading ${addedCount} new ${addedCount === 1 ? 'item' : 'items'} (${skipped} already backed up)`, 'info');
         } else {
-          showToast(`Added ${validAssets.length} ${validAssets.length === 1 ? 'item' : 'items'} to backup queue`, 'success');
+          showToast(`Uploading ${validAssets.length} ${validAssets.length === 1 ? 'item' : 'items'} to cloud`, 'success');
+        }
+
+        // 1-time subtle background battery optimization reminder on Android
+        if (Platform.OS === 'android') {
+          try {
+            const tipShown = await AsyncStorage.getItem('@aetheroll/battery_tip_shown');
+            if (!tipShown) {
+              await AsyncStorage.setItem('@aetheroll/battery_tip_shown', 'true');
+              const isIgnored = await NativeBackgroundService.isBatteryOptimizationIgnored();
+              if (!isIgnored) {
+                setTimeout(() => {
+                  showToast('Tip: Turn on Background Uploads in Settings to sync while screen is locked', 'info');
+                }, 3200);
+              }
+            }
+          } catch {}
         }
       }
     } catch (err: any) {
@@ -242,6 +245,11 @@ export function BulkUploadScreen() {
   const handleToggleSync = async () => {
     if (queue.length === 0) {
       showToast('Select photos or videos to start cloud backup', 'info');
+      return;
+    }
+
+    if (isAllCompleted) {
+      showToast('All items are backed up. Tap "Add More" to queue more media.', 'success');
       return;
     }
 
@@ -260,12 +268,6 @@ export function BulkUploadScreen() {
     }
   };
 
-  const handleRequestBatteryOptimization = async () => {
-    await NativeBackgroundService.requestIgnoreBatteryOptimization();
-    const isIgnored = await NativeBackgroundService.isBatteryOptimizationIgnored();
-    setIsBatteryOptimized(!isIgnored);
-  };
-
   const handleRetryFailed = () => {
     BackupManager.retryFailed();
   };
@@ -280,6 +282,7 @@ export function BulkUploadScreen() {
 
   const overallProgressPct =
     stats.total > 0 ? Math.round((stats.completed / stats.total) * 100) : 0;
+  const isAllCompleted = stats.total > 0 && stats.completed === stats.total;
 
   const renderQueueItem = useCallback(
     ({ item }: { item: BackupItem }) => {
@@ -361,60 +364,15 @@ export function BulkUploadScreen() {
 
   return (
     <View style={styles.container}>
-      {/* Top Header */}
-      <View style={styles.header}>
-        <View>
-          <Text style={styles.title}>Backup & Sync</Text>
-          <Text style={styles.subtitle}>
-            {activeChannel ? `Album: ${activeChannel.name}` : 'Aetheroll Telegram Cloud'}
-          </Text>
-        </View>
-
-      </View>
-
-      {/* Battery Optimization Exemption Banner on Android */}
-      {Platform.OS === 'android' && isBatteryOptimized && !dismissBatteryBanner && (
-        <View style={styles.batteryBanner}>
-          <View style={styles.batteryBannerLeft}>
-            <View style={styles.batteryIconBox}>
-              <Battery size={16} color="#D97706" />
-            </View>
-            <View style={styles.batteryTextContainer}>
-              <Text style={styles.batteryTitle}>Unrestricted Background Battery</Text>
-              <Text style={styles.batterySubtitle}>
-                Allow uploads to run continuously even when screen is locked.
-              </Text>
-            </View>
-          </View>
-
-          <View style={styles.batteryActionRow}>
-            <TouchableOpacity
-              style={styles.batteryAllowBtn}
-              onPress={handleRequestBatteryOptimization}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.batteryAllowText}>Allow</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.batteryDismissBtn}
-              onPress={() => setDismissBatteryBanner(true)}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            >
-              <Text style={styles.batteryDismissText}>✕</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      )}
-
-      {/* Control Banner Card */}
-      <View style={styles.controlBox}>
-        {/* Overall Progress Stat Bar */}
-        {stats.total > 0 && (
+      {/* Control Banner Card - only rendered when queue has active items */}
+      {queue.length > 0 && (
+        <View style={styles.controlBox}>
+          {/* Overall Progress Stat Bar */}
           <View style={styles.overallStatsBox}>
             <View style={styles.overallStatsHeader}>
               <View style={styles.statusTitleRow}>
                 <Text style={styles.overallStatsTitle}>
-                  {isSyncing ? 'Syncing to Telegram' : 'Backup Paused'}
+                  {isSyncing ? 'Syncing to Telegram' : isAllCompleted ? 'Backup Complete' : 'Backup Paused'}
                 </Text>
                 {isSyncing && stats.activeWorkers > 0 && (
                   <View style={styles.activePill}>
@@ -434,6 +392,7 @@ export function BulkUploadScreen() {
                 style={[
                   styles.overallProgressBarFill,
                   { width: `${overallProgressPct}%` },
+                  isAllCompleted && { backgroundColor: '#16A34A' },
                 ]}
               />
             </View>
@@ -441,9 +400,9 @@ export function BulkUploadScreen() {
             {/* Live Metrics Row: Speed, ETA, Bytes */}
             <View style={styles.metricsRow}>
               <View style={styles.metricItem}>
-                <Zap size={12} color="#059669" />
+                <Zap size={12} color={isAllCompleted ? '#16A34A' : '#059669'} />
                 <Text style={styles.metricText}>
-                  {isSyncing && stats.speedBytesPerSec > 0 ? stats.speedFormatted : 'Idle'}
+                  {isSyncing && stats.speedBytesPerSec > 0 ? stats.speedFormatted : isAllCompleted ? 'Complete' : 'Paused'}
                 </Text>
               </View>
 
@@ -459,86 +418,104 @@ export function BulkUploadScreen() {
               </View>
             </View>
           </View>
-        )}
 
-        {/* Action Buttons Row */}
-        <View style={styles.bannerRow}>
-          <TouchableOpacity
-            style={styles.pickMediaBtn}
-            onPress={handlePickMedia}
-            disabled={isPicking}
-            activeOpacity={0.7}
-          >
-            {isPicking ? (
-              <ActivityIndicator size="small" color="#1E293B" />
-            ) : (
-              <View style={styles.btnContentRow}>
-                <Plus size={16} color="#1E293B" />
-                <Text style={styles.pickMediaText}>Select Media</Text>
-              </View>
-            )}
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[
-              styles.syncBtn,
-              isSyncing ? styles.syncBtnActive : styles.syncBtnPaused,
-              queue.length === 0 && styles.syncBtnDisabled,
-            ]}
-            onPress={handleToggleSync}
-            activeOpacity={0.7}
-          >
-            <View style={styles.btnContentRow}>
-              {isSyncing ? (
-                <Pause size={16} color="#FFFFFF" />
+          {/* Action Buttons Row */}
+          <View style={styles.bannerRow}>
+            <TouchableOpacity
+              style={styles.pickMediaBtn}
+              onPress={handlePickMedia}
+              disabled={isPicking}
+              activeOpacity={0.7}
+            >
+              {isPicking ? (
+                <ActivityIndicator size="small" color="#1E293B" />
               ) : (
-                <Play size={16} color="#FFFFFF" />
+                <View style={styles.btnContentRow}>
+                  <Plus size={15} color="#1E293B" />
+                  <Text style={styles.pickMediaText}>Add More</Text>
+                </View>
               )}
-              <Text style={styles.syncBtnText}>
-                {isSyncing ? 'Pause Sync' : 'Start Sync'}
-              </Text>
-            </View>
-          </TouchableOpacity>
-        </View>
+            </TouchableOpacity>
 
-        {/* Secondary Actions: Retry / Clear */}
-        {(stats.failed > 0 || stats.completed > 0) && (
-          <View style={styles.secondaryActionsRow}>
-            {stats.failed > 0 && (
-              <TouchableOpacity style={styles.secondaryActionBtn} onPress={handleRetryFailed}>
-                <RotateCcw size={12} color="#DC2626" />
-                <Text style={styles.retryActionText}>Retry Failed ({stats.failed})</Text>
-              </TouchableOpacity>
-            )}
-
-            {stats.completed > 0 && (
-              <TouchableOpacity style={styles.secondaryActionBtn} onPress={handleClearCompleted}>
-                <Trash2 size={12} color="#2563EB" />
-                <Text style={styles.clearActionText}>Clear Completed ({stats.completed})</Text>
-              </TouchableOpacity>
-            )}
+            <TouchableOpacity
+              style={[
+                styles.syncBtn,
+                isSyncing
+                  ? styles.syncBtnActive
+                  : isAllCompleted
+                  ? styles.syncBtnCompleted
+                  : styles.syncBtnPaused,
+              ]}
+              onPress={handleToggleSync}
+              activeOpacity={0.7}
+            >
+              <View style={styles.btnContentRow}>
+                {isSyncing ? (
+                  <>
+                    <Pause size={15} color="#FFFFFF" />
+                    <Text style={styles.syncBtnText}>Pause Sync</Text>
+                  </>
+                ) : isAllCompleted ? (
+                  <>
+                    <CheckCircle2 size={15} color="#FFFFFF" />
+                    <Text style={styles.syncBtnText}>All Uploaded</Text>
+                  </>
+                ) : (
+                  <>
+                    <Play size={15} color="#FFFFFF" />
+                    <Text style={styles.syncBtnText}>Resume Sync</Text>
+                  </>
+                )}
+              </View>
+            </TouchableOpacity>
           </View>
-        )}
 
-        {/* Adaptive Dynamic Sliding Window Info */}
-        <View style={styles.pacerInfo}>
-          <Layers size={13} color="#2563EB" />
-          <Text style={styles.pacerText}>
-            Dynamic Sliding Window: Adaptive parallel streaming + durable state
-          </Text>
+          {/* Secondary Actions: Retry / Clear */}
+          {(stats.failed > 0 || stats.completed > 0) && (
+            <View style={styles.secondaryActionsRow}>
+              {stats.failed > 0 && (
+                <TouchableOpacity style={styles.secondaryActionBtn} onPress={handleRetryFailed}>
+                  <RotateCcw size={12} color="#DC2626" />
+                  <Text style={styles.retryActionText}>Retry Failed ({stats.failed})</Text>
+                </TouchableOpacity>
+              )}
+
+              {stats.completed > 0 && (
+                <TouchableOpacity style={styles.secondaryActionBtn} onPress={handleClearCompleted}>
+                  <Trash2 size={12} color="#2563EB" />
+                  <Text style={styles.clearActionText}>Clear Completed ({stats.completed})</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          )}
         </View>
-      </View>
+      )}
 
       {/* Queue List / Empty State */}
       {queue.length === 0 ? (
         <View style={styles.emptyContainer}>
           <View style={styles.emptyCloudIcon}>
-            <CloudUpload size={32} color="#2563EB" />
+            <CloudUpload size={28} color="#2563EB" />
           </View>
           <Text style={styles.emptyTitle}>No Media in Backup Queue</Text>
           <Text style={styles.emptySubtitle}>
-            Tap "Select Media" above to queue photos and videos. Your progress is saved durably so you can safely pause and resume anytime.
+            Select photos and videos to back them up to your Telegram cloud vault.
           </Text>
+          <TouchableOpacity
+            style={styles.emptySelectBtn}
+            onPress={handlePickMedia}
+            activeOpacity={0.8}
+            disabled={isPicking}
+          >
+            {isPicking ? (
+              <ActivityIndicator size="small" color="#FFFFFF" />
+            ) : (
+              <View style={styles.btnContentRow}>
+                <Plus size={16} color="#FFFFFF" />
+                <Text style={styles.emptySelectBtnText}>Select Photos & Videos</Text>
+              </View>
+            )}
+          </TouchableOpacity>
         </View>
       ) : (
         <FlatList
@@ -556,7 +533,7 @@ export function BulkUploadScreen() {
               </Text>
               {activeItems.length > 0 && (
                 <Text style={styles.nowUploadingText}>
-                  {activeItems.length} active in window
+                  {activeItems.length} active
                 </Text>
               )}
             </View>
@@ -594,92 +571,6 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#F8FAFC',
-  },
-  header: {
-    paddingHorizontal: 20,
-    paddingVertical: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: '#E2E8F0',
-    backgroundColor: '#FFFFFF',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  title: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: '#0F172A',
-    letterSpacing: -0.4,
-  },
-  subtitle: {
-    fontSize: 12,
-    color: '#64748B',
-    marginTop: 2,
-    fontWeight: '500',
-  },
-  batteryBanner: {
-    marginHorizontal: 16,
-    marginTop: 12,
-    padding: 12,
-    backgroundColor: '#FEF3C7',
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: '#FDE68A',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  batteryBannerLeft: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    marginRight: 8,
-  },
-  batteryIconBox: {
-    width: 32,
-    height: 32,
-    borderRadius: 8,
-    backgroundColor: '#FDE68A',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  batteryTextContainer: {
-    flex: 1,
-  },
-  batteryTitle: {
-    fontSize: 12.5,
-    fontWeight: '700',
-    color: '#92400E',
-  },
-  batterySubtitle: {
-    fontSize: 11,
-    color: '#B45309',
-    marginTop: 1,
-  },
-  batteryActionRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  batteryAllowBtn: {
-    backgroundColor: '#D97706',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 8,
-  },
-  batteryAllowText: {
-    color: '#FFFFFF',
-    fontSize: 11.5,
-    fontWeight: '700',
-  },
-  batteryDismissBtn: {
-    padding: 4,
-  },
-  batteryDismissText: {
-    fontSize: 12,
-    color: '#B45309',
-    fontWeight: '700',
   },
   controlBox: {
     margin: 16,
@@ -767,7 +658,7 @@ const styles = StyleSheet.create({
   },
   bannerRow: {
     flexDirection: 'row',
-    gap: 10,
+    gap: 8,
   },
   btnContentRow: {
     flexDirection: 'row',
@@ -776,10 +667,10 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   pickMediaBtn: {
-    flex: 1.1,
+    flex: 1,
     backgroundColor: '#F1F5F9',
-    borderRadius: 12,
-    paddingVertical: 11,
+    borderRadius: 10,
+    paddingVertical: 9,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
@@ -787,13 +678,13 @@ const styles = StyleSheet.create({
   },
   pickMediaText: {
     color: '#1E293B',
-    fontSize: 13,
-    fontWeight: '700',
+    fontSize: 12.5,
+    fontWeight: '600',
   },
   syncBtn: {
-    flex: 0.9,
-    borderRadius: 12,
-    paddingVertical: 11,
+    flex: 1,
+    borderRadius: 10,
+    paddingVertical: 9,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -803,14 +694,17 @@ const styles = StyleSheet.create({
   syncBtnPaused: {
     backgroundColor: '#2563EB',
   },
+  syncBtnCompleted: {
+    backgroundColor: '#16A34A',
+  },
   syncBtnDisabled: {
     backgroundColor: '#94A3B8',
     opacity: 0.7,
   },
   syncBtnText: {
     color: '#FFFFFF',
-    fontSize: 13,
-    fontWeight: '700',
+    fontSize: 12.5,
+    fontWeight: '600',
   },
   secondaryActionsRow: {
     flexDirection: 'row',
@@ -834,22 +728,6 @@ const styles = StyleSheet.create({
     fontSize: 11.5,
     color: '#2563EB',
     fontWeight: '700',
-  },
-  pacerInfo: {
-    marginTop: 12,
-    paddingVertical: 7,
-    paddingHorizontal: 10,
-    backgroundColor: '#EFF6FF',
-    borderRadius: 9,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  pacerText: {
-    color: '#1D4ED8',
-    fontSize: 11,
-    fontWeight: '600',
-    flex: 1,
   },
   listContainer: {
     paddingHorizontal: 16,
@@ -957,29 +835,46 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 36,
-    paddingBottom: 80,
+    paddingHorizontal: 32,
+    paddingBottom: 60,
   },
   emptyCloudIcon: {
-    width: 68,
-    height: 68,
-    borderRadius: 34,
+    width: 60,
+    height: 60,
+    borderRadius: 30,
     backgroundColor: '#EFF6FF',
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 16,
+    marginBottom: 14,
   },
   emptyTitle: {
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: '700',
     color: '#0F172A',
-    marginBottom: 8,
+    marginBottom: 6,
   },
   emptySubtitle: {
-    fontSize: 13,
+    fontSize: 12.5,
     color: '#64748B',
     textAlign: 'center',
-    lineHeight: 19,
+    lineHeight: 18,
+    marginBottom: 18,
+  },
+  emptySelectBtn: {
+    backgroundColor: '#2563EB',
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: 10,
+    shadowColor: '#2563EB',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  emptySelectBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '600',
   },
   toastContainer: {
     position: 'absolute',
