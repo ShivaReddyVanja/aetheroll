@@ -100,6 +100,7 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode project.hasProperty('versionCode') ? project.property('versionCode').toInteger() : 1
         versionName project.hasProperty('versionName') ? project.property('versionName').toString() : "1.0.0"
+        resValue "string", "app_name", "Aetheroll"
     }
     signingConfigs {
         debug {
@@ -125,6 +126,8 @@ android {
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
+            applicationIdSuffix ".dev"
+            resValue "string", "app_name", "Aetheroll (Dev)"
         }
         release {
             signingConfig signingConfigs.release
